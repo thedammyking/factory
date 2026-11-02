@@ -10,6 +10,10 @@ A Claude Code plugin that carries a one-line request through triage, spec, ticke
 One request carried through the factory, from the prompt to a terminal outcome (delivered, needs-human, failed, abandoned, or charted when the request was handed to a map).
 _Avoid_: job, session, pipeline execution
 
+**Request issue**:
+The tracker issue a run was started from, and the only thing on the tracker the run writes to. A run started from plain text has none.
+_Avoid_: source issue, linked issue, ticket
+
 **Orchestrator**:
 The skill that drives exactly one run from its own session: it routes between stages, dispatches each one and records progress, and it is where the human answers the grill and the gates. Several runs at once means several orchestrators.
 _Avoid_: supervisor, controller, driver
@@ -82,7 +86,7 @@ One question on a map whose answer is a decision, not a slice of work.
 _Avoid_: ticket (a run's slice), issue
 
 **Tracker**:
-Where a project's maps live and its run tickets are mirrored: local files, GitHub Issues, Linear, or another tracker the human describes.
+Where a project's maps live (local files, GitHub Issues, Linear, or another tracker the human describes) and, on any but local files, its request issues. A run's tickets never appear there.
 _Avoid_: board, issue tracker
 
 **Run list**:
