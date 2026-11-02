@@ -91,6 +91,10 @@ _Avoid_: env, scenario
 The result of running the recipe's checks, pinned to one commit.
 _Avoid_: test results, report
 
+**Pinned test**:
+An end-to-end test written from one success criterion by an agent other than the implementer, kept in the product's repo and rerun on every later run.
+_Avoid_: pinned spec, e2e spec, Playwright spec
+
 **Digest**:
 The short account a script gives in place of a command's full output: the failing lines quoted word for word, and where the full output is kept.
 _Avoid_: log tail, summary
