@@ -7,7 +7,7 @@ A Claude Code plugin that carries a one-line request through triage, spec, ticke
 ### Runs
 
 **Run**:
-One request carried through the factory, from the prompt to a terminal outcome (delivered, needs-human, failed or abandoned).
+One request carried through the factory, from the prompt to a terminal outcome (delivered, needs-human, failed, abandoned, or charted when the request was handed to a map).
 _Avoid_: job, session, pipeline execution
 
 **Orchestrator**:
@@ -58,6 +58,24 @@ _Avoid_: issue, task, story, decision ticket (a wayfinder map's question)
 **Plan**:
 The implementer's sole source of truth for one ticket.
 _Avoid_: brief, design doc
+
+### Maps
+
+**Map**:
+A shared plan for a request too foggy for one run: the decisions made so far, the open decision tickets and the fog ahead, ending in a run list.
+_Avoid_: epic, roadmap, project
+
+**Decision ticket**:
+One question on a map whose answer is a decision, not a slice of work.
+_Avoid_: ticket (a run's slice), issue
+
+**Tracker**:
+Where a project's maps live and its run tickets are mirrored: local files, GitHub Issues, Linear, or another tracker the human describes.
+_Avoid_: board, issue tracker
+
+**Run list**:
+A cleared map's destination: ordered one-line requests, each sized to one run's spec.
+_Avoid_: backlog, queue
 
 ### Proof
 
