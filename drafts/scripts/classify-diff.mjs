@@ -13,16 +13,16 @@ const git = (...a) => execFileSync("git", a, { cwd: ROOT, encoding: "utf8", maxB
 // Conservative shipped defaults (same as touch-rules.json): directory/file segments and specific patterns, never bare
 // substrings like "token" or "client", which fired auth and files on a diff with neither (dry-run fix 9).
 const defaults = {
-  auth: {"paths": ["/auth/", "/guards/", "/middleware/", "/session", "/login", "/passport"], "content": ["@UseGuards", "jsonwebtoken", "\\bjwt\\.", "bcrypt", "argon2", "passport", "set-cookie", "Authorization:", "getServerSession", "\\bauth\\("]},
+  auth: {"paths": ["/auth/", "/guards/", "/middleware/", "/session", "/login", "/passport", "/oauth", "/password", "/forgot-password", "/reset-password", "/2fa", "/mfa", "/otp"], "content": ["@UseGuards", "jsonwebtoken", "\\bjwt\\.", "bcrypt", "argon2", "passport", "set-cookie", "Authorization:", "getServerSession", "\\bauth\\(", "redirect_uri", "\\btotp\\b", "otplib", "reset_?token", "\\brate[-_]?limit", "throttler", "trust ?proxy"]},
   data: {"paths": ["/prisma/", "/migrations/", "schema.prisma", "/models/", "/repositories/", "/db/", "/store."], "content": ["prisma\\.", "\\.query\\(", "INSERT INTO", "SELECT .* FROM", "knex\\(", "drizzle", "better-sqlite3", "node:sqlite", "writeFile\\("]},
   migrations: {"paths": ["/migrations/", "/migrate/", "schema.prisma", "/alembic/versions/", "/drizzle/"], "content": []},
   network: {"paths": ["/webhooks/", "/queue", "/jobs/"], "content": ["\\bfetch\\(", "axios", "\\bgot\\(", "undici", "new WebSocket", "http\\.request"]},
-  files: {"paths": ["/uploads/"], "content": ["multer", "createReadStream", "formData\\(\\)\\.get", "fs\\.promises"]},
+  files: {"paths": ["/uploads/"], "content": ["multer", "createReadStream", "formData\\(\\)\\.get", "fs\\.promises", "busboy", "['\"]formidable['\"]", "@fastify/multipart", "@UploadedFile", "xml2js", "fast-xml-parser", "libxmljs", "xmldom"]},
   crypto: {"paths": [], "content": ["crypto\\.", "randomBytes", "createHash", "subtle\\."]},
   config: {"paths": [".env", "next.config", "vite.config", "nest-cli", "/main.ts", "app.module", "tsconfig"], "content": ["process\\.env\\.", "import\\.meta\\.env", "cors\\(", "helmet\\("]},
   deps: {"paths": ["package.json", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lock"], "content": []},
   native: {"paths": ["app.json", "app.config.", "/ios/", "/android/", "eas.json"], "content": ["expo-modules", "react-native-"]},
-  api_contract: {"paths": ["/controllers/", "/routes/", "route.ts", "/api/", "/dto/", "/actions/", "/app.ts"], "content": ["app\\.(get|post|put|patch|delete)\\(", "@(Get|Post|Put|Patch|Delete)\\(", "export async function (GET|POST|PUT|PATCH|DELETE)", "'use server'"]},
+  api_contract: {"paths": ["/controllers/", "/routes/", "route.ts", "/api/", "/dto/", "/actions/", "/app.ts"], "content": ["app\\.(get|post|put|patch|delete)\\(", "@(Get|Post|Put|Patch|Delete)\\(", "export async function (GET|POST|PUT|PATCH|DELETE)", "'use server'", "ApolloServer", "createYoga", "@Resolver\\(", "makeExecutableSchema"]},
   ui: {"paths": [".tsx", ".jsx", ".css", ".scss", "/screens/", "/components/", "index.html"], "content": []},
   tests: {"paths": [".test.", ".spec.", "__tests__", "/e2e/", ".maestro/"], "content": []},
   analytics: {"paths": ["analytics", "track.ts", "tracking"], "content": ["\\btrack\\(", "\\bcapture\\(", "posthog", "mixpanel", "amplitude", "gtag\\(", "logEvent\\("]},

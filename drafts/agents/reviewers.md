@@ -56,4 +56,25 @@ produce the trust-boundary trace table: one row per new/changed entry point: ent
 (scoped to caller?) → response. Any empty cell is a finding with a CWE. Fixed severities: authz bypass, tenant leak, secret
 exposure, injection → P0. Also: rate limiting on public endpoints, PII in logs/analytics, NEXT_PUBLIC_-style leaks, CSRF on
 cookie-auth handlers, webhook signatures. When `auth` fired: a new protected endpoint without a negative authorization test
-(called as the wrong user or tenant, expecting 403 or 404) is a `P1 ask`. Write `review-security.md`.
+(called as the wrong user or tenant, expecting 403 or 404) is a `P1 ask`.
+Checklists that activate on touches.json. An unmet item is a finding with its CWE; the fixed severities above still apply:
+- api_contract: a method the route does not serve gets 405, an unsupported request content-type 415; the response sets its
+  own content-type; error bodies are generic, with no stack trace, SQL or internal path (CWE-209); no credential or token in
+  a URL or query string (CWE-598); where the app sets headers: `X-Powered-By` off, `nosniff`, frame-ancestors, a CSP.
+  GraphQL: introspection off in production, a depth or cost limit (CWE-770).
+- data: a request body written whole (spread, `Object.assign`, `data: body`) instead of through an allowlist is mass
+  assignment (CWE-915), an authz bypass when it can set a role, owner, tenant or price; a price, total, quantity or discount
+  taken from the client (CWE-602); a single-use thing (coupon, vote, refund, invite) guarded by read-then-write instead of
+  a unique constraint or a transaction (CWE-362).
+- auth: OAuth `redirect_uri` matched exactly against a server-side allowlist, no `response_type=token`, `state` generated and
+  checked (CWE-601, CWE-352); reset and one-time codes random, single-use, expiring and never returned or logged, the reset
+  link's host from config and never the `Host` header (CWE-640); sessions revoked on logout and password change (CWE-613);
+  login, reset and code endpoints limited on a key the client cannot rotate: not a raw `X-Forwarded-For`, not
+  `trust proxy: true` (CWE-307); a path-prefix guard that normalises paths differently from the router (case, trailing
+  slash, encoding) instead of a guard on the route (CWE-863).
+- files: an extension allowlist plus a content check, SVG and HTML treated as active content, a size cap, EXIF stripped from
+  images served back, uploads served from another origin or as attachments (CWE-434); XML parsed with external entities and
+  entity expansion off (CWE-611, CWE-776).
+When security.json or semgrep-project.json already holds a semgrep hit for one of these (the starter rules catch mass
+assignment, `trust proxy: true` and stack traces in responses), cite it instead of raising a second finding.
+Write `review-security.md`.
