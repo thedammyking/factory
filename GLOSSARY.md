@@ -110,3 +110,17 @@ _Avoid_: issue, comment, bug
 **Golden task**:
 A fixed request with known expected outcomes, used to check the factory itself for regressions.
 _Avoid_: benchmark, e2e test
+
+### Merging
+
+**Merge decision**:
+The verdict on a finished run, merge or needs-human, computed by a script from facts and never from an agent's judgement.
+_Avoid_: verdict, approval, merge gate
+
+**Merge mode**:
+What the factory does with a merge decision of merge: in trial it only says it would merge, in auto it merges and watches.
+_Avoid_: merge policy
+
+**Watch**:
+The fixed window after the factory's own merge in which it checks the target branch and, on red, opens a revert PR that it never merges.
+_Avoid_: post-merge monitoring, canary
