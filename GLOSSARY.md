@@ -111,10 +111,6 @@ _Avoid_: reviewer type, pass
 One typed claim a lens makes about the diff, with a severity and an action.
 _Avoid_: issue, comment, bug
 
-**Golden task**:
-A fixed request with known expected outcomes, used to check the factory itself for regressions.
-_Avoid_: benchmark, e2e test
-
 ### Merging
 
 **Merge decision**:
