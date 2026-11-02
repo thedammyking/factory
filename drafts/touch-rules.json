@@ -1,0 +1,15 @@
+{
+  "_doc": "Conservative defaults. Paths match as directory/file segments, content as regexes over ADDED lines. Setup section C adds the project's real auth/data directories.",
+  "auth":         { "paths": ["/auth/", "/guards/", "/middleware/", "/session", "/login", "/passport"], "content": ["@UseGuards", "jsonwebtoken", "\\bjwt\\.", "bcrypt", "argon2", "passport", "set-cookie", "Authorization:", "getServerSession", "\\bauth\\("] },
+  "data":         { "paths": ["/prisma/", "/migrations/", "schema.prisma", "/models/", "/repositories/", "/db/", "/store."], "content": ["prisma\\.", "\\.query\\(", "INSERT INTO", "SELECT .* FROM", "knex\\(", "drizzle", "better-sqlite3", "node:sqlite", "writeFile\\("] },
+  "network":      { "paths": ["/webhooks/", "/queue", "/jobs/"], "content": ["\\bfetch\\(", "axios", "\\bgot\\(", "undici", "new WebSocket", "http\\.request"] },
+  "files":        { "paths": ["/uploads/"], "content": ["multer", "createReadStream", "formData\\(\\)\\.get", "fs\\.promises"] },
+  "crypto":       { "paths": [], "content": ["crypto\\.", "randomBytes", "createHash", "subtle\\."] },
+  "config":       { "paths": [".env", "next.config", "vite.config", "nest-cli", "/main.ts", "app.module", "tsconfig"], "content": ["process\\.env\\.", "import\\.meta\\.env", "cors\\(", "helmet\\("] },
+  "deps":         { "paths": ["package.json", "pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lock"], "content": [] },
+  "native":       { "paths": ["app.json", "app.config.", "/ios/", "/android/", "eas.json"], "content": ["expo-modules", "react-native-"] },
+  "api_contract": { "paths": ["/controllers/", "/routes/", "route.ts", "/api/", "/dto/", "/actions/", "/app.ts"], "content": ["app\\.(get|post|put|patch|delete)\\(", "@(Get|Post|Put|Patch|Delete)\\(", "export async function (GET|POST|PUT|PATCH|DELETE)", "'use server'"] },
+  "ui":           { "paths": [".tsx", ".jsx", ".css", ".scss", "/screens/", "/components/", "index.html"], "content": [] },
+  "tests":        { "paths": [".test.", ".spec.", "__tests__", "/e2e/", ".maestro/"], "content": [] },
+  "analytics":    { "paths": ["analytics", "track.ts", "tracking"], "content": ["\\btrack\\(", "\\bcapture\\(", "posthog", "mixpanel", "amplitude", "gtag\\(", "logEvent\\("] }
+}

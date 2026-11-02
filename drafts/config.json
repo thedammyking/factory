@@ -1,0 +1,55 @@
+{
+  "tracker": "local",
+  "docs": "repo",
+  "merge": "trial",
+  "merge_method": "merge",
+  "branching": {
+    "model": "git-flow",
+    "main": "main",
+    "develop": "develop",
+    "prefixes": {
+      "feature": "feature/",
+      "bugfix": "bugfix/",
+      "hotfix": "hotfix/"
+    }
+  },
+  "models": {
+    "triage": "sonnet",
+    "research": "sonnet",
+    "plan": "opus",
+    "implement": "sonnet",
+    "implement_escalated": "opus",
+    "review_code": "opus",
+    "review_ui": "sonnet",
+    "security": "sonnet",
+    "pr": "haiku"
+  },
+  "caps": {
+    "implement_rounds": 3,
+    "review_rounds": 2,
+    "ci_rounds": 1,
+    "dispatches_per_run": 30,
+    "minutes_per_run": 90,
+    "tokens_overhead": 700000,
+    "tokens_per_ticket": 700000,
+    "minutes_per_ticket": 45
+  },
+  "qa": {
+    "screenshots_max": 40,
+    "max_turns": 80,
+    "drivers": {
+      "web": "playwright-lib"
+    },
+    "pin_flows": true
+  },
+  "ui": {
+    "web": true,
+    "mobile": false
+  },
+  "security": [
+    "gitleaks",
+    "audit",
+    "osv",
+    "semgrep"
+  ]
+}
