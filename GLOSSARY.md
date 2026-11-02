@@ -41,6 +41,10 @@ A human's recorded decision to lift a cap for one run.
 The single format in which the factory asks the human for a decision: what happened, the evidence, a recommendation and the options.
 _Avoid_: escalation message, alert
 
+**Retro**:
+A look back over finished runs that proposes at most three durable changes (a lesson, an index line, an ADR or a mechanical rule) and applies only the ones the human accepts.
+_Avoid_: postmortem, review (a lens's job), golden task
+
 ### Work
 
 **Spec**:
