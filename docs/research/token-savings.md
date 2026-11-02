@@ -1,0 +1,143 @@
+# How headroom cuts tokens, and what a plugin can do itself
+
+Ticket: [#7](https://github.com/thedammyking/factory/issues/7) (`token-savings`). Researched 2026-11-02. Headroom sources are pinned to commit [`fc1ba89`](https://github.com/headroomlabs-ai/headroom/tree/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e) (2026-10-30). Claude Code docs are the live pages at code.claude.com on the research date.
+
+## Answer
+
+- Headroom is a local proxy (also a library and an MCP server) that compresses only the **newest tool output** in each request, picks a compressor by content type (JSON, logs, search results, diffs, HTML, text), stores the original, and lets the model fetch it back through an injected `headroom_retrieve` tool. File reads, system prompt and older turns pass through byte-for-byte.
+- Its published gains are **synthetic**: 21–57% on four seeded scenarios, ~93% on a synthetic log, ~70% on a synthetic diff. The repo ships a harness for replaying real Claude Code sessions but publishes no results from it, and its accuracy checks are QA benchmarks, not coding-task success.
+- A plugin can act at the same point without a proxy: `PostToolUse` can **replace a tool's output** (`updatedToolOutput`), but only for calls that succeeded; `PreToolUse` can rewrite a command; skills can inline script output; scripts in `bin/` can digest logs and diffs before any agent sees them. A plugin **cannot** set `autoCompactWindow`, `bashOutputMaxChars` or `ENABLE_TOOL_SEARCH`.
+- Ranked for this pipeline: (1) scripts that hand agents a digest plus a path to the full log, (2) screenshot size, crop and count, (3) diff scoping, (4) artifact and report discipline. Tool search, output caps and compaction settings are safety nets, not savings.
+- Keep the design's script-first stance, add a digest contract and a screenshot policy, instrument token use before building any output-rewriting hook, and leave headroom as an optional v3 add-on.
+
+## How headroom works and what it measured
+
+### Pipeline
+
+| Step | What it does | Source |
+|---|---|---|
+| Entry | Proxy (`ANTHROPIC_BASE_URL`), Python/TS `compress()`, or MCP tools. Only the proxy runs the whole retrieve loop. | [architecture](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/architecture.mdx), [ccr](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/ccr.mdx) |
+| Live zone only | Compresses the latest user message and latest tool result. System prompt, tool definitions and older turns are never mutated, so the provider's prefix cache survives. Messages are never dropped. | [context-management](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/context-management.mdx) |
+| ContentRouter | Detects type from structure and sends each block to one compressor. A block that does not shrink, fails to parse or is under the size floor passes through unchanged (fail-open). | [how-compression-works](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/how-compression-works.mdx), [limitations](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/limitations.mdx) |
+| Default `coding` profile | Cache mode, `protect_recent=0`, file reads protected by type (never lossy-compressed), savings described as emergent rather than targeted, and whole-request ratios described as much lower than the per-output figures. | [proxy](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/proxy.mdx), [agent_savings.py](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/headroom/agent_savings.py) |
+
+### What each compressor does to the content types in the ticket
+
+| Content | Compressor and method | Its own measured figure |
+|---|---|---|
+| JSON arrays | SmartCrusher: keeps first and last items, anomalies and error items, picks K with a Kneedle curve plus SimHash dedup. | 26–54% on realistic arrays; 38% on a 100-entry log array with one planted error ([benchmarks](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/benchmarks.mdx), [limitations](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/limitations.mdx)) |
+| Build and test logs | LogCompressor (Rust): keeps errors, warnings, whole stack traces, summary lines and section headers, drops repeated and passing lines, deduplicates conservatively. | 85–95% claimed, ~93% on a synthetic 1,000-line log ([text-and-logs](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/text-and-logs.mdx), [log_compressor.py](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/headroom/transforms/log_compressor.py)) |
+| Search results | SearchCompressor: BM25 relevance, per-file diversity, caps on matches and files. | ~91% on a synthetic 40-file corpus (text-and-logs) |
+| Diffs | DiffCompressor (Rust): trims context to 2 lines around changes, keeps first, last and top-scored hunks (max 10 per file, 20 files), keeps all `+`/`-` lines until a cap fires. Inputs under 50 lines return unchanged. | ~70% on a synthetic multi-file diff ([diff_compressor.rs](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/crates/headroom-core/src/transforms/diff_compressor.rs), [diff_compressor.py](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/headroom/transforms/diff_compressor.py)) |
+| Source code, file reads | Passes through by default (AST compressor is opt-in; recent code and "analyze/review/fix" turns are protected). | 0% on Python source ([benchmarks](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/benchmarks.mdx)) |
+| Prose, review files | Kompress (ModernBERT ONNX) or TextCrusher, lossy extractive. | 6–24% on real prose with default ratio, ~40% with `target_ratio=0.5` (text-and-logs). Not applied to file reads by default. |
+| Images | An ML router picks resize, crop or transcode by query; for Anthropic it resizes to 512 px. | 40–90% claimed ([image-compression](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/image-compression.mdx)); contradicted below |
+
+### Reversible retrieval (CCR)
+
+1. A compressor that saves enough stores the original in a hash-keyed local store (SQLite `ccr_store.db` in the proxy, LRU eviction) and leaves a marker such as `[1000 items compressed to 20. Retrieve more: hash=abc123]`.
+2. The proxy injects a `headroom_retrieve(hash)` tool into the request. When the model calls it, the proxy answers from the store (~1 ms) and continues the request. This is resolved server-side only for the bare tool name on the Anthropic and OpenAI paths; an MCP-registered alias is forwarded to the client to run.
+3. A context tracker re-expands compressed content proactively when a later query looks relevant.
+4. Retention defaults to **1,800 s**; `HEADROOM_CCR_TTL_SECONDS` raises it. Diff markers are only emitted when more than 20% of lines were saved. Source: [ccr](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/ccr.mdx), diff_compressor.rs.
+5. In MCP-only mode (no proxy) the model calls `headroom_compress(content=...)` itself and receives a hash. Because the text is passed as an argument, the model has already read it, so this mode saves later turns, not the first read (my inference from the [tool signature](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/mcp.mdx)).
+
+### What it measured, and how far to trust it
+
+| Claim | Figure | Caveat |
+|---|---|---|
+| Proof table | Code search 21%, SRE debugging 57%, codebase exploration 42%, issue triage 30% | Seeded generators of MCP-style JSON; the script's own comment says the table uses the `protect_recent=0` config because under the default guard the number mostly measures the guard, not the compressor ([README](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/README.md), [index_proof_table.py](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/benchmarks/index_proof_table.py)) |
+| Latency | 0.21 ms p50 on 10K tokens, 1.4 ms at 100K | Compression time only, no LLM call |
+| Mixed corpus | 56% over 126,400 tokens (JSON 48–49%, logs 53–54%, docs text 92%, Python 0%) | Synthetic; Apple M-series ([benchmarks](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/benchmarks.mdx)) |
+| Accuracy | GSM8K 0.870 vs 0.870; TruthfulQA 0.530 vs 0.560 (inside the CI); SQuAD v2 97% at 19% compression; BFCL 97% at 32% | N=100 each, QA and function-calling, not multi-step coding ([README](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/README.md)) |
+| Output tokens | 31.7% (95% CI 27.7–35.7%) | Counterfactual estimate from a "be terse" system-prompt addendum; off by default; a 10% holdout gives a measured number |
+| Real sessions | None published | `benchmarks/claude_session_mode_benchmark.py` replays `~/.claude/projects`; `benchmarks/results/` holds only the proof table ([repo](https://github.com/headroomlabs-ai/headroom/tree/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/benchmarks)) |
+
+Headroom's docs disagree with each other, so treat its percentages as directional. Architecture says SmartCrusher saves 70–90%, how-compression-works says 26–54% on realistic arrays. Limitations says grep results are already compact and not compressed, text-and-logs says SearchCompressor saves 80–95%. The README says images shrink 40–90%, limitations says images are counted at a fixed token cost and not compressed. The limitations page itself admits that its table could not be traced to a published, repeatable benchmark.
+
+### Running Claude Code behind it
+
+Setting `ANTHROPIC_BASE_URL` to the proxy made older Claude Code builds stop deferring MCP tools (headroom forces `ENABLE_TOOL_SEARCH=true`), and Claude Code 2.1.196 and later disable Remote Control for any non-Anthropic base URL ([runtime.py](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/headroom/providers/claude/runtime.py)). Tool search is now on by default behind a gateway from v2.1.304 ([mcp docs](https://code.claude.com/docs/en/mcp#tool-search-through-a-gateway)), so only the Remote Control loss still applies. An anonymous usage beacon is on by default and opt-out ([limitations](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/limitations.mdx)).
+
+## What a plugin can do itself
+
+### Mechanisms and their limits
+
+| Lever | What it can and cannot do | Source |
+|---|---|---|
+| `PostToolUse` `updatedToolOutput` | Replaces the result Claude sees, for all tools (`updatedMCPToolOutput` is the older MCP-only field). The value must match the tool's output shape; for built-in tools a mismatch is silently ignored and the original is used. Fires only after a call **succeeded**. Telemetry records the original. | [hooks](https://code.claude.com/docs/en/hooks#posttooluse-decision-control) |
+| `PostToolUseFailure` | A Bash command that exits non-zero (except benign exit 1 from `grep`, `rg`, `find`, `diff`, `test`, `git diff`, `git grep`) lands here, and this event can only add `additionalContext`, not replace the output. | [hooks](https://code.claude.com/docs/en/hooks#posttoolusefailure), [tools](https://code.claude.com/docs/en/tools-reference#output-limits) |
+| `PreToolUse` `updatedInput` | Rewrites the tool's arguments before it runs. Anthropic's own example wraps `npm test`/`pytest`/`go test` in `grep -A 5 -E '(FAIL\|ERROR\|error:)' \| head -100`, matching only simple commands by regex. | [costs](https://code.claude.com/docs/en/costs#offload-processing-to-hooks-and-skills), [hooks](https://code.claude.com/docs/en/hooks#pretooluse-decision-control) |
+| Hooks inside subagents | Hooks from plugins run inside subagents too, with `agent_id` and `agent_type` in the input, so a plugin hook can target factory agents only. `if` filters (`Bash(git *)`) limit when the process spawns. | [hooks](https://code.claude.com/docs/en/hooks) |
+| Context injected by hooks | `additionalContext`, `systemMessage` and stdout are capped at 10,000 characters each; above that it goes to a file with a 2,000-character preview. `SubagentStart` can inject at the start of a subagent's conversation. | [hooks](https://code.claude.com/docs/en/hooks#json-output) |
+| Skill `` !`cmd` `` | Runs a command before the skill body reaches Claude and replaces the placeholder with its output; a failing command aborts the invocation. | [skills](https://code.claude.com/docs/en/skills#inject-dynamic-context) |
+| Plugin `bin/` | Executables there are on the Bash tool's `PATH` while the plugin is enabled, so agents run digest scripts as bare commands. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference#standard-layout) |
+| Plugin settings | `settings.json` in a plugin only honours `agent` and `subagentStatusLine`. A plugin's root `CLAUDE.md` is not loaded. Plugin subagents ignore `hooks`, `mcpServers` and `permissionMode` frontmatter; the other documented fields (`tools`, `model`, `effort`, `maxTurns`, `autoCompactWindow`) are not listed as ignored. | [plugins-reference](https://code.claude.com/docs/en/plugins-reference#settings), [sub-agents](https://code.claude.com/docs/en/sub-agents) |
+
+### Built-in caps and settings
+
+| Setting | Behaviour | Source |
+|---|---|---|
+| Bash output | Valid result: ~30,000 characters inline, beyond that a saved file path plus a 2,000-character preview. **Failure: ~10,000 characters, head and tail only, no file path**, so the middle of a failing log is unrecoverable unless something saved it. `BASH_MAX_OUTPUT_LENGTH` (default 30,000, max 150,000) and `bashOutputMaxChars` (up to 128,000) resize it. | [tools](https://code.claude.com/docs/en/tools-reference#output-limits) |
+| Read tool | 25,000 tokens per call, refuses whole files over 256 KB; `offset`/`limit` pages; `allow_large` reads more when asked. Images are resized and recompressed before sending. | [tools](https://code.claude.com/docs/en/tools-reference#large-files) |
+| MCP output | Warns above 10,000 tokens, caps at 25,000 (`MAX_MCP_OUTPUT_TOKENS`), saves text over 50,000 characters to a file. | [mcp](https://code.claude.com/docs/en/mcp#mcp-output-limits-and-warnings) |
+| MCP tool schemas | Deferred by default (tool search): only tool names and server instructions load at start. `ENABLE_TOOL_SEARCH=auto:N` loads upfront below N% of the window; `false` loads everything. Instructions and descriptions loaded upfront are capped at 4,096 characters. CLIs such as `gh` add no per-tool listing at all. | [mcp](https://code.claude.com/docs/en/mcp#scale-with-mcp-tool-search), [costs](https://code.claude.com/docs/en/costs#reduce-mcp-server-overhead) |
+| Compaction | Fires near the model's limit (about 967K on 1M-window models) unless `autoCompactWindow` (100K–1M) lowers it; per-subagent via frontmatter (v2.1.296+). After compaction, invoked skill bodies come back capped at 5,000 tokens each and 25,000 total, oldest dropped first, and up to five recently read files return (a file over 5,000 tokens as a path only). `SessionStart` hooks matching `compact` re-inject context. `/compact` is itself a large request. | [model-config](https://code.claude.com/docs/en/model-config#set-the-auto-compact-window), [context-window](https://code.claude.com/docs/en/context-window#what-survives-compaction), [prompt-caching](https://code.claude.com/docs/en/prompt-caching#compacting-the-conversation) |
+
+### What a carried token costs
+
+A token that enters context is written to the cache once (1.25x base input for the 5-minute TTL) and read on every later turn at 0.05x on Sonnet 5.5 and Opus 5.5, 0.1x on most others ([pricing](https://platform.claude.com/docs/en/about-claude/pricing)). Carried 20 more turns it costs about 2.25 base-input tokens on Sonnet 5.5 (1.25 + 20 x 0.05). Subagents get a 5-minute TTL, not the main conversation's one hour ([prompt-caching](https://code.claude.com/docs/en/prompt-caching#which-ttl-each-request-gets)). Two consequences: a result that dies with a short-lived subagent costs little to carry, and cutting the first-read size matters more than cutting re-reads. Price is dominated by model choice (Sonnet 5.5 is $2/$10 per MTok, Opus 5.5 $4/$20, Haiku 5.5 $0.10/$0.50), which the design already tiers.
+
+### Techniques ranked for this pipeline
+
+Ranking is my judgement from the sources above, not a measurement of the factory. The savings basis is tagged: **[doc]** from a primary source, **[calc]** computed from a documented formula, **[meas]** measured by me, **[est]** unsupported estimate. Re-rank after the first instrumented run (see Implications).
+
+| # | Technique | Targets | Expected saving | Notes |
+|---|---|---|---|---|
+| 1 | **Digest-and-pointer scripts.** A script runs the tests/build/lint, tees the full output to a file under `.factory/`, and prints only failing test ids, first assertion, top stack frames, counts and the log path. Ship in plugin `bin/`; use `` !`...` `` in skills for diffs and status. | Test logs, any build or scan output | 90%+ of log tokens on green or mostly green runs **[doc]**: Anthropic says a log-filtering hook cuts context from tens of thousands of tokens to hundreds; headroom's LogCompressor shows ~93% on a synthetic log. Also removes the model turns that parse the log. | Zero model tokens, deterministic, cannot be talked out of a result. Also fixes the failure-path hole: failing Bash output loses its middle with no path. Cost: a digester per runner; a bug can hide what the agent needed. |
+| 2 | **Screenshot policy.** Capture at 1x device scale and a small viewport, crop to the element or region the criterion names, prefer DOM or text assertions, screenshot only for visual criteria, cap the count per agent, keep full-size copies on disk for PR evidence. | Screenshots | An image costs ceil(w/28) x ceil(h/28) tokens, capped at 4,784 (2,576 px long edge) **[doc]**. 1920x1080 = 2,691; 1280x720 = 1,196 (-56%); 800x600 = 638; a 400x300 crop = 165 (-94%) **[calc]**. | Largest per-item saving, and images stay in context for every later turn. Cost: fine detail lost; Claude Code already downsizes large images and suggests asking for a crop. Headroom's image router does a blunter version of this without knowing the criterion ([vision](https://platform.claude.com/docs/en/build-with-claude/vision#evaluate-image-size)). |
+| 3 | **Diff scoping.** `git diff --stat` first, then per-file diffs on demand; give each review lens only the files in its touch mask; exclude generated and lock files; keep `-U1` or `-U2`. Do not drop hunks for reviewers. | Diffs | Context trimming alone is small: on the last 40 non-merge commits of headroom, `-U2` cut bytes by 5.1%, `-U1` by 10.5%, `-U0` by 15.7%, excluding `*.lock` by 0.6% **[meas]**. Scoping across lenses is likely larger **[est]**. | Headroom's ~70% diff figure is from a synthetic diff and relies on dropping hunks (lossy, recoverable only by `headroom_retrieve`). That conflicts with a lens that must see every changed line. |
+| 4 | **Artifact and report discipline.** Pass paths, put verdict and blocking findings first, cap files near 300 lines, have agents `Read` with `offset`/`limit`, cap subagent reports (design: 15 lines). | Review files, subagent reports | Moderate, set by how many agents re-read each file **[est]**. | Already in the design. Headroom does nothing here by default (file reads are protected). An optional `PostToolUse` hook on `Agent` could clamp a report (`tool_response.content` is documented), untested. |
+| 5 | **Isolation and model tiers.** Run noisy work in a subagent so only a summary returns; `model:` and `effort:` on every dispatch. | Everything | Large in dollars, outside the four inputs. Anthropic lists subagents as the way to isolate test and log output ([sub-agents](https://code.claude.com/docs/en/sub-agents#isolate-high-volume-operations)). Thinking tokens bill as output and cannot be switched off on the 5.5 models; use effort ([costs](https://code.claude.com/docs/en/costs#adjust-extended-thinking)). | Already in the design. |
+| 6 | **Tool-schema hygiene.** Keep MCP off subagents with `tools:` allowlists (subagents inherit MCP tools by default and plugin agents cannot scope `mcpServers`); prefer CLIs. | MCP schemas | Small now that tool search defers schemas by default **[doc]**. | Marginal gain over the current design. |
+| 7 | **Output caps.** Lower `bashOutputMaxChars` or `MAX_MCP_OUTPUT_TOKENS`. | Runaway output | Bounds the worst case at ~10k to 30k characters per Bash call **[doc]**. | A plugin cannot set these; they belong in project settings written by `/setup-factory` with consent, and they would also cap the user's own sessions. |
+| 8 | **Compaction settings.** Per-agent `autoCompactWindow`, a `SessionStart` `compact` re-injection, `/compact` at stage boundaries. | Long-lived loops | Not a saver: compaction rewrites history and costs a full-context request. It limits growth and quality loss in long agents. | Needed only for agents that live across many turns. |
+| 9 | **Headroom proxy.** | Ad-hoc Bash output, MCP JSON | Zero extra on inputs 1 to 4 once they are handled upstream. Adds value for output nobody planned for. | See Implications. |
+
+## Implications for the factory
+
+### Keep
+
+1. **Scripts for verify, scan, capture and merge decisions.** This is the top technique and the design already commits to it. The research confirms the reasoning: zero tokens, deterministic, and (new) the only way to keep the middle of a failing log, since Claude Code truncates failures to head and tail with no file path.
+2. **Pass by path, five-line dispatches, 15-line reports, 300-line artifacts.** Headroom does not touch these by default, and no hook does it more cheaply.
+3. **Loop rules in `run-state.mjs`, not skill prose.** Confirmed: invoked skill bodies are re-injected after compaction at 5,000 tokens each and 25,000 total, oldest dropped ([context-window](https://code.claude.com/docs/en/context-window#what-survives-compaction)).
+4. **Hook-injected map at 2,000 characters.** Well inside the 10,000-character hook-injection cap ([hooks](https://code.claude.com/docs/en/hooks#json-output)).
+5. **Headroom optional, user-installed, v3 at most.** Its gains on the four named inputs overlap with what scripts do deterministically; it adds a process, a base-URL change that disables Remote Control, a default-on beacon and a 30-minute original retention that is shorter than a long run.
+
+### Change or add
+
+| Change | Benefit | Trade-off |
+|---|---|---|
+| **Write a digest contract.** Every stage script prints at most N lines: verdict, counts, failing ids, first assertion, top frames, the log path and a one-line "full output: <path>". Fail open: if parsing fails, print the last 100 lines plus the path. Unit-test digesters on recorded logs (golden tasks). | Largest saving; humans can read the same digest in the PR. | A wrong digest hides evidence. The path line and verbatim error text are the guard, the same idea as headroom's retrieve marker without a proxy. One digester per test runner. |
+| **Add a screenshot policy to the verification skill** (small viewport, 1x scale, crop to the criterion, DOM checks first, count cap, full-size copies on disk). | 56% to 94% fewer tokens per image **[calc]**; fewer images in every later turn. | Less fine detail; a visual criterion may need one full-frame image. Needs a per-criterion "needs full frame" flag. |
+| **Scope diffs per lens** (stat first, per-file on demand, touch-mask files only, generated files excluded, `-U1`/`-U2`). Never use lossy hunk dropping for reviewers. | Avoids sending the same whole diff to every lens. | The synthesis step needs the stat to see what a lens skipped. Context trimming itself is worth only 5 to 10%. |
+| **Instrument before optimising.** A cheap `PostToolUse` hook (run in the background) appends `agent_type`, `tool_name` and `tool_response` length to `.factory/runs/<id>/sizes.jsonl`; also read the OpenTelemetry token counters, which can be filtered by `query_source` ([hooks](https://code.claude.com/docs/en/hooks), [monitoring](https://code.claude.com/docs/en/monitoring-usage#token-counter), [costs](https://code.claude.com/docs/en/costs#track-your-costs)). | Turns the ranking above from judgement into data after one run. | A little code and a log file; it does not change what agents see. |
+| **Defer the output-rewriting `PostToolUse` hook** until the logs show unplanned large results. If built: scope with `if` and `agent_type`, replace only successful Bash, Read and MCP results above a size threshold with head, tail and a saved-file path, and fail open. | Catches output the scripts do not cover. | Does not fire on failed commands; a shape mismatch is silently ignored; telemetry keeps the original; each match spawns a process; a bug can hide errors. Claude Code already caps Bash at ~30,000 characters, so the gain is bounded. |
+| **Reword the playwright-cli rationale.** "An MCP whose ~18k-character schema would sit in every turn" holds only when tool search is off. It is on by default, so MCP cost is names plus server instructions and a search hop. The CLI choice still stands (no per-tool listing) but the figure should go. | Accurate design record. | None. |
+| **Restrict MCP per agent with `tools:` allowlists**, since plugin agents cannot use `mcpServers` and subagents inherit MCP tools by default. | Keeps Linear, Notion and Figma tools out of implementer and reviewer contexts. | Allowlists must be kept current as tools are added. |
+| **Compaction: have `/setup-factory` offer settings; do not rely on them.** The plugin cannot set `autoCompactWindow` or `bashOutputMaxChars` and its own `CLAUDE.md` is not loaded, so a "Compact instructions" block for the project's `CLAUDE.md` must be written by `/setup-factory` with consent, using headroom's marker-block pattern. Add a `SessionStart` `compact` hook that re-injects the run-state pointer. | Long loops survive compaction with the right pointer. | Writes to a user file; needs consent and a marker so it can be updated or removed. |
+
+### If headroom is adopted later
+
+- **Gains:** ad-hoc Bash and MCP JSON output no script handles; no changes to agent prompts.
+- **Costs:** the `ANTHROPIC_BASE_URL` change disables Remote Control (2.1.196+); an extra local process to start (a bundled hook runs `headroom init hook ensure` for that, per [agent-hooks](https://github.com/headroomlabs-ai/headroom/blob/fc1ba891bff2d1e0cb53c4ffd4037f5066988c8e/docs/content/docs/agent-hooks.mdx)); beacon telemetry on by default; CCR originals expire after 30 minutes unless raised; lossy diff compression can hide a changed line from a reviewer, who then has to notice the marker and call `headroom_retrieve`; and its percentages above are synthetic.
+- **Test before trusting:** replay a recorded factory run through `claude_session_mode_benchmark.py` and compare against the digest scripts.
+
+### Open questions for later tickets
+
+1. How many screenshots and full-suite runs does a typical run take? The instrumented run answers it and fixes the ranking.
+2. Does `updatedToolOutput` on the `Agent` tool clamp a subagent report as documented? Needs a one-off test.
+3. Is `-U1` acceptable to the review lenses, or do they need default context for security findings?
+
+## Method
+
+Read headroom's source and docs at the pinned commit (README, ten doc pages, the Rust diff and Python log compressors, the proof-table script, the Claude runtime helper). Read the Claude Code docs for hooks, costs, tools, MCP, model config, context window, prompt caching, sub-agents, skills and plugins reference, and the API pricing and vision pages. The diff measurement ran `git diff -U<n> <c>^ <c> -- . ':(exclude)*.lock'` over the 40 most recent non-merge commits before the pinned head of headroom (435 KB at `-U3`); it is one Python and Rust repository and not representative of every codebase. No factory run was measured; every factory-specific saving is marked **[est]** or **[calc]**.
