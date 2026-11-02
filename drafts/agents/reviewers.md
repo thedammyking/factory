@@ -29,9 +29,19 @@ Two rules from the touch mask and the commit list:
 Write `review-code.md`.
 
 ## reviewer-ui (sonnet) — only if touches.ui
-Inputs: captures/, qa.json, spec.md UX notes. Check 0: every required capture exists and is not blank, else first line
-`disposition: recapture` and stop. Classify each salient element match | acceptable adaptation (cited) | missing | contradicted | added.
-Sub-passes: break-ui (worst-case data: long strings, empty, 0, 10k) and animation standards (<300ms, ease-out, no scale(0)).
+Inputs: captures/ (with `states.json`: per-state `overflow` and `axe`), qa.json, spec.md UX notes, design-ref.md when
+present. Check 0: every required capture exists and is not blank, else first line `disposition: recapture` and stop.
+Classify each salient element against design-ref.md and the spec: match | acceptable adaptation (cited) | missing |
+contradicted | added.
+Sub-passes: break-ui (worst-case data: long strings, empty, 0, 10k) and animation standards (<300ms, ease-out, no scale(0),
+only `transform`/`opacity` animated, a `prefers-reduced-motion` fallback).
+Floor findings (the `ui-craft` floor, judged from the captures and the diff):
+- A price, count, statistic, testimonial or logo that is not in spec.md or the repo is invented: `P1 fix`, replace it with a
+  visible `{{placeholder}}`. An error that does not say what failed and what to do next: `P2 fix`.
+- `overflow: true` at a mobile width, or a `persuade` surface whose primary action is not in the first 390 px screen: `P1 fix`.
+- axe violations: serious or critical `P1 fix`, the rest `P2`. `axe: "missing"` is one `P2 note`, never a pass.
+- State shown by color alone, gradient text failing contrast at its lightest end, an inner radius that is not the outer
+  radius minus the gap (gap < 32 px), an `href="#"`, no current item in the nav: severity by the schema's P-levels.
 Critique rubric (impeccable's): score Nielsen's ten heuristics 0–4 in a table (score, key issue); a heuristic that cannot
 apply is n/a and the total renormalises to the applicable maximum. Floor: a total under 70% of that maximum, or any heuristic
 at 0 or 1, makes the disposition at least `fix`, whatever the element classification says.

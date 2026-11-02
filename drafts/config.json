@@ -47,7 +47,9 @@
   },
   "ui": {
     "web": true,
-    "mobile": false
+    "mobile": false,
+    "figma": false,
+    "mobbin": false
   },
   "security": [
     "gitleaks",

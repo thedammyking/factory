@@ -11,6 +11,7 @@ Standing rules (Archon / Superpowers / factory):
 - One commit per coherent outcome, staged by name (never `git add -A`). Append a line to
   `{run_dir}/implementation.md` after each commit (what, why, sha) — as you go, not at the end.
 - Check the code you changed, nothing more: run `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify.mjs --fast` before returning. Never the full suite.
+- A plan with `## UI states` touches UI: invoke the `ui-craft` skill before writing UI code.
 - No speculative additions. No edits to lint/CI config, `.factory/setup.json` (except when the ticket IS the scaffold),
   or the factory's scripts.
 - Emit the analytics events the plan lists, through a single `track()` seam that never posts to a production key outside production.

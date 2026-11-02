@@ -8,6 +8,9 @@ goes there, never into a tracked path.
 Inputs: prompt.md, triage.md, research.md, grill.md (settled Q→A decisions).
 Template:
 - `# <title>` + `surface: operate | persuade | read`
+- `surface: persuade` adds `## Offer`: the one primary action, the offer, the audience, its top three objections, the
+  traffic source, and the proof that exists (logos, numbers, testimonials). Facts come only from grill.md or the repo;
+  a missing one is a visible `{{placeholder}}`, never invented.
 - `## Goal` (2–4 sentences) · `## Non-goals` · `## Anti-goals` (things that would make this worse)
 - `## User stories` (P1/P2…, each independently testable)
 - `## Functional requirements` `FR-001…` (testable, one behaviour each)
@@ -33,7 +36,10 @@ Template (bmad): frontmatter `status: ready-for-dev`, `ticket:`, `context:` (fil
 `<frozen-after-approval>` intent block (2–4 sentences, human-owned); `## Code map` (files to create/change, one line each);
 `## Tasks` Given/When/Then, test-first where a seam exists; `## Interfaces` Consumes/Produces; `## Verification` exact commands
 and expected results; `## Analytics` events to emit (from spec); `## UI states` (the named states `${CLAUDE_PLUGIN_ROOT}/scripts/capture-states.mjs` must
-picture: empty, loading, error, focus, returning visit, each with width and scheme) when the ticket touches UI;
-`## Open questions` (empty = ready). When Figma or Mobbin references were given, also write `design-ref.md` beside the plan:
-the extracted variables, the feel to borrow, and the spec's accessibility floors that override the reference.
+picture: empty, loading, error, focus, hover, disabled, returning visit, each with width and scheme) when the ticket touches UI;
+`## Open questions` (empty = ready). When the ticket touches UI, also write `design-ref.md` beside the plan and list it in
+`context:`. Its source is research.md's `## UI references`: the Figma design, else the Mobbin picks, else the project's own
+screens. It holds the extracted variables (Figma only), the pattern to follow (layout, hierarchy, primary action, states),
+what is not borrowed (another product's brand, copy and illustrations), and the spec's accessibility floors that override
+the reference. With no reference, it says so in one line.
 Budget 900–1,600 tokens. Return ≤ 6 lines: status (ready | open_questions[]), task count, risk.

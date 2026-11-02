@@ -16,7 +16,7 @@ Checked against `docs/design/design.md` (fixes 1–26) and `docs/design/brief.md
 - `agents/triager.md`: **fixed**. It hard-coded git-flow. The lane now comes from `config.json` `branching`, and trunk mode is covered (brief F).
 
 ### Scripts
-- `scripts/capture-states.mjs`: **works**. It ran with real Chromium against the running web app: light and dark at 390 and 1440 px, an error state with the API blocked, and a missing selector reported as a failure. It now loads Playwright from the project (`playwright` or `@playwright/test`) before any global install, and exits 1 when a state could not be captured.
+- `scripts/capture-states.mjs`: **works**. It ran with real Chromium against the running web app: light and dark at 390 and 1440 px, an error state with the API blocked, and a missing selector reported as a failure. It now loads Playwright from the project (`playwright` or `@playwright/test`) before any global install, and exits 1 when a state could not be captured. A later pass added a `hover` action and a per-state `overflow` flag. It also implemented the `axe` option the header documented but nothing ran: it is on by default, and without `@axe-core/playwright` in the project it records `axe: "missing"`. All three ran with real Chromium (Playwright 1.62) on a test page: overflow at 390 px only, an `image-alt` violation found, the hover style pictured, `"missing"` when axe is not installed, and nothing when a state sets `axe: false`.
 - `scripts/ci-watch.mjs`: **fixed**. All five outcomes ran with the shim. When the base was red for a different step, `cause` came out `undefined` (fix 17 says `ours` plus a note); this pass fixed that. The "same workflow" test was always true (`filter` used where `every` was meant). `base_branch` was spliced into a shell string.
 - `scripts/classify-diff.mjs`: **fixed**. Its built-in defaults were the old substring rules: without a project `touch-rules.json` they fired `auth` and `files` on the test bed's diff, which is what fix 9 removed. They also counted `.factory/` bookkeeping (scripts, tickets) as product. It now fires data, network, crypto and api_contract, and not auth or files. A top-level `auth/` now matches as a segment.
 - `scripts/guard-paths.mjs`: **fixed**, in both passes. The original passed all twelve fix-5 cases. It failed the rest:
@@ -54,6 +54,9 @@ Checked against `docs/design/design.md` (fixes 1–26) and `docs/design/brief.md
   - Checks inherited the developer's shell and login profile instead of `.factory/env.local` only.
   - The fix 15 `run-apps.sh down` only ran when scripts were vendored into the project.
   The dirty, trusted and missing-check behaviour holds.
+
+### Skills
+- `skills/ui-craft/SKILL.md`: **new**. It is the craft floor that design.md gives the `ui-craft` skill, plus the rules taken from ai-design-skills (see below). It also sets the order of authority (floor, then `DESIGN.md`, then `design-ref.md`, then any other design skill) and the shape `/setup-factory` gives a new `DESIGN.md`. The implementer loads it when a plan has `## UI states`. Untested: no run has used it yet.
 
 ### Config
 - `config.json`: **works**. Caps match the brief (3/2/1 rounds, 30 dispatches, 90 + 45 min, 700k + 700k tokens) and the merge policy is `trial`. `merge_limits.max_files` (40) sets the blast-radius limit. It has no `qa.drivers.mobile` entry, so the mobile driver is implied.
@@ -126,9 +129,33 @@ Checked against `docs/design/design.md` (fixes 1–26) and `docs/design/brief.md
 - **Verify's environment holds only `env.local`.** A non-default `PLAYWRIGHT_BROWSERS_PATH`, or any other toolchain variable, must go there. The default browser cache needs nothing.
 - **`guard-paths` used to confine writes in every project.** It is a plugin-level hook, so it runs in every session. It now does nothing in projects without `.factory/`.
 
+## Taken from elayadesign/ai-design-skills
+[ai-design-skills](https://github.com/elayadesign/ai-design-skills) has two skills, `landing-page-design` and `figma-designer`. Only the measurable, stack-neutral rules were taken:
+- **Content honesty.** No invented prices, counts, statistics, testimonials or logos; a missing fact is a visible `{{placeholder}}`. Errors say what failed and what to do next. It is in `ui-craft`, in the spec's new `## Offer` section, and in the UI lens as a `P1 fix`.
+- **States.** Every interactive element has hover, active, focus and disabled styles; data views have loading, empty and error states; no `href="#"`; the nav marks the current page. The plan's `## UI states` list gains hover and disabled.
+- **Motion.** Animate only `transform` and `opacity`, add a `prefers-reduced-motion` fallback, and use `IntersectionObserver` for scroll effects. The factory's ≤ 300 ms ease-out stays; the source's 500 ms does not.
+- **390 px check.** No horizontal overflow, and the primary action is in the first screen. `capture-states.mjs` records `overflow`.
+- **Smaller floors.** The nested radius rule, state never shown by color alone, and gradient text checked at its lightest end.
+- **`DESIGN.md` shape.** Palettes, then role tokens that only alias them, with light and dark values.
+- **Persuade intake.** On `surface: persuade` the spec gains `## Offer`: primary action, offer, audience, top three objections, traffic source and the proof that exists. The builder check asks about any item that is missing or a placeholder.
+
+Left out: the house style (font allow and deny lists, no italics, no hyphens, gradient hero text, fixed dark colors, icon libraries, the mandatory tagline section) and the Figma write workflow. `/setup-factory` takes the look from the project, never from a skill. `landing-page-design` should not be installed next to the factory: its description claims all web UI, so an implementer would load it over the project's `DESIGN.md`. `ui-craft` says `DESIGN.md` wins, but the clash is better avoided.
+
+## UI references: proven patterns first
+The owner's rule: a UI ticket follows patterns that already work in shipped products before anything is designed from nothing. The order is a Figma URL in the request, else Mobbin when `config.json` `ui.mobbin` is true, else the project's own similar screens, else "no proven reference".
+- **The researcher searches Mobbin, not the planner or the orchestrator.** design.md says the orchestrator calls Mobbin in short steps. That would put untrusted text in the session that acts, against its own trust-boundary rule that only the triager and researcher read untrusted input. The researcher (half C) makes at most six searches and records 2–4 picks in `research.md`'s `## UI references`. A pick is the app, the screen or flow, its link, what to borrow (layout, hierarchy, primary action, states) and what not to (the other product's brand, copy and illustrations). A pattern several apps share beats a one-off.
+- **The planner** writes `design-ref.md` for every UI ticket from that section, so a Mobbin pick reaches the implementer as factory-written text. The planner lists it in `context:`.
+- **`ui-craft`** follows the reference's structure and composes new layout only for what it does not show, from the project's existing screens first. `DESIGN.md` still sets the look, so a pick lends its structure and never its skin.
+- **The UI lens** classifies each element against `design-ref.md` and the spec.
+- `config.json` gains `ui.figma` and `ui.mobbin`, both `false` until `/setup-factory` section (G) finds the MCP connected.
+
+Skipped: downloading the picked images. Mobbin's image URLs expire after 30 days and the picks are other companies' copyrighted UI, so the run keeps the links and the written pattern. Add a download step if a reviewer needs the pictures. Untested: no Mobbin MCP was connected here. The tool names come from design.md (`search_screens`, `search_flows`, `search_sections`), and their prefix depends on the server's name in `.mcp.json`.
+
 ## Still open
-- **The orchestrator skill (not drafted) has two jobs:**
+- **`/setup-factory` (not drafted)** writes `DESIGN.md` in the `ui-craft` shape when the project has none. It should also offer `@axe-core/playwright` when it finds Playwright, or every capture records `axe: "missing"`. Section (G) sets `ui.figma` and `ui.mobbin` from `claude mcp list`.
+- **The orchestrator skill (not drafted) has three jobs:**
   - Record the attribution lines right after `init` (gap 3).
+  - On `surface: persuade`, put the `## Offer` items to the human during the grill, one question at a time.
   - Keep the project's `verify` skill pointing at the plugin (gap 15). That skill is a project skill, so `${CLAUDE_PLUGIN_ROOT}` is not substituted in it, and `CLAUDE_ENV_FILE` is not documented to reach subagents. Recommended: the SessionStart hook keeps a launcher at `${CLAUDE_PLUGIN_DATA}/bin/factory`, a path that survives plugin updates, and the skill calls that launcher.
 - **Per-run ports and databases.** `run-apps.mjs` uses the recipe's fixed ports, so two runs on one machine collide. That belongs to [How are parallel tickets and E2E runs isolated?](https://github.com/thedammyking/factory/issues/12).
 - **`agents/pr-writer.md`** stays until [What exactly does the plugin ship?](https://github.com/thedammyking/factory/issues/21) decides whether it ships.

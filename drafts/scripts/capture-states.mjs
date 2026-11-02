@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // capture-states.mjs <states.json> — capture named UI states (not only per-SC before/after) with the playwright library.
 // A state: { name, url, width, height?, scheme: light|dark, setup?: { localStorage?: {k:v}, block?: [urlPattern], delay?: {pattern, ms} },
-//            actions?: [ {fill:[selector,text]} | {click:selector} | {press:key} | {focus:selector} | {wait:ms} | {waitFor:selector} ], axe?: true,
-//            touch?: boolean (default: width <= 600 -> coarse pointer) }
+//            actions?: [ {fill:[selector,text]} | {click:selector} | {hover:selector} | {press:key} | {focus:selector} | {wait:ms} | {waitFor:selector} ],
+//            axe?: boolean (default true), touch?: boolean (default: width <= 600 -> coarse pointer) }
+// Each result also records `overflow` (the page scrolls sideways) for the UI lens's 390 px check.
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
@@ -12,14 +13,18 @@ import { runContext } from "./lib.mjs";
 const { ROOT, RUN } = runContext();
 // Playwright from the project first (the recipe's e2e dependency: `playwright`, or `@playwright/test`, which re-exports the
 // browsers and is the one pnpm leaves resolvable from an app), then PLAYWRIGHT_PKG, then a global install.
-const load = (dir) => { for (const m of ["playwright", "@playwright/test"]) { try { return createRequire(path.join(dir, "_.js"))(m); } catch {} } return null; };
+const load = (dir, mods = ["playwright", "@playwright/test"]) => { for (const m of mods) { try { return createRequire(path.join(dir, "_.js"))(m); } catch {} } return null; };
 const setup = JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/setup.json"), "utf8"));
 const globalRoot = () => { try { return execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(); } catch { return null; } };
-const pw = [ROOT, ...(setup.apps || []).map(a => path.join(ROOT, a.path || "."))].map(load).find(Boolean)
+const dirs = [ROOT, ...(setup.apps || []).map(a => path.join(ROOT, a.path || "."))];
+const pw = dirs.map(d => load(d)).find(Boolean)
   || (process.env.PLAYWRIGHT_PKG && createRequire(import.meta.url)(process.env.PLAYWRIGHT_PKG)) || (globalRoot() && load(globalRoot()));
 if (!pw) { console.error("capture-states: no playwright in the project, PLAYWRIGHT_PKG or the global modules"); process.exit(2); }
 const { chromium } = pw;
 const spec = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
+// axe comes from the project only; without @axe-core/playwright a state records axe: "missing", which the lens never reads as a pass.
+const axeMod = spec.states.some(s => s.axe !== false) ? dirs.map(d => load(d, ["@axe-core/playwright"])).find(Boolean) : null;
+const AxeBuilder = axeMod?.default ?? axeMod;
 const outDir = path.join(RUN, "captures"); fs.mkdirSync(outDir, { recursive: true });
 const browser = await chromium.launch();
 const results = [];
@@ -40,6 +45,7 @@ for (const st of spec.states) {
     for (const a of st.actions || []) {
       if (a.fill) await page.fill(a.fill[0], a.fill[1]);
       else if (a.click) await page.click(a.click);
+      else if (a.hover) await page.hover(a.hover);
       else if (a.press) await page.keyboard.press(a.press);
       else if (a.focus) await page.focus(a.focus);
       else if (a.wait) await page.waitForTimeout(a.wait);
@@ -50,8 +56,11 @@ for (const st of spec.states) {
     await page.waitForTimeout(st.settle ?? 450);  // let entry transitions finish
     await page.screenshot({ path: file, fullPage: false, animations: "disabled" });
     const size = fs.statSync(file).size;
-    results.push({ name: st.name, file: path.relative(ROOT, file), bytes: size, blank: size < 3000, console_errors: consoleErrors });
-    console.log(`captured ${st.name} (${st.width || 390}px ${st.scheme || "light"}) ${size}b${consoleErrors.length ? " console-errors=" + consoleErrors.length : ""}`);
+    const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
+    const axe = st.axe === false ? undefined : !AxeBuilder ? "missing"
+      : (await new AxeBuilder({ page }).analyze()).violations.map(v => ({ id: v.id, impact: v.impact, nodes: v.nodes.length }));
+    results.push({ name: st.name, file: path.relative(ROOT, file), bytes: size, blank: size < 3000, overflow, axe, console_errors: consoleErrors });
+    console.log(`captured ${st.name} (${st.width || 390}px ${st.scheme || "light"}) ${size}b${overflow ? " OVERFLOW" : ""}${Array.isArray(axe) && axe.length ? " axe=" + axe.length : ""}${consoleErrors.length ? " console-errors=" + consoleErrors.length : ""}`);
   } catch (e) {
     results.push({ name: st.name, error: String(e.message).slice(0, 160) });
     console.log(`FAILED ${st.name}: ${String(e.message).slice(0, 120)}`);
