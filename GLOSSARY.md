@@ -44,7 +44,7 @@ _Avoid_: escalation message, alert
 ### Work
 
 **Spec**:
-The approved statement of what a run delivers: requirements, numbered success criteria, analytics events and anti-goals.
+The approved statement of what a run delivers: requirements, numbered success criteria and anti-goals.
 _Avoid_: PRD, requirements doc
 
 **Success criterion**:
