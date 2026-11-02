@@ -10,6 +10,10 @@ A Claude Code plugin that carries a one-line request through triage, spec, ticke
 One request carried through the factory, from the prompt to a terminal outcome (delivered, needs-human, failed or abandoned).
 _Avoid_: job, session, pipeline execution
 
+**Orchestrator**:
+The skill that drives exactly one run from its own session: it routes between stages, dispatches each one and records progress, and it is where the human answers the grill and the gates. Several runs at once means several orchestrators.
+_Avoid_: supervisor, controller, driver
+
 **Stage**:
 One step of a run with named input files and one named output file, performed by a fresh agent or a script.
 _Avoid_: phase, step, node
