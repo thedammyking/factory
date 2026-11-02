@@ -12,6 +12,8 @@ Common finding schema (one block per finding):
   cwe: <only for security>
 ```
 End with `verdict: approve | needs-fixes | block`. Do NOT trust implementation.md's rationale to downgrade anything.
+Re-review (after a fix round): read only the fix diff you are given. For each earlier finding that is now fixed, write a block
+with the SAME id, `status: closed` and `note: <evidence>`, and no `claim`; anything new gets a new id.
 
 ## reviewer-code (opus)
 Inputs: review.diff, spec.md, plan.md, ticket. Two axes in one pass:

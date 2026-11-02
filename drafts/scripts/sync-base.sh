@@ -4,9 +4,12 @@
 #   before-merge:  report behind_base; with a remote and an open PR, `gh pr update-branch` (a merge, never a rebase); conflicts → exit 3
 # Prints one machine-readable line: SYNC <mode> result=<rebased|up-to-date|conflict|merged> base=<sha> head=<sha> [files=...]
 set -u
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; cd "$ROOT"
-RUN="$ROOT/.factory/runs/$(cat "$ROOT/.factory/runs/ACTIVE")"
-BASE_BRANCH="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$RUN/state.json')).base_branch)")"
+ROOT="$PWD"; while [ ! -d "$ROOT/.factory" ]; do [ "$ROOT" = / ] && { echo "no .factory/ above $PWD" >&2; exit 2; }; ROOT="$(dirname "$ROOT")"; done; cd "$ROOT"
+RUN="$ROOT/.factory/runs/$(cat "$ROOT/.factory/runs/ACTIVE" 2>/dev/null)"
+# Without a live run there is nothing to back up, and restore_run below would `rm -rf` the whole runs/ directory.
+[ -f "$RUN/state.json" ] || { echo "SYNC error: no active run (ACTIVE missing or no state.json)"; exit 2; }
+BASE_BRANCH="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).base_branch)' "$RUN/state.json")"
+git check-ref-format --branch "$BASE_BRANCH" >/dev/null 2>&1 || { echo "SYNC error: base branch '$BASE_BRANCH' is not a branch name"; exit 2; }  # no option injection
 MODE="${1:-before-review}"
 # Insurance: the live run directory is untracked; a rebase/merge replaying history that once tracked it can overwrite or delete it.
 BK="$(mktemp -d)"; cp -r "$RUN" "$BK/run"
@@ -30,14 +33,16 @@ case "$MODE" in
       exit 3
     fi ;;
   before-merge)
-    PRNUM="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$RUN/pr.json','utf8')).number)}catch{}" 2>/dev/null)"
+    PRNUM="$(node -e 'try{console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).number)}catch{}' "$RUN/pr.json" 2>/dev/null)"
     REPO="$(git remote get-url origin 2>/dev/null | sed -E 's#.*github.com[:/]##; s#\.git$##')"
     if [ -n "$PRNUM" ] && [ -n "$REPO" ]; then
       # With a PR open, GitHub merges the base in server-side (REST; never a rebase after the evidence is pinned). 202 = accepted,
       # 422 = conflict or already up to date. Then fast-forward the local branch to the merge commit.
       if OUT="$(gh api -X PUT "repos/$REPO/pulls/$PRNUM/update-branch" 2>&1)"; then
-        for i in $(seq 1 20); do git fetch -q origin "$(git branch --show-current)" && git merge -q --ff-only FETCH_HEAD 2>/dev/null && break; sleep 3; done
-        echo "SYNC before-merge result=merged base=${BASE_SHA:0:7} head=$(git rev-parse --short HEAD) (via update-branch; re-run verify --full)"
+        # 202 is asynchronous: wait until the server's merge commit (which contains the base) has actually arrived.
+        for i in $(seq 1 20); do git fetch -q origin "$(git branch --show-current)" && git merge -q --ff-only FETCH_HEAD 2>/dev/null && git merge-base --is-ancestor "$BASE_SHA" HEAD && break; sleep 3; done
+        if git merge-base --is-ancestor "$BASE_SHA" HEAD; then echo "SYNC before-merge result=merged base=${BASE_SHA:0:7} head=$(git rev-parse --short HEAD) (via update-branch; re-run verify --full)"
+        else echo "SYNC before-merge result=conflict base=${BASE_SHA:0:7} head=${HEAD_SHA:0:7}"; attention "update-branch was accepted but the merged head did not arrive (or does not fast-forward) within 60 s"; exit 3; fi
       elif echo "$OUT" | grep -qi "already"; then echo "SYNC before-merge result=up-to-date base=${BASE_SHA:0:7} head=${HEAD_SHA:0:7}"
       else echo "SYNC before-merge result=conflict base=${BASE_SHA:0:7} head=${HEAD_SHA:0:7}"; attention "update-branch refused: $(echo "$OUT" | head -c 200)"; exit 3; fi
     else

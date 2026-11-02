@@ -3,7 +3,7 @@
 // Hard facts only. The agent's single input is implementation.md's assessment block (recommendation + confidence + reason).
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 
 const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
 const runIdx = process.argv.indexOf("--run");
@@ -11,7 +11,8 @@ const runId = runIdx > -1 ? process.argv[runIdx + 1] : fs.readFileSync(path.join
 const RUN = path.join(ROOT, ".factory/runs", runId);
 const rj = (f, d = null) => { try { return JSON.parse(fs.readFileSync(path.join(RUN, f), "utf8")); } catch { return d; } };
 const rt = (f) => { try { return fs.readFileSync(path.join(RUN, f), "utf8"); } catch { return ""; } };
-const sh = (c) => { try { return execSync(c, { cwd: ROOT, encoding: "utf8" }).trim(); } catch { return ""; } };
+// git with an argument list: branch names and SHAs come from state.json (triage output) and never pass through a shell.
+const git = (...a) => { try { return execFileSync("git", a, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
 const config = JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/config.json"), "utf8"));
 const state = rj("state.json", {});
 const evidence = rj("evidence.json", {});
@@ -24,7 +25,7 @@ const impl = rt("implementation.md");
 const facts = [];
 const fact = (name, ok, detail) => facts.push({ name, ok: !!ok, detail });
 
-const head = sh("git rev-parse HEAD");
+const head = git("rev-parse", "HEAD");
 fact("evidence_pinned_to_head", evidence.sha === head, `${(evidence.sha || "").slice(0, 7)} vs ${head.slice(0, 7)}`);
 fact("evidence_clean", evidence.dirty === false, evidence.dirty ? "tree dirty or HEAD moved during verify" : "clean");
 fact("evidence_trusted", evidence.trusted === true, evidence.trusted ? "recipe unchanged" : "recipe differs from committed");
@@ -59,15 +60,16 @@ fact("captures_if_ui", !uiTouched || captures > 0, `ui=${!!uiTouched} captures=$
 // The one sanctioned exception: a scaffold run (state.scaffold === true) may create .factory/setup.json.
 // The product diff is what the PR shows: HEAD against the merge-base with the CURRENT base branch (after a before-merge sync
 // the recorded base_sha is behind, and a diff from it would blame the feature for files that arrived from the base).
-const baseRef = sh(`git rev-parse --verify -q origin/${state.base_branch || "develop"}`) ? `origin/${state.base_branch || "develop"}` : (state.base_branch || "develop");
-const mergeBase = sh(`git merge-base ${baseRef} HEAD`) || state.base_sha;
-const protectedTouched = (sh(`git diff --name-only ${mergeBase}..HEAD`) || "").split("\n").filter(f =>
+const baseRef = git("rev-parse", "--verify", "-q", `origin/${state.base_branch || "develop"}`) ? `origin/${state.base_branch || "develop"}` : (state.base_branch || "develop");
+const mergeBase = git("merge-base", baseRef, "HEAD") || state.base_sha;
+const protectedTouched = (git("diff", "--name-only", `${mergeBase}..HEAD`) || "").split("\n").filter(f =>
   /^\.github\/workflows\//.test(f) || (f === ".factory/setup.json" && state.scaffold !== true) || /eslint|prettier|biome/.test(f));
 fact("no_protected_paths", protectedTouched.length === 0, protectedTouched.join(", ") || "none");
 fact("size_not_large", state.size !== "l", `size=${state.size}`);
-const behind = Number(sh(`git rev-list --count HEAD..${baseRef}`) || 0);
+const behind = Number(git("rev-list", "--count", `HEAD..${baseRef}`) || 0);
 fact("not_behind_base", behind === 0, behind ? `${behind} commit(s) on ${baseRef} not in HEAD (run sync-base.sh before-merge)` : `up to date with ${baseRef}`);
-const m = impl.match(/recommendation:\s*(\w+)[\s\S]*?confident:\s*(true|false)[\s\S]*?reason:\s*(.+)/i);
+// implementation.md gains a status block per round; the implementer's assessment is the LAST one, not the first.
+const m = [...impl.matchAll(/recommendation:\s*(\w+)[\s\S]*?confident:\s*(true|false)[\s\S]*?reason:\s*(.+)/gi)].pop();
 fact("implementer_confident_with_reason", !!m && m[1].toLowerCase() === "merge" && m[2] === "true" && m[3].trim().length > 10,
   m ? `${m[1]}/${m[2]}: ${m[3].trim().slice(0, 80)}` : "no assessment block in implementation.md");
 fact("under_dispatch_cap", (state.dispatches || []).length < (config.caps?.dispatches_per_run ?? 30), `${(state.dispatches || []).length} dispatches`);

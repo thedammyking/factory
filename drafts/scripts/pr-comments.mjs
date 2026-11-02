@@ -5,7 +5,9 @@
 // Rules (fail closed): a human comment is a finding the factory must act on, never a note.
 //   - a thread that ends with a question mark, or starts with "q:"/"question" -> action ask (the human wants an answer, not a change)
 //   - "nit"/"nitpick"/"optional" prefix -> P3 fix; everything else -> P1 fix (blocks the merge until the thread is resolved)
-//   - threads the factory itself resolved, or comments by the factory's own account, are skipped
+//   - posts carrying the factory marker are skipped
+//   - only OWNER / MEMBER / COLLABORATOR (or a login in setup.json `reviewers`) can raise fix/ask; anyone else who can comment
+//     on a public PR is recorded as a P3 `note` with the author shown, so a stranger cannot steer the implementer
 // REST only. Review threads come from the session's CCR route (GraphQL is unavailable); falls back to flat review comments.
 import fs from "node:fs";
 import path from "node:path";
@@ -22,6 +24,8 @@ const gh = (p) => { const r = spawnSync("gh", ["api", p, "--paginate"], { encodi
 // In a solo repo the human and the factory share one login, so the factory's own posts are recognised by a marker, not by author.
 const FACTORY_MARK = /<!--\s*factory\s*-->/;
 const botLike = (login, body = "") => !login || /\[bot\]$/.test(login) || FACTORY_MARK.test(body);
+const reviewers = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/setup.json"), "utf8")).reviewers || []; } catch { return []; } })();
+const trusted = (c) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(c?.author_association) || reviewers.includes(c?.user?.login);
 
 // Flat review comments carry the bodies; the CCR review_threads route carries resolution state as
 // [{resolved, outdated, path, line, comment_ids:[...]}] (no bodies). Join the two by comment id.
@@ -34,14 +38,16 @@ if (Array.isArray(threads)) {
     const comments = (t.comment_ids || []).map(id => byId.get(id)).filter(Boolean);
     const first = comments[0]; if (!first) continue;
     if (botLike(first.user?.login, first.body)) continue;
-    // Resolved threads stay in the ledger (GitHub's thread state is the source of truth for their resolution).
-    items.push({ id: `human-r${first.id}`, thread_root: first.id, resolved: !!t.resolved, outdated: !!t.outdated, author: first.user.login,
-      path: t.path || first.path, line: t.line || first.line || first.original_line || 0, body: comments.map(c => c.body).join("\n---\n"), url: first.html_url });
+    // Resolved threads stay in the ledger (GitHub's thread state is the source of truth for their resolution). In a trusted
+    // thread only trusted replies reach the claim; an untrusted root makes the whole thread a note.
+    const ok = trusted(first);
+    items.push({ id: `human-r${first.id}`, thread_root: first.id, resolved: !!t.resolved, outdated: !!t.outdated, author: first.user.login, trusted: ok,
+      path: t.path || first.path, line: t.line || first.line || first.original_line || 0, body: comments.filter(c => !ok || trusted(c)).filter(c => !FACTORY_MARK.test(c.body)).map(c => c.body).join("\n---\n"), url: first.html_url });
   }
 } else {
   // Fallback when the route is unavailable: "resolved" is unknown, so every non-factory thread root is a finding (fail closed).
   for (const c of flat.filter(c => !c.in_reply_to_id && !botLike(c.user?.login, c.body)))
-    items.push({ id: `human-r${c.id}`, thread_root: c.id, outdated: false, author: c.user.login, path: c.path, line: c.line || c.original_line || 0, body: c.body, url: c.html_url });
+    items.push({ id: `human-r${c.id}`, thread_root: c.id, outdated: false, author: c.user.login, trusted: trusted(c), path: c.path, line: c.line || c.original_line || 0, body: c.body, url: c.html_url });
 }
 // Top-level reviews count too: a CHANGES_REQUESTED review body is a finding at PR level; it is resolved when that reviewer's
 // latest review is APPROVED (or the review was DISMISSED), because a review has no thread to resolve.
@@ -51,13 +57,14 @@ for (const r of reviews) if (r.state !== "COMMENTED") latestByUser.set(r.user.lo
 for (const r of reviews.filter(r => r.state === "CHANGES_REQUESTED" && r.body)) {
   const latest = latestByUser.get(r.user.login);
   const resolved = r.state === "DISMISSED" || (latest && latest.id !== r.id && latest.state === "APPROVED");
-  items.push({ id: `human-v${r.id}`, thread_root: null, review_id: r.id, resolved, outdated: false, author: r.user.login, path: "", line: 0, body: r.body, url: r.html_url, review: true });
+  items.push({ id: `human-v${r.id}`, thread_root: null, review_id: r.id, resolved, outdated: false, author: r.user.login, trusted: trusted(r), path: "", line: 0, body: r.body, url: r.html_url, review: true });
 }
 // Reviews later dismissed are resolved as well.
 for (const r of reviews.filter(r => r.state === "DISMISSED" && r.body)) if (!items.some(i => i.review_id === r.id))
-  items.push({ id: `human-v${r.id}`, thread_root: null, review_id: r.id, resolved: true, outdated: false, author: r.user.login, path: "", line: 0, body: r.body, url: r.html_url, review: true });
+  items.push({ id: `human-v${r.id}`, thread_root: null, review_id: r.id, resolved: true, outdated: false, author: r.user.login, trusted: trusted(r), path: "", line: 0, body: r.body, url: r.html_url, review: true });
 
-const classify = (body) => {
+const classify = (body, ok = true) => {
+  if (!ok) return { action: "note", severity: "P3" };  // not a collaborator: visible, never actionable
   const t = body.trim().split("\n---\n")[0].trim();
   const q = /\?\s*$/.test(t) || /^(q|question)\s*[:\-]/i.test(t);
   const nit = /^(nit|nitpick|optional)\b/i.test(t);
@@ -71,11 +78,11 @@ fs.writeFileSync(resPath, JSON.stringify(res, null, 2) + "\n");
 const open = items.filter(i => !i.resolved);
 const md = ["# Human lens (PR review threads)", `PR #${pr.number} · ${open.length} unresolved of ${items.length} · generated ${new Date().toISOString()}`, ""];
 for (const it of items) {
-  const { action, severity } = classify(it.body);
+  const { action, severity } = classify(it.body, it.trusted);
   const claim = it.body.replace(/\n+---\n_Generated by \[Claude Code\][^\n]*/g, "").replace(/\s+/g, " ").trim().slice(0, 300);
   md.push(`- id: ${it.id}`, `  severity: ${severity}`, `  action: ${action}`, `  location: ${it.path ? `${it.path}:${it.line}` : `PR #${pr.number}`}`,
-    `  claim: (@${it.author}) ${claim}`, `  evidence: ${it.url}`, `  fix: address the comment, reply on the thread with the commit SHA, then resolve the thread`, "");
+    `  claim: (@${it.author}${it.trusted ? "" : ", not a collaborator"}) ${claim}`, `  evidence: ${it.url}`, `  fix: address the comment, reply on the thread with the commit SHA, then resolve the thread`, "");
 }
 fs.writeFileSync(path.join(RUN, "review-human.md"), md.join("\n"));
 fs.writeFileSync(path.join(RUN, "pr-comments.json"), JSON.stringify({ pr: pr.number, fetched_at: new Date().toISOString(), items }, null, 2) + "\n");
-console.log(`COMMENTS unresolved=${open.length} of ${items.length} ${open.map(i => `${i.id}:${classify(i.body).action}/${classify(i.body).severity}@${i.path || "PR"}`).join(" ")}`);
+console.log(`COMMENTS unresolved=${open.length} of ${items.length} ${open.map(i => `${i.id}:${classify(i.body, i.trusted).action}/${classify(i.body, i.trusted).severity}@${i.path || "PR"}`).join(" ")}`);

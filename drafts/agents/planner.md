@@ -10,8 +10,9 @@ Template:
 - `## User stories` (P1/P2…, each independently testable)
 - `## Functional requirements` `FR-001…` (testable, one behaviour each)
 - `## Success criteria` `SC-001…` measurable, each phrased as a check the qa agent can perform in the running app
-  (route/screen, action, expected observable). Backend-only criteria are `trigger-and-observe`.
-- `## Analytics` table: event name · properties(type) · trigger · maps to SC
+  (route/screen, action, expected observable). Backend-only criteria are `trigger-and-observe`. Tag each criterion with the
+  recipe profile it needs (`profile: default` unless it needs another environment) and `live-safe` if it may run after merge.
+- `## Analytics` table: event name · properties(type) · trigger · maps to SC (names from the tracking plan when one exists)
 - `## Implementation decisions` (no file paths) · `## Testing decisions` (named seams, ideally one)
 - `## Out of scope` · `## Clarifications` (copy the settled Q→A from grill.md) · `## Left to the builder`
 Keep it ≤ 250 lines. Return ≤ 8 lines: title, counts of FR/SC/events, the two biggest open risks.
@@ -28,5 +29,8 @@ Inputs: the ticket, spec.md, research.md, current code (read what the ticket tou
 Template (bmad): frontmatter `status: ready-for-dev`, `ticket:`, `context:` (files to load first, ≤ 8), `risk: low|med|high`;
 `<frozen-after-approval>` intent block (2–4 sentences, human-owned); `## Code map` (files to create/change, one line each);
 `## Tasks` Given/When/Then, test-first where a seam exists; `## Interfaces` Consumes/Produces; `## Verification` exact commands
-and expected results; `## Analytics` events to emit (from spec); `## Open questions` (empty = ready).
+and expected results; `## Analytics` events to emit (from spec); `## UI states` (the named states `capture-states.mjs` must
+picture: empty, loading, error, focus, returning visit, each with width and scheme) when the ticket touches UI;
+`## Open questions` (empty = ready). When Figma or Mobbin references were given, also write `design-ref.md` beside the plan:
+the extracted variables, the feel to borrow, and the spec's accessibility floors that override the reference.
 Budget 900–1,600 tokens. Return ≤ 6 lines: status (ready | open_questions[]), task count, risk.

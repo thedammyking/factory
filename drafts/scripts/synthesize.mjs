@@ -93,11 +93,14 @@ const findings = groups.map((g, i) => {
     location: members[0].location, claim: members[0].claim, cwe: members.find(m => m.cwe)?.cwe || "", rules };
 });
 
-// UI disposition rule: on persuade/operate surfaces, a UI lens `fix` disposition is itself an open P1 until re-review says ship
-if (["persuade", "operate"].includes(surface) && uiDisposition === "fix") {
-  const resolved = resolutions["ui-disposition"] === "resolved";
+// UI disposition rule: on persuade/operate surfaces, a UI lens `fix` disposition is itself an open P1 until re-review says ship.
+// The latest UI round decides: a resolution recorded for an earlier round's `fix` never closes a newer one; only a newer
+// review-ui.md saying `ship` does (it then shows here as resolved). `rebuild` and `recapture` are no better than `fix`.
+const uiNotShip = /^(fix|rebuild|recapture)$/.test(uiDisposition);
+if (["persuade", "operate"].includes(surface) && (uiNotShip || resolutions["ui-disposition"] === "resolved")) {
+  const resolved = !uiNotShip;
   findings.push({ id: "ui-disposition", members: [], lens: ["ui"], severity: "P1", action: "fix", status: resolved ? "resolved" : "open",
-    location: "captures/", claim: `UI lens disposition is 'fix' on a ${surface} surface; enters the fix loop (rule: UI fix loops on persuade/operate)`, cwe: "", rules: ["ui fix on persuade/operate => P1"] });
+    location: "captures/", claim: `UI lens disposition is '${uiDisposition || "fix"}' on a ${surface} surface; enters the fix loop (rule: UI fix loops on persuade/operate)`, cwe: "", rules: ["ui fix on persuade/operate => P1"] });
 }
 
 const openBlocking = findings.filter(f => f.status === "open" && (f.severity === "P0" || f.severity === "P1") && f.action === "fix");

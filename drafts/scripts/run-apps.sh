@@ -2,7 +2,7 @@
 # run-apps.sh up [--profile <name>] | down | status
 # Starts every app with a run-scoped env built from setup.json profiles (default merged with the named one). `api: null` = don't start it.
 set -u
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$PWD"; while [ ! -d "$ROOT/.factory" ]; do [ "$ROOT" = / ] && { echo "no .factory/ above $PWD" >&2; exit 2; }; ROOT="$(dirname "$ROOT")"; done  # the project, not the plugin
 RUN_ID="$(cat "$ROOT/.factory/runs/ACTIVE")"; RUN="$ROOT/.factory/runs/$RUN_ID"
 LOGS="$RUN/app-logs"; mkdir -p "$LOGS" "$RUN/profile-data"
 API_PORT="${API_PORT:-8787}"; WEB_PORT="${WEB_PORT:-5173}"
@@ -24,12 +24,12 @@ case "${1:-status}" in
     api_ok=skip; web_ok=skip
     API_ENV="$(app_env api)" || exit 3
     if [ "$API_ENV" != "SKIP" ]; then
-      ( cd "$ROOT/apps/api" && env -i PATH="$PATH" HOME="$HOME" NODE_ENV=development PORT="$API_PORT" $API_ENV pnpm run start >"$LOGS/api.log" 2>&1 & )
+      ( cd "$ROOT/apps/api" && IFS=$'\n' && set -f && env -i PATH="$PATH" HOME="$HOME" NODE_ENV=development PORT="$API_PORT" $API_ENV pnpm run start >"$LOGS/api.log" 2>&1 & )
       api_ok=false; wait_for "http://localhost:$API_PORT/api/health" && api_ok=true
     fi
     WEB_ENV="$(app_env web)" || exit 3
     if [ "$WEB_ENV" != "SKIP" ]; then
-      ( cd "$ROOT/apps/web" && env -i PATH="$PATH" HOME="$HOME" NODE_ENV=development $WEB_ENV pnpm run dev -- --port "$WEB_PORT" --strictPort >"$LOGS/web.log" 2>&1 & )
+      ( cd "$ROOT/apps/web" && IFS=$'\n' && set -f && env -i PATH="$PATH" HOME="$HOME" NODE_ENV=development $WEB_ENV pnpm run dev -- --port "$WEB_PORT" --strictPort >"$LOGS/web.log" 2>&1 & )
       web_ok=false; wait_for "http://localhost:$WEB_PORT/" && web_ok=true
     fi
     printf '{ "profile": "%s", "api": { "url": "http://localhost:%s", "ok": "%s", "env": %s }, "web": { "url": "http://localhost:%s", "ok": "%s", "env": %s }, "logs": "%s", "started_at": "%s" }\n' \

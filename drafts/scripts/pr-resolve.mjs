@@ -29,7 +29,7 @@ let reply;
 if (it.thread_root) reply = api(["-X", "POST", `repos/${repo}/pulls/${pr.number}/comments/${it.thread_root}/replies`, "--input", "-"], JSON.stringify({ body }));
 else reply = api(["-X", "POST", `repos/${repo}/issues/${pr.number}/comments`, "--input", "-"], JSON.stringify({ body: `Re: review ${it.review_id} — ${body}` }));
 let resolved = false;
-if (!isAsk && it.thread_root) resolved = api(["-X", "POST", `repos/${repo}/pulls/${pr.number}/ccr/comments/${it.thread_root}/resolve`]).ok;
+if (!isAsk && it.thread_root && reply.ok) resolved = api(["-X", "POST", `repos/${repo}/pulls/${pr.number}/ccr/comments/${it.thread_root}/resolve`]).ok;
 if (!isAsk && reply.ok && resolved) {  // the finding is resolved only once the thread really is
   const resPath = path.join(RUN, "resolutions.json");
   const res = fs.existsSync(resPath) ? JSON.parse(fs.readFileSync(resPath, "utf8")) : {};

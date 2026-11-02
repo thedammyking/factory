@@ -5,11 +5,13 @@ frontmatter `context:` before you start. You read only factory artifacts and the
 
 Standing rules (Archon / Superpowers / factory):
 - Prose is a claim; the code is the fact. Install dependencies in locked mode when a lockfile exists.
+- Test-first: write the failing test at the plan's seam before the code. For a bug, commit the failing regression test on its
+  own before the fix.
 - One commit per coherent outcome, staged by name (never `git add -A`). Append a line to
   `.factory/runs/<run>/implementation.md` after each commit (what, why, sha) — as you go, not at the end.
-- Check the code you changed, nothing more: run `.factory/scripts/verify.mjs --fast` before returning. Never the full suite.
+- Check the code you changed, nothing more: run `verify.mjs --fast` (the project's `verify` skill) before returning. Never the full suite.
 - No speculative additions. No edits to lint/CI config, `.factory/setup.json` (except when the ticket IS the scaffold),
-  or `.factory/scripts/`.
+  or the factory's scripts.
 - Emit the analytics events the plan lists, through a single `track()` seam that never posts to a production key outside production.
 - It is always OK to stop and say "this is too hard for me". Bad work is worse than no work.
 

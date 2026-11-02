@@ -9,18 +9,18 @@
 // REST only. Prints one line: CI <cause> sha=<7> runs=<n> [failed=<workflow:job:step>...]
 import fs from "node:fs";
 import path from "node:path";
-import { execSync, spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
 const arg = (k, d = null) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : d; };
 const runId = arg("--run") || fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
 const RUN = path.join(ROOT, ".factory/runs", runId);
 const state = JSON.parse(fs.readFileSync(path.join(RUN, "state.json"), "utf8"));
-const sh = (c) => { try { return execSync(c, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
-const sha = arg("--sha") || sh("git rev-parse HEAD");
+const git = (...a) => { try { return execFileSync("git", a, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
+const sha = arg("--sha") || git("rev-parse", "HEAD");
 const waitS = Number(arg("--wait", 900));
 const rerun = !process.argv.includes("--no-rerun");
-const repo = (sh("git remote get-url origin").match(/github\.com[:/]([^/]+\/[^/.]+)/) || [])[1];
+const repo = (git("remote", "get-url", "origin").match(/github\.com[:/]([^/]+\/[^/.]+)/) || [])[1];
 const gh = (p, extra = []) => { const r = spawnSync("gh", ["api", p, ...extra], { encoding: "utf8" }); return r.status === 0 ? JSON.parse(r.stdout || "null") : null; };
 const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 const log = (l) => fs.appendFileSync(path.join(RUN, "run.log"), `- ${new Date().toISOString()} ci-watch: ${l}\n`);
@@ -44,7 +44,7 @@ else if (bad.every(r => ["cancelled", "timed_out", "startup_failure", "action_re
 else {
   detail = bad.flatMap(failedSteps);
   // Base-branch check: is the same workflow red on the base's head too? Then the red is inherited, not ours.
-  const baseSha = sh(`git rev-parse origin/${state.base_branch || "develop"}`) || sh(`git rev-parse ${state.base_branch || "develop"}`);
+  const baseSha = git("rev-parse", `origin/${state.base_branch || "develop"}`) || git("rev-parse", state.base_branch || "develop");
   const baseRuns = runsFor(baseSha);
   // Inherited = the base's head fails the same workflow at the same step(s). A base that is red for a different reason
   // (e.g. a scaffold step) is noted but does not excuse our failure.
@@ -52,9 +52,8 @@ else {
   const baseRed = baseRuns.filter(b => b.status === "completed" && b.conclusion === "failure");
   const baseFailed = new Set(baseRed.flatMap(failedSteps).map(stepName));
   const ourFailed = bad.flatMap(failedSteps).map(stepName);
-  const inherited = bad.filter(r => baseRed.some(b => b.name === r.name)) && ourFailed.length > 0 && ourFailed.every(st => baseFailed.has(st));
+  const inherited = bad.every(r => baseRed.some(b => b.name === r.name)) && ourFailed.length > 0 && ourFailed.every(st => baseFailed.has(st));
   if (inherited) { cause = "inherited"; detail.push(`same step(s) red on ${state.base_branch} @${baseSha.slice(0, 7)}: ${ourFailed.join(", ")}`); }
-  else if (baseRed.length) detail.push(`note: ${state.base_branch} @${baseSha.slice(0, 7)} is red for a different reason (${[...baseFailed].join(", ") || "no step detail"})`);
   else if (rerun) {
     // One re-run of the failed jobs only. Same SHA, same code: a pass on attempt 2 is a flake by definition.
     log(`re-running failed jobs once for ${bad.map(r => r.id).join(",")}`);
@@ -68,6 +67,8 @@ else {
     else detail = stillBad.flatMap(failedSteps);
     runs = runsFor(sha);
   } else cause = "ours";
+  // A base that is red for another reason is only a note: the failure is still classified (fix 17: `ours` with the note).
+  if (!inherited && baseRed.length) detail.push(`note: ${state.base_branch} @${baseSha.slice(0, 7)} is red for a different reason (${[...baseFailed].join(", ") || "no step detail"})`);
 }
 // For a failure that is ours, save the failing job's log tail so the fix round reads one file, not the Actions UI.
 if (cause === "ours") {

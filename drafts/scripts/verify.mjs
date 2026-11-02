@@ -5,6 +5,7 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync, execSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const ROOT = findRoot(process.cwd());
 const mode = process.argv.includes("--full") ? "full" : "fast";
@@ -14,6 +15,12 @@ const setupPath = path.join(ROOT, ".factory", "setup.json");
 const setup = JSON.parse(fs.readFileSync(setupPath, "utf8"));
 const state = runId ? JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/runs", runId, "state.json"), "utf8")) : {};
 const base = state.base_branch || setup.defaultBranch || "main";
+// The run's environment is the recipe's: PATH/HOME plus .factory/env.local, never the developer's shell (so no login profile),
+// and {base} reaches a command only as a quoted env reference, never as text spliced into it.
+const envFile = path.join(ROOT, ".factory/env.local");
+const envLocal = Object.fromEntries((fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "").split("\n")
+  .map(l => l.match(/^\s*([A-Za-z_]\w*)=(.*)$/)).filter(Boolean).map(m => [m[1], m[2].replace(/^(["'])(.*)\1$/, "$2")]));
+const runEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR || "/tmp", ...envLocal, FACTORY_BASE: base };
 
 function findRoot(d) { while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; }
 function sh(cmd) { try { return execSync(cmd, { cwd: ROOT, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch { return ""; } }
@@ -26,17 +33,18 @@ const trusted = committedRecipe.trim() === fs.readFileSync(setupPath, "utf8").tr
 const FAST = new Set(["typecheck", "lint", "test"]);
 // --full runs the e2e checks, whose config starts its own servers: a stack left up by run-apps.sh (the QA walk, captures)
 // makes them fail on a busy port. Stop it first; the orchestrator brings it back when it needs it.
-if (mode === "full" && fs.existsSync(path.join(ROOT, ".factory/scripts/run-apps.sh"))) {
-  const r = spawnSync("bash", [path.join(ROOT, ".factory/scripts/run-apps.sh"), "down"], { cwd: ROOT, encoding: "utf8", timeout: 60_000 });
+const runApps = path.join(path.dirname(fileURLToPath(import.meta.url)), "run-apps.sh");  // plugin-owned, beside this script
+if (mode === "full" && fs.existsSync(runApps)) {
+  const r = spawnSync("bash", [runApps, "down"], { cwd: ROOT, encoding: "utf8", timeout: 60_000 });
   if (r.status !== 0) console.log("verify: run-apps.sh down failed; e2e may hit busy ports\n" + ((r.stdout || "") + (r.stderr || "")).slice(-300));
 }
 const checks = [];
 for (const app of setup.apps || []) {
   for (const [name, cmdTpl] of Object.entries(app.checks || {})) {
     if (mode === "fast" && !FAST.has(name)) continue;
-    const cmd = cmdTpl.replaceAll("{base}", base);
+    const cmd = cmdTpl.replaceAll("{base}", '"$FACTORY_BASE"');
     const t0 = Date.now();
-    const r = spawnSync("bash", ["-lc", cmd], { cwd: path.join(ROOT, app.path || "."), encoding: "utf8", timeout: 10 * 60_000 });
+    const r = spawnSync("bash", ["-c", cmd], { cwd: path.join(ROOT, app.path || "."), encoding: "utf8", timeout: 10 * 60_000, env: runEnv });
     const out = (r.stdout || "") + (r.stderr || "");
     checks.push({
       app: app.name, check: name, cmd, status: r.status === 0 ? "pass" : "fail", exit: r.status, seconds: Math.round((Date.now() - t0) / 100) / 10,

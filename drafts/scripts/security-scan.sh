@@ -2,7 +2,8 @@
 # security-scan.sh <base_sha> -> security.json
 # Capabilities, each satisfied by whichever tool is available (first that runs wins); a capability with no tool is `missing`,
 # never a pass. Registry packs for semgrep are `partial` when the registry is unreachable; project rules always run.
-set -u; ROOT="$(cd "$(dirname "$0")/../.." && pwd)"; RUN="$ROOT/.factory/runs/$(cat "$ROOT/.factory/runs/ACTIVE")"; BASE="$1"; cd "$ROOT"
+set -u; ROOT="$PWD"; while [ ! -d "$ROOT/.factory" ]; do [ "$ROOT" = / ] && { echo "no .factory/ above $PWD" >&2; exit 2; }; ROOT="$(dirname "$ROOT")"; done; RUN="$ROOT/.factory/runs/$(cat "$ROOT/.factory/runs/ACTIVE")"; BASE="$1"; cd "$ROOT"
+command -v timeout >/dev/null 2>&1 || timeout() { shift; "$@"; }  # macOS has no coreutils timeout
 j() { node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>process.stdout.write(JSON.stringify(s)))'; }
 caps=()
 rec() { caps+=("{\"capability\":\"$1\",\"tool\":\"$2\",\"status\":\"$3\",\"detail\":$(printf '%s' "$4" | tail -c 600 | j)}"); }
@@ -26,11 +27,11 @@ else rec vulnerabilities-2nd-source osv-scanner optional "not installed (brew in
 
 # --- SAST: semgrep project rules (always) + registry packs (when the registry is reachable)
 if command -v semgrep >/dev/null 2>&1; then
-  out=$(timeout 600 semgrep scan --config .factory/semgrep/project.yaml --metrics=off --error --baseline-commit "$BASE" --quiet --json apps 2>/dev/null); rc=$?
+  out=$(timeout 600 semgrep scan --config .factory/semgrep/project.yaml --metrics=off --error --baseline-commit "$BASE" --quiet --json . 2>/dev/null); rc=$?
   n=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s);console.log(r.results.length)}catch{console.log("?")}})')
   rec sast-project-rules semgrep "$([ $rc -eq 0 ] && echo pass || echo fail)" "findings=$n"
   printf '%s' "$out" > "$RUN/semgrep-project.json"
-  out=$(timeout 600 semgrep scan --config p/typescript --config p/nodejs --config p/react --config p/owasp-top-ten --metrics=off --error --baseline-commit "$BASE" --quiet --json apps 2>/dev/null); rc=$?
+  out=$(timeout 600 semgrep scan --config p/typescript --config p/nodejs --config p/react --config p/owasp-top-ten --metrics=off --error --baseline-commit "$BASE" --quiet --json . 2>/dev/null); rc=$?
   if printf '%s' "$out" | grep -q '"results"'; then
     n=$(printf '%s' "$out" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);console.log(r.results.length)})')
     rec sast-registry-packs semgrep "$([ $rc -eq 0 ] && echo pass || echo fail)" "findings=$n"; printf '%s' "$out" > "$RUN/semgrep-packs.json"
@@ -38,8 +39,8 @@ if command -v semgrep >/dev/null 2>&1; then
 else rec sast-project-rules semgrep missing "not installed (pip install semgrep / brew install semgrep)"; fi
 
 # --- two checks no scanner does
-pub=$(git diff "$BASE..HEAD" -- apps | grep -E '^\+.*(VITE|NEXT_PUBLIC)_[A-Z_]+' | grep -oE '(VITE|NEXT_PUBLIC)_[A-Z_]+' | sort -u | tr '\n' ' ')
-newdeps=$(git diff "$BASE..HEAD" -- 'apps/*/package.json' package.json | grep -E '^\+\s+"[^"]+":\s*"[~^0-9]' | sed -E 's/^\+\s+"([^"]+)".*/\1/' | sort -u | tr '\n' ' ')
-printf '{ "base": "%s", "head": "%s", "capabilities": [%s], "client_exposed_env": "%s", "new_dependencies": "%s", "findings": [] }\n' \
-  "$BASE" "$(git rev-parse HEAD)" "$(IFS=,; echo "${caps[*]}")" "$pub" "$newdeps" > "$RUN/security.json"
-node -e "const s=require('$RUN/security.json');console.log('SECURITY '+s.capabilities.map(c=>c.capability+'='+c.status+'('+c.tool+')').join(' ')+' | client env: '+s.client_exposed_env+'| new deps: '+s.new_dependencies.split(' ').filter(Boolean).length)"
+pub=$(git diff "$BASE..HEAD" -- . ':(exclude).factory' | grep -E '^\+.*(VITE|NEXT_PUBLIC)_[A-Z_]+' | grep -oE '(VITE|NEXT_PUBLIC)_[A-Z_]+' | sort -u | tr '\n' ' ')
+newdeps=$(git diff "$BASE..HEAD" -- ':(glob)**/package.json' | grep -E '^\+[[:space:]]+"[^"]+":[[:space:]]*"[~^0-9]' | sed -E 's/^\+[[:space:]]+"([^"]+)".*/\1/' | sort -u | tr '\n' ' ')
+printf '{ "base": "%s", "head": "%s", "capabilities": [%s], "client_exposed_env": %s, "new_dependencies": %s, "findings": [] }\n' \
+  "$BASE" "$(git rev-parse HEAD)" "$(IFS=,; echo "${caps[*]}")" "$(printf '%s' "$pub" | j)" "$(printf '%s' "$newdeps" | j)" > "$RUN/security.json"
+node -e 'const s=require(process.argv[1]);console.log("SECURITY "+s.capabilities.map(c=>c.capability+"="+c.status+"("+c.tool+")").join(" ")+" | client env: "+s.client_exposed_env+"| new deps: "+s.new_dependencies.split(" ").filter(Boolean).length)' "$RUN/security.json"

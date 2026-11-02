@@ -9,13 +9,13 @@
 //   run-state.mjs spend <stage> <tokens> [run]     -> records token spend, enforces tokens_per_run / minutes_per_run
 //   run-state.mjs round <implement|review> [run]   -> increments a loop counter, prints OK|ESCALATE
 //   run-state.mjs archive-review <lens> [run]      -> review-<lens>.md -> review-<lens>.round<N>.md before a re-review
-//   run-state.mjs override <minutes|tokens|dispatches|implement|review|ci> "<reason>" [run]
+//   run-state.mjs override <minutes|tokens|post_pr|dispatches|implement|review|ci> "<reason>" [run]
 //                                                   -> a HUMAN lifts one cap for the rest of the run (recorded in state + run.log);
 //                                                      the orchestrator never calls this on its own
 //   run-state.mjs abandon [run]                    -> clears ACTIVE (branch untouched)
 import fs from "node:fs";
 import path from "node:path";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import os from "node:os";
 
 const ROOT = findRoot(process.cwd());
@@ -95,7 +95,7 @@ switch (cmd) {
   }
   case "override": {
     const [what, reason, run] = args; const [id, s] = load(run);
-    if (!["minutes", "tokens", "dispatches", "implement", "review", "ci"].includes(what) || !reason) { console.log("usage: override <minutes|tokens|dispatches|implement|review|ci> \"<reason>\""); process.exit(2); }
+    if (!["minutes", "tokens", "post_pr", "dispatches", "implement", "review", "ci"].includes(what) || !reason) { console.log("usage: override <minutes|tokens|post_pr|dispatches|implement|review|ci> \"<reason>\""); process.exit(2); }
     s.overrides = { ...(s.overrides || {}), [what]: { by: "human", reason, at: new Date().toISOString() } };
     save(id, s); log(`override ${what}: ${reason}`, id); console.log(`override ${what} recorded`); break;
   }
@@ -124,7 +124,8 @@ switch (cmd) {
     const cap = postPr ? CAPS.tokens_post_pr : tokenCap(s);
     const used = postPr ? s.spend.post_pr : s.spend.tokens;
     const label = postPr ? "post-pr tokens" : "tokens";
-    if (used >= cap && !(s.overrides || {}).tokens) { console.log(`BUDGET ${label} ${used}/${cap}`); process.exit(4); }
+    // The post-PR allowance is its own cap: lifting the build budget does not lift it (fix 13 must still stop at 400k).
+    if (used >= cap && !(s.overrides || {})[postPr ? "post_pr" : "tokens"]) { console.log(`BUDGET ${label} ${used}/${cap}`); process.exit(4); }
     if (used >= cap) { console.log(`ok ${label} ${used}/${cap} (cap overridden by human)`); break; }
     if (used >= cap * 0.7) console.log(`WARN 70% of ${label} budget (${used}/${cap})`);
     else console.log(`ok ${label} ${used}/${cap}`);
@@ -132,7 +133,9 @@ switch (cmd) {
   }
   case "round": {
     const [loop, run] = args; const [id, s] = load(run);
+    if (!["implement", "review", "ci"].includes(loop)) die("round <implement|review|ci>");
     const cap = loop === "implement" ? CAPS.implement_rounds : loop === "review" ? CAPS.review_rounds : CAPS.ci_rounds;
+    s.rounds[loop] ||= 0;  // states written before ci_rounds existed have no counter
     if (s.rounds[loop] >= cap && !(s.overrides || {})[loop]) { console.log(`ESCALATE ${loop} rounds=${s.rounds[loop]} cap=${cap}`); process.exit(5); }
     s.rounds[loop] += 1; save(id, s);
     console.log(`OK ${loop} round ${s.rounds[loop]}/${cap}`); break;
@@ -157,9 +160,12 @@ switch (cmd) {
     // any branch (a checkout of a branch that tracked it would overwrite the live run). Used after merge and on needs-human closure.
     const [id, s] = load(args[0]);
     const base = s.base_branch || "main";
+    if (!/^(?!-)[\w./-]+$/.test(base)) die(`base branch '${base}' is not a branch name`);
     const wt = fs.mkdtempSync(path.join(os.tmpdir(), "factory-snap-"));
-    const run = (c) => execSync(c, { cwd: ROOT, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
-    run(`git worktree add -q "${wt}" ${base}`);
+    const git = (cwd, ...a) => execFileSync("git", a, { cwd, stdio: ["ignore", "pipe", "pipe"] }).toString().trim();
+    if (process.env.FACTORY_COMMIT_TRAILER === undefined) die("export FACTORY_COMMIT_TRAILER (the session's commit attribution lines; empty if none)");
+    git(ROOT, "worktree", "add", "-q", wt, base);
+    try {
     const dst = path.join(wt, ".factory", "history", id);
     fs.mkdirSync(dst, { recursive: true });
     fs.cpSync(path.join(RUNS, id), dst, { recursive: true, filter: (p) => !/\/(captures|app-logs|qa)\//.test(p + "/") && !/\.png$/.test(p) });
@@ -172,16 +178,13 @@ switch (cmd) {
       const fresh = fs.readFileSync(runLog, "utf8").split("\n").filter(l => l.trim() && !have.has(l));
       if (fresh.length) fs.appendFileSync(logMd, (fs.existsSync(logMd) && !fs.readFileSync(logMd, "utf8").endsWith("\n") ? "\n" : "") + fresh.join("\n") + "\n");
     }
-    const msg = `factory(run): ${id} snapshot (${s.stage})`;
-    execSync(`git add .factory/history/${id} .factory/log.md && git commit -q -F - <<'EOF'
-${msg}
-
-Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_012CTtGEFzuLvpjsh3zwUhSu
-EOF`, { cwd: wt, stdio: "ignore" });
-    const sha = execSync("git rev-parse --short HEAD", { cwd: wt }).toString().trim();
-    run(`git worktree remove --force "${wt}"`);
-    console.log(`snapshot ${sha} on ${base}`); break;
+    git(wt, "add", "--", `.factory/history/${id}`, ".factory/log.md");
+    // A repeat snapshot with nothing new is a no-op, not a crash that leaks the worktree.
+    const changed = (() => { try { git(wt, "diff", "--cached", "--quiet"); return false; } catch { return true; } })();
+    if (changed) execFileSync("git", ["commit", "-q", "-F", "-"], { cwd: wt, input: `factory(run): ${id} snapshot (${s.stage})\n\n${process.env.FACTORY_COMMIT_TRAILER}\n` });
+    console.log(changed ? `snapshot ${git(wt, "rev-parse", "--short", "HEAD")} on ${base}` : `snapshot unchanged on ${base}`);
+    } finally { git(ROOT, "worktree", "remove", "--force", wt); }
+    break;
   }
   default: die("unknown command");
 }

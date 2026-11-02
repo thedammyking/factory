@@ -3,21 +3,21 @@
 # GitHub GraphQL, so `gh pr create/list/view` are avoided in favour of `gh api repos/...`.
 # Writes <run>/pr.json {number,url,head,base,labels} and prints one line: PR <created|updated> #<n> <url>
 set -euo pipefail
-ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+ROOT="$PWD"; while [ ! -d "$ROOT/.factory" ]; do [ "$ROOT" = / ] && { echo "no .factory/ above $PWD" >&2; exit 2; }; ROOT="$(dirname "$ROOT")"; done  # the project, not the plugin
 RUN_ID="${2:-$(cat "$ROOT/.factory/runs/ACTIVE")}"; [ "${1:-}" = "--run" ] || RUN_ID="$(cat "$ROOT/.factory/runs/ACTIVE")"
 RUN="$ROOT/.factory/runs/$RUN_ID"
-REPO="$(gh repo view --json nameWithOwner -q .nameWithOwner 2>/dev/null || git -C "$ROOT" remote get-url origin | sed -E 's#.*github.com[:/]##; s#\.git$##')"
+REPO="$(git -C "$ROOT" remote get-url origin | sed -E 's#.*github.com[:/]##; s#\.git$##')"  # not `gh repo view`: that is GraphQL
 STATE="$RUN/state.json"
 HEAD_BRANCH="$(git -C "$ROOT" branch --show-current)"
-BASE_BRANCH="$(node -e "console.log(JSON.parse(require('fs').readFileSync('$STATE','utf8')).target_branch||'develop')")"
-DECISION="$(node -e "try{console.log(JSON.parse(require('fs').readFileSync('$RUN/decision.json','utf8')).decision)}catch{console.log('needs-human')}")"
+BASE_BRANCH="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).target_branch||"develop")' "$STATE")"
+DECISION="$(node -e 'try{console.log(JSON.parse(require("fs").readFileSync(process.argv[1],"utf8")).decision)}catch{console.log("needs-human")}' "$RUN/decision.json")"
 TITLE="$(sed -n '1s/^# //p' "$RUN/pr.md")"
-# Body = pr.md minus its title line, plus the attribution trailer the session requires.
+# Body = pr.md minus its title line, plus the attribution lines the current session requires (the orchestrator exports them;
+# unset refuses, empty means the session requires none).
+: "${FACTORY_PR_TRAILER?export FACTORY_PR_TRAILER: the session PR attribution lines, empty if none}"
 BODY="$(sed '1d' "$RUN/pr.md")
-"'
-🤖 Generated with [Claude Code](https://claude.com/claude-code)
 
-https://claude.ai/code/session_012CTtGEFzuLvpjsh3zwUhSu'
+$FACTORY_PR_TRAILER"
 LABELS=("factory"); [ "$DECISION" = "merge" ] && LABELS+=("factory-merge") || LABELS+=("needs-human")
 
 ensure_label() { gh api -X GET "repos/$REPO/labels/$1" >/dev/null 2>&1 || gh api -X POST "repos/$REPO/labels" -f name="$1" -f color="$2" -f description="$3" >/dev/null; }

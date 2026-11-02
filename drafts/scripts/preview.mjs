@@ -36,8 +36,11 @@ for (const app of setup.apps || []) {
   try {
     if (p.mode === "fixed") { out.apps[name] = { mode: "fixed", url: p.url, source: "setup.preview.fixed" }; continue; }
     if (p.mode === "command") {
-      const cmd = p.command.replaceAll("{branch}", branch).replaceAll("{sha}", sha).replaceAll("{title}", JSON.stringify(state.title || runId));
-      const r = spawnSync("bash", ["-lc", cmd], { cwd: ROOT, encoding: "utf8", timeout: (p.wait_seconds || 600) * 1000 });
+      // The title comes from the request (untrusted) and branch/sha from the run: they reach the shell only as quoted env
+      // references, never as text spliced into the command string.
+      const cmd = p.command.replaceAll("{branch}", '"$FACTORY_BRANCH"').replaceAll("{sha}", '"$FACTORY_SHA"').replaceAll("{title}", '"$FACTORY_TITLE"');
+      const r = spawnSync("bash", ["-lc", cmd], { cwd: ROOT, encoding: "utf8", timeout: (p.wait_seconds || 600) * 1000,
+        env: { ...process.env, FACTORY_BRANCH: branch, FACTORY_SHA: sha, FACTORY_TITLE: String(state.title || runId) } });
       const text = (r.stdout || "") + (r.stderr || "");
       let url = null;
       if (p.url_from) { try { url = pick(JSON.parse(r.stdout), p.url_from); } catch { /* fall through */ } }
