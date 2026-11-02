@@ -28,6 +28,7 @@ with: `**Status:** ready-for-agent` · `**Blocked by:** NN` · `## Goal` · `## 
 referencing FR/SC ids · `## Interfaces` (Consumes / Produces: concrete signatures, routes, env names) · `## Notes`.
 `Blocked by:` lists ticket numbers (`02, 03`) or `none`; after the gate, only `run-state.mjs ticket` changes a status.
 On an empty repo, ticket 01 is the scaffold and MUST produce `.factory/setup.json` with proven check commands.
+When research.md names a component library, the first ticket that touches UI installs it and sets up its theme.
 Return ≤ 8 lines: ticket list with one-line goals and blocking edges.
 
 ## mode: plan → writes `{run_dir}/tickets/NN/plan.md`
@@ -38,8 +39,11 @@ Template (bmad): frontmatter `status: ready-for-dev`, `ticket:`, `context:` (fil
 and expected results; `## Analytics` events to emit (from spec); `## UI states` (the named states `${CLAUDE_PLUGIN_ROOT}/scripts/capture-states.mjs` must
 picture: empty, loading, error, focus, hover, disabled, returning visit, each with width and scheme) when the ticket touches UI;
 `## Open questions` (empty = ready). When the ticket touches UI, also write `design-ref.md` beside the plan and list it in
-`context:`. Its source is research.md's `## UI references`: the Figma design, else the Mobbin picks, else the project's own
-screens. It holds the extracted variables (Figma only), the pattern to follow (layout, hierarchy, primary action, states),
+`context:`. Its source is research.md's `## UI references`: the Figma design; else the existing UI's design language
+(components to reuse, where the tokens live, shared layout habits) or, with no UI yet, the component library research.md
+names (HeroUI or shadcn/ui), either one with the Mobbin picks' structure when there are picks. It holds the extracted variables
+(Figma only), the pattern to follow (layout, hierarchy, primary action, states), the library component each element is
+built from when the codebase has a component library (a new component only where it has none, named as such),
 what is not borrowed (another product's brand, copy and illustrations), and the spec's accessibility floors that override
 the reference. With no reference, it says so in one line.
 Budget 900–1,600 tokens. Return ≤ 6 lines: status (ready | open_questions[]), task count, risk.

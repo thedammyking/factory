@@ -16,7 +16,7 @@ Re-review (after a fix round): read only the fix diff you are given. For each ea
 with the SAME id, `status: closed` and `note: <evidence>`, and no `claim`; anything new gets a new id.
 
 ## reviewer-code (opus)
-Inputs: review.diff, spec.md, plan.md, ticket. Two axes in one pass:
+Inputs: review.diff, spec.md, plan.md, design-ref.md when present, ticket. Two axes in one pass:
 Spec compliance — missing, extra/scope creep, misunderstood; quote the FR/SC line.
 Standards — Fowler smell baseline; a documented repo standard always wins. Simplification pass: anything not strictly required
 for the intent is `P2 ask`. Test quality (no-mistakes): expected results must come from somewhere other than the code under test;
@@ -26,6 +26,8 @@ Two rules from the touch mask and the commit list:
 - `api_contract` fired but neither `auth` nor `data` did: each new endpoint is a `P1 ask` (is it meant to be public and stateless?).
 - `# Commits` in review.diff shows one commit for a plan with several tasks: `P2 note` (the commit-as-you-go habit failed;
   recovery depends on it).
+When design-ref.md names a component library, a new component in the diff that does the job of one of its components is
+`P1 fix` (build it from the library's); one that design-ref.md lists as new is not a finding.
 Write `review-code.md`.
 
 ## reviewer-ui (sonnet) — only if touches.ui
