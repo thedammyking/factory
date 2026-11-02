@@ -4,19 +4,19 @@
 // Ids are stable (`human-r<thread root id>`, `human-v<review id>`) so a resolution recorded for one thread never shifts to another.
 // Rules (fail closed): a human comment is a finding the factory must act on, never a note.
 //   - a thread that ends with a question mark, or starts with "q:"/"question" -> action ask (the human wants an answer, not a change)
-//   - "nit"/"nitpick"/"optional" prefix -> P3 fix; everything else -> P1 fix (blocks the merge until the thread is resolved)
+//   - everything else -> P1 fix, "nit"/"optional" included: an open thread blocks the merge until it is resolved (the human
+//     waives a nit by resolving the thread), so auto-merge never lands over a collaborator's open comment
 //   - posts carrying the factory marker are skipped
 //   - only OWNER / MEMBER / COLLABORATOR (or a login in setup.json `reviewers`) can raise fix/ask; anyone else who can comment
 //     on a public PR is recorded as a P3 `note` with the author shown, so a stranger cannot steer the implementer
-// REST only. Review threads come from the session's CCR route (GraphQL is unavailable); falls back to flat review comments.
+// Review threads (with their resolved state) come from GraphQL, which local sessions can reach; cloud sessions, whose proxy
+// blocks GraphQL, use its ccr/ route instead; with neither, flat review comments count as unresolved (fail closed).
 import fs from "node:fs";
 import path from "node:path";
 import { execSync, spawnSync } from "node:child_process";
+import { runContext, arg } from "./lib.mjs";
 
-const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
-const arg = (k, d = null) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : d; };
-const runId = arg("--run") || fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
-const RUN = path.join(ROOT, ".factory/runs", runId);
+const { ROOT, RUN } = runContext();
 const pr = JSON.parse(fs.readFileSync(path.join(RUN, "pr.json"), "utf8"));
 const sh = (c) => { try { return execSync(c, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
 const repo = (sh("git remote get-url origin").match(/github\.com[:/]([^/]+\/[^/.]+)/) || [])[1];
@@ -27,11 +27,19 @@ const botLike = (login, body = "") => !login || /\[bot\]$/.test(login) || FACTOR
 const reviewers = (() => { try { return JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/setup.json"), "utf8")).reviewers || []; } catch { return []; } })();
 const trusted = (c) => ["OWNER", "MEMBER", "COLLABORATOR"].includes(c?.author_association) || reviewers.includes(c?.user?.login);
 
-// Flat review comments carry the bodies; the CCR review_threads route carries resolution state as
-// [{resolved, outdated, path, line, comment_ids:[...]}] (no bodies). Join the two by comment id.
+// Flat review comments carry the bodies; the thread source carries resolution state as
+// [{node_id?, resolved, outdated, path, line, comment_ids:[...]}] (no bodies). Join the two by comment id.
 const flat = gh(`repos/${repo}/pulls/${pr.number}/comments`) || [];
 const byId = new Map(flat.map(c => [c.id, c]));
-const threads = gh(`repos/${repo}/pulls/${pr.number}/ccr/review_threads`);
+const gql = (() => {
+  const [owner, name] = (repo || "/").split("/");
+  // ponytail: first 100 threads, no pagination; a factory PR with more needs a human anyway
+  const query = "query($owner:String!,$name:String!,$n:Int!){repository(owner:$owner,name:$name){pullRequest(number:$n){reviewThreads(first:100){nodes{id isResolved isOutdated path line comments(first:100){nodes{databaseId}}}}}}}";
+  const r = spawnSync("gh", ["api", "graphql", "-f", `query=${query}`, "-f", `owner=${owner}`, "-f", `name=${name}`, "-F", `n=${pr.number}`], { encoding: "utf8" });
+  try { const j = JSON.parse(r.stdout); return r.status === 0 && !j.errors ? j.data.repository.pullRequest.reviewThreads.nodes : null; } catch { return null; }
+})();
+const threads = gql ? gql.map(t => ({ node_id: t.id, resolved: t.isResolved, outdated: t.isOutdated, path: t.path, line: t.line, comment_ids: t.comments.nodes.map(c => c.databaseId) }))
+  : gh(`repos/${repo}/pulls/${pr.number}/ccr/review_threads`);
 let items = [];
 if (Array.isArray(threads)) {
   for (const t of threads) {
@@ -41,7 +49,7 @@ if (Array.isArray(threads)) {
     // Resolved threads stay in the ledger (GitHub's thread state is the source of truth for their resolution). In a trusted
     // thread only trusted replies reach the claim; an untrusted root makes the whole thread a note.
     const ok = trusted(first);
-    items.push({ id: `human-r${first.id}`, thread_root: first.id, resolved: !!t.resolved, outdated: !!t.outdated, author: first.user.login, trusted: ok,
+    items.push({ id: `human-r${first.id}`, thread_root: first.id, thread_node: t.node_id || null, resolved: !!t.resolved, outdated: !!t.outdated, author: first.user.login, trusted: ok,
       path: t.path || first.path, line: t.line || first.line || first.original_line || 0, body: comments.filter(c => !ok || trusted(c)).filter(c => !FACTORY_MARK.test(c.body)).map(c => c.body).join("\n---\n"), url: first.html_url });
   }
 } else {
@@ -67,8 +75,7 @@ const classify = (body, ok = true) => {
   if (!ok) return { action: "note", severity: "P3" };  // not a collaborator: visible, never actionable
   const t = body.trim().split("\n---\n")[0].trim();
   const q = /\?\s*$/.test(t) || /^(q|question)\s*[:\-]/i.test(t);
-  const nit = /^(nit|nitpick|optional)\b/i.test(t);
-  return { action: q ? "ask" : "fix", severity: q ? "P1" : nit ? "P3" : "P1" };
+  return { action: q ? "ask" : "fix", severity: "P1" };
 };
 // Threads resolved on GitHub (by the factory via pr-resolve, or by the human) are recorded as resolutions.
 const resPath = path.join(RUN, "resolutions.json");

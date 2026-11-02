@@ -6,15 +6,13 @@
 //   command:           runs a command ({branch},{title},{sha} substituted); the URL is url_from (a dotted JSON path) or the first http(s) URL printed.
 //   fixed:             a constant URL (shared staging).
 //   (fallback) local:  the recipe's local url; QA runs against the local stack via run-apps.sh.
-// REST only (GraphQL is unavailable in Claude Code sessions). Never fails the run: an app without a preview falls back to local.
+// REST only (it works in every session). Never fails the run: an app without a ready preview falls back to local.
 import fs from "node:fs";
 import path from "node:path";
 import { execSync, spawnSync } from "node:child_process";
+import { runContext, arg } from "./lib.mjs";
 
-const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
-const arg = (k) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : null; };
-const runId = arg("--run") || fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
-const RUN = path.join(ROOT, ".factory/runs", runId);
+const { ROOT, runId, RUN } = runContext();
 const setup = JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/setup.json"), "utf8"));
 const state = JSON.parse(fs.readFileSync(path.join(RUN, "state.json"), "utf8"));
 const sh = (c) => { try { return execSync(c, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
@@ -28,13 +26,16 @@ const pick = (obj, dotted) => dotted.replace(/^\$\.?/, "").split(/[.\[\]]+/).fil
 const cfg = setup.preview || {};
 const local = cfg.local || {};
 const out = { run: runId, sha, branch, apps: {} };
+// Every entry carries status: ready (a URL to try) | failed (the host reported a failed build, or the command gave no URL) |
+// timeout (nothing terminal before wait_seconds) | none (no preview configured: QA and the PR use the local stack).
 for (const app of setup.apps || []) {
   const name = app.name;
   const p = cfg[name];
   const fallback = { mode: "local", url: local[name]?.url || null, source: "setup.preview.local" };
-  if (!p || p.mode === "local") { out.apps[name] = fallback; continue; }
+  const set = (status, entry) => { out.apps[name] = { status, ...entry }; };
+  if (!p || p.mode === "local") { set("none", fallback); continue; }
   try {
-    if (p.mode === "fixed") { out.apps[name] = { mode: "fixed", url: p.url, source: "setup.preview.fixed" }; continue; }
+    if (p.mode === "fixed") { set("ready", { mode: "fixed", url: p.url, source: "setup.preview.fixed" }); continue; }
     if (p.mode === "command") {
       // The title comes from the request (untrusted) and branch/sha from the run: they reach the shell only as quoted env
       // references, never as text spliced into the command string.
@@ -45,30 +46,32 @@ for (const app of setup.apps || []) {
       let url = null;
       if (p.url_from) { try { url = pick(JSON.parse(r.stdout), p.url_from); } catch { /* fall through */ } }
       url ||= (text.match(/https?:\/\/[^\s"'<>]+/) || [null])[0];
-      out.apps[name] = url ? { mode: "command", url, source: cmd } : { ...fallback, reason: `command printed no URL (exit ${r.status})` };
+      if (url) set("ready", { mode: "command", url, source: cmd });
+      else set(r.error?.code === "ETIMEDOUT" ? "timeout" : "failed", { ...fallback, reason: `command printed no URL (exit ${r.status})` });
       continue;
     }
     if (p.mode === "github-deployment") {
-      if (!repo) { out.apps[name] = { ...fallback, reason: "no GitHub remote" }; continue; }
+      if (!repo) { set("none", { ...fallback, reason: "no GitHub remote" }); continue; }
       const deadline = Date.now() + (p.wait_seconds ?? 600) * 1000;
-      let found = null, seen = 0;
-      while (!found && Date.now() < deadline) {
+      let result = null, seen = 0;
+      // Newest deployment first; the first with a terminal status decides, so a failed redeploy is reported at once rather
+      // than waited out, and is not rescued by an older success.
+      while (!result) {
         const deps = gh(`repos/${repo}/deployments?sha=${sha}${p.environment ? `&environment=${encodeURIComponent(p.environment)}` : ""}&per_page=10`) || [];
         seen = deps.length;
         for (const d of deps) {
           const st = (gh(`repos/${repo}/deployments/${d.id}/statuses?per_page=1`) || [])[0];
-          if (st?.state === "success" && (st.environment_url || st.target_url)) { found = { id: d.id, url: st.environment_url || st.target_url, env: d.environment, creator: d.creator?.login }; break; }
-          if (st && ["failure", "error"].includes(st.state)) { out.apps[name] = { ...fallback, reason: `deployment ${d.id} ${st.state}` }; }
+          if (st?.state === "success" && (st.environment_url || st.target_url)) { result = ["ready", { mode: "github-deployment", url: st.environment_url || st.target_url, source: `deployment ${d.id} (${d.environment}, by ${d.creator?.login})`, deployment_id: d.id }]; break; }
+          if (st && ["failure", "error"].includes(st.state)) { result = ["failed", { ...fallback, reason: `deployment ${d.id} ${st.state}`, deployment_id: d.id }]; break; }
         }
-        if (!found) sleep(Math.min(15000, Math.max(1000, deadline - Date.now())));
+        if (result || Date.now() >= deadline) break;
+        sleep(Math.min(15000, Math.max(1000, deadline - Date.now())));
       }
-      out.apps[name] = found
-        ? { mode: "github-deployment", url: found.url, source: `deployment ${found.id} (${found.env}, by ${found.creator})`, deployment_id: found.id }
-        : { ...fallback, reason: out.apps[name]?.reason || (seen ? `no successful status before wait_seconds` : `no deployment for ${sha.slice(0, 7)} before wait_seconds`) };
+      set(...(result || ["timeout", { ...fallback, reason: seen ? "no terminal deployment status before wait_seconds" : `no deployment for ${sha.slice(0, 7)} before wait_seconds` }]));
       continue;
     }
-    out.apps[name] = { ...fallback, reason: `unknown mode ${p.mode}` };
-  } catch (e) { out.apps[name] = { ...fallback, reason: String(e.message || e) }; }
+    set("none", { ...fallback, reason: `unknown mode ${p.mode}` });
+  } catch (e) { set("failed", { ...fallback, reason: String(e.message || e) }); }
 }
 fs.writeFileSync(path.join(RUN, "preview.json"), JSON.stringify(out, null, 2) + "\n");
-console.log("PREVIEW " + Object.entries(out.apps).map(([k, v]) => `${k}=${v.mode}:${v.url || "none"}${v.reason ? `(${v.reason})` : ""}`).join(" "));
+console.log("PREVIEW " + Object.entries(out.apps).map(([k, v]) => `${k}=${v.status}:${v.mode}:${v.url || "none"}${v.reason ? `(${v.reason})` : ""}`).join(" "));

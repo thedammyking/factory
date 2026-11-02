@@ -4,8 +4,9 @@
 #   before-merge:  report behind_base; with a remote and an open PR, `gh pr update-branch` (a merge, never a rebase); conflicts → exit 3
 # Prints one machine-readable line: SYNC <mode> result=<rebased|up-to-date|conflict|merged> base=<sha> head=<sha> [files=...]
 set -u
+HERE="$(cd "$(dirname "$0")" && pwd)"  # before the cd below, which would break a relative $0
 ROOT="$PWD"; while [ ! -d "$ROOT/.factory" ]; do [ "$ROOT" = / ] && { echo "no .factory/ above $PWD" >&2; exit 2; }; ROOT="$(dirname "$ROOT")"; done; cd "$ROOT"
-RUN="$ROOT/.factory/runs/$(cat "$ROOT/.factory/runs/ACTIVE" 2>/dev/null)"
+RUN="$(node "$HERE/lib.mjs" run-dir 2>/dev/null)"  # the run dir lives in the main checkout
 # Without a live run there is nothing to back up, and restore_run below would `rm -rf` the whole runs/ directory.
 [ -f "$RUN/state.json" ] || { echo "SYNC error: no active run (ACTIVE missing or no state.json)"; exit 2; }
 BASE_BRANCH="$(node -e 'console.log(JSON.parse(require("fs").readFileSync(process.argv[1])).base_branch)' "$RUN/state.json")"

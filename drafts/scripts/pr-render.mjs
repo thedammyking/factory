@@ -2,18 +2,16 @@
 // pr-render.mjs [--run <id>] -> pr.md rendered from pr-inputs.json. Zero tokens. An agent is only needed for prose polish, if ever.
 import fs from "node:fs";
 import path from "node:path";
+import { runContext } from "./lib.mjs";
 
-const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
-const runIdx = process.argv.indexOf("--run");
-const runId = runIdx > -1 ? process.argv[runIdx + 1] : fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
-const RUN = path.join(ROOT, ".factory/runs", runId);
+const { RUN } = runContext();
 const p = JSON.parse(fs.readFileSync(path.join(RUN, "pr-inputs.json"), "utf8"));
 const flag = (b) => (b ? "yes" : "no");
 const step = (c) => {
   // "open <route>, do X, expect Y": derive route from the criterion text when it names one, else the web root
   const route = (c.text.match(/(?:^|[\s`(])(\/(?!\/)[\w/?=&.-]*)/) || [])[1] || "/";  // a bare route, never the path half of a URL
   const expect = (c.text.match(/(?:expect|shows?|returns?|displays?|see)s?\s+(.{10,120}?)(?:\.|;|$)/i) || [])[1];
-  return `${c.id}: open \`${route}\`; ${c.text.replace(/\s+/g, " ").slice(0, 160)}${expect ? ` → expect ${expect}` : ""}`;
+  return `${c.id}: open \`${p.verify_base_url || ""}${route}\`; ${c.text.replace(/\s+/g, " ").slice(0, 160)}${expect ? ` → expect ${expect}` : ""}`;
 };
 const md = `# ${p.ticket_key}: ${p.title}
 
@@ -67,7 +65,7 @@ ${p.assessment_verbatim}
 \`\`\`
 
 ## Verify in 2 minutes
-${p.preview ? `Preview: ${JSON.stringify(p.preview)}` : "No preview environment is configured; verify locally:"}
+${p.preview.some(a => a.status === "ready") ? p.preview.map(a => `- ${a.name}: ${a.status === "ready" ? a.url : `${a.status}${a.reason ? ` (${a.reason})` : ""}, use the local stack`}`).join("\n") + "\n\nOr locally:" : "No preview is ready; verify locally:"}
 \`\`\`
 ${p.verify_locally.checkout}
 ${p.verify_locally.apps.map(a => `# ${a.name}: ${a.start}   → ${a.url}`).join("\n")}

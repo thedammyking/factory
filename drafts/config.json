@@ -3,6 +3,9 @@
   "docs": "repo",
   "merge": "trial",
   "merge_method": "merge",
+  "merge_limits": {
+    "max_files": 40
+  },
   "branching": {
     "model": "git-flow",
     "main": "main",

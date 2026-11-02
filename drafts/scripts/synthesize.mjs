@@ -4,11 +4,9 @@
 // merge resolutions from re-review, and emit machine-readable status per finding. The merge rule reads findings.json, not prose.
 import fs from "node:fs";
 import path from "node:path";
+import { runContext } from "./lib.mjs";
 
-const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
-const runIdx = process.argv.indexOf("--run");
-const runId = runIdx > -1 ? process.argv[runIdx + 1] : fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
-const RUN = path.join(ROOT, ".factory/runs", runId);
+const { runId, RUN } = runContext();
 const read = (f) => { try { return fs.readFileSync(path.join(RUN, f), "utf8"); } catch { return ""; } };
 
 // ---- parse lens files: blocks start with "- id:" and carry indented key: value lines

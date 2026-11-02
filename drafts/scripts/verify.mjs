@@ -6,23 +6,18 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync, execSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { runContext, runEnv } from "./lib.mjs";
 
-const ROOT = findRoot(process.cwd());
+const { ROOT, MAIN, runId, RUN } = runContext({ required: false });
 const mode = process.argv.includes("--full") ? "full" : "fast";
-const runArgIdx = process.argv.indexOf("--run");
-const runId = runArgIdx > -1 ? process.argv[runArgIdx + 1] : (fs.existsSync(path.join(ROOT, ".factory/runs/ACTIVE")) ? fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim() : null);
 const setupPath = path.join(ROOT, ".factory", "setup.json");
 const setup = JSON.parse(fs.readFileSync(setupPath, "utf8"));
-const state = runId ? JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/runs", runId, "state.json"), "utf8")) : {};
+const state = runId ? JSON.parse(fs.readFileSync(path.join(RUN, "state.json"), "utf8")) : {};
 const base = state.base_branch || setup.defaultBranch || "main";
-// The run's environment is the recipe's: PATH/HOME plus .factory/env.local, never the developer's shell (so no login profile),
-// and {base} reaches a command only as a quoted env reference, never as text spliced into it.
-const envFile = path.join(ROOT, ".factory/env.local");
-const envLocal = Object.fromEntries((fs.existsSync(envFile) ? fs.readFileSync(envFile, "utf8") : "").split("\n")
-  .map(l => l.match(/^\s*([A-Za-z_]\w*)=(.*)$/)).filter(Boolean).map(m => [m[1], m[2].replace(/^(["'])(.*)\1$/, "$2")]));
-const runEnv = { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR || "/tmp", ...envLocal, FACTORY_BASE: base };
+// The run's environment is the recipe's (lib.runEnv: PATH/HOME/TMPDIR plus the main checkout's .factory/env.local), never the
+// developer's shell, and {base} reaches a command only as a quoted env reference, never as text spliced into it.
+const env = runEnv(MAIN, { FACTORY_BASE: base });
 
-function findRoot(d) { while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; }
 function sh(cmd) { try { return execSync(cmd, { cwd: ROOT, stdio: ["ignore", "pipe", "ignore"] }).toString().trim(); } catch { return ""; } }
 
 const headBefore = sh("git rev-parse HEAD");
@@ -31,12 +26,12 @@ const committedRecipe = sh("git show HEAD:.factory/setup.json");
 const trusted = committedRecipe.trim() === fs.readFileSync(setupPath, "utf8").trim();
 
 const FAST = new Set(["typecheck", "lint", "test"]);
-// --full runs the e2e checks, whose config starts its own servers: a stack left up by run-apps.sh (the QA walk, captures)
+// --full runs the e2e checks, whose config starts its own servers: a stack left up by run-apps.mjs (the QA walk, captures)
 // makes them fail on a busy port. Stop it first; the orchestrator brings it back when it needs it.
-const runApps = path.join(path.dirname(fileURLToPath(import.meta.url)), "run-apps.sh");  // plugin-owned, beside this script
-if (mode === "full" && fs.existsSync(runApps)) {
-  const r = spawnSync("bash", [runApps, "down"], { cwd: ROOT, encoding: "utf8", timeout: 60_000 });
-  if (r.status !== 0) console.log("verify: run-apps.sh down failed; e2e may hit busy ports\n" + ((r.stdout || "") + (r.stderr || "")).slice(-300));
+const runApps = path.join(path.dirname(fileURLToPath(import.meta.url)), "run-apps.mjs");  // plugin-owned, beside this script
+if (mode === "full" && runId) {
+  const r = spawnSync(process.execPath, [runApps, "down", "--run", runId], { cwd: ROOT, encoding: "utf8", timeout: 60_000 });
+  if (r.status !== 0) console.log("verify: run-apps.mjs down failed; e2e may hit busy ports\n" + ((r.stdout || "") + (r.stderr || "")).slice(-300));
 }
 const checks = [];
 for (const app of setup.apps || []) {
@@ -44,7 +39,7 @@ for (const app of setup.apps || []) {
     if (mode === "fast" && !FAST.has(name)) continue;
     const cmd = cmdTpl.replaceAll("{base}", '"$FACTORY_BASE"');
     const t0 = Date.now();
-    const r = spawnSync("bash", ["-c", cmd], { cwd: path.join(ROOT, app.path || "."), encoding: "utf8", timeout: 10 * 60_000, env: runEnv });
+    const r = spawnSync("bash", ["-c", cmd], { cwd: path.join(ROOT, app.path || "."), encoding: "utf8", timeout: 10 * 60_000, env });
     const out = (r.stdout || "") + (r.stderr || "");
     checks.push({
       app: app.name, check: name, cmd, status: r.status === 0 ? "pass" : "fail", exit: r.status, seconds: Math.round((Date.now() - t0) / 100) / 10,
@@ -68,7 +63,7 @@ const evidence = { mode, sha: headAfter, base_branch: base, dirty, trusted, gree
   dirty_detail: porcelain ? porcelain.split("\n").slice(0, 20) : [] };
 
 if (runId) {
-  const dst = path.join(ROOT, ".factory/runs", runId, `evidence${mode === "fast" ? "-fast" : ""}.json`);
+  const dst = path.join(RUN, `evidence${mode === "fast" ? "-fast" : ""}.json`);
   fs.writeFileSync(dst, JSON.stringify(evidence, null, 2) + "\n");
 }
 const summary = checks.map(c => `${c.app}/${c.check}=${c.status}${c.seconds ? `(${c.seconds}s)` : ""}`).join(" ");

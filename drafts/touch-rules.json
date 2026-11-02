@@ -2,6 +2,7 @@
   "_doc": "Conservative defaults. Paths match as directory/file segments, content as regexes over ADDED lines. Setup section C adds the project's real auth/data directories.",
   "auth":         { "paths": ["/auth/", "/guards/", "/middleware/", "/session", "/login", "/passport"], "content": ["@UseGuards", "jsonwebtoken", "\\bjwt\\.", "bcrypt", "argon2", "passport", "set-cookie", "Authorization:", "getServerSession", "\\bauth\\("] },
   "data":         { "paths": ["/prisma/", "/migrations/", "schema.prisma", "/models/", "/repositories/", "/db/", "/store."], "content": ["prisma\\.", "\\.query\\(", "INSERT INTO", "SELECT .* FROM", "knex\\(", "drizzle", "better-sqlite3", "node:sqlite", "writeFile\\("] },
+  "migrations":   { "paths": ["/migrations/", "/migrate/", "schema.prisma", "/alembic/versions/", "/drizzle/"], "content": [] },
   "network":      { "paths": ["/webhooks/", "/queue", "/jobs/"], "content": ["\\bfetch\\(", "axios", "\\bgot\\(", "undici", "new WebSocket", "http\\.request"] },
   "files":        { "paths": ["/uploads/"], "content": ["multer", "createReadStream", "formData\\(\\)\\.get", "fs\\.promises"] },
   "crypto":       { "paths": [], "content": ["crypto\\.", "randomBytes", "createHash", "subtle\\."] },

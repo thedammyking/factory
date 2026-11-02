@@ -7,11 +7,9 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync, spawnSync } from "node:child_process";
+import { runContext, arg, runEnv, trailer, readJson } from "./lib.mjs";
 
-const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
-const arg = (k, d = null) => { const i = process.argv.indexOf(k); return i > -1 ? process.argv[i + 1] : d; };
-const runId = arg("--run") || fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
-const RUN = path.join(ROOT, ".factory/runs", runId);
+const { ROOT, MAIN, runId, RUN } = runContext();
 const sha = arg("--sha"); const target = arg("--target");
 if (!/^[0-9a-f]{7,40}$/.test(sha || "") || !/^(?!-)[\w./-]+$/.test(target || "")) { console.error("usage: post-merge.mjs --sha <merged sha> --target <branch>"); process.exit(2); }
 const waitS = Number(arg("--wait", 3600));
@@ -55,15 +53,18 @@ if (ci === "green") {
 let smoke = "skipped", smokeTail = "";
 const smokeCmd = arg("--smoke") || setup.smoke?.command;  // e.g. "pnpm --filter web exec playwright test e2e/qa-pinned.spec.ts"
 if (deploy === "success" && url && smokeCmd) {
-  const r = spawnSync("bash", ["-lc", smokeCmd], { cwd: ROOT, encoding: "utf8", env: { ...process.env, BASE_URL: url, PLAYWRIGHT_BASE_URL: url }, timeout: 15 * 60 * 1000 });
+  // the recipe's environment, as verify uses: never the developer's shell or login profile
+  const r = spawnSync("bash", ["-c", smokeCmd], { cwd: ROOT, encoding: "utf8", env: runEnv(MAIN, { BASE_URL: url, PLAYWRIGHT_BASE_URL: url }), timeout: 15 * 60 * 1000 });
   smoke = r.status === 0 ? "pass" : "fail"; smokeTail = ((r.stdout || "") + (r.stderr || "")).split("\n").slice(-30).join("\n");
 }
 
 // 4. The only action: a revert PR, labelled needs-human, never merged here
 let revert = "none";
 const shouldRevert = (ci === "red" || smoke === "fail") && !process.argv.includes("--no-revert");
-if (shouldRevert && process.env.FACTORY_PR_TRAILER === undefined) revert = "FAILED: export FACTORY_PR_TRAILER and FACTORY_COMMIT_TRAILER (the session's attribution lines; empty if none)";
-else if (shouldRevert) {
+const state = readJson(path.join(RUN, "state.json"), {});
+let trailers = null;
+try { trailers = { commit: trailer("commit", state), pr: trailer("pr", state) }; } catch (e) { if (shouldRevert) revert = `FAILED: ${e.message}`; }
+if (shouldRevert && trailers) {
   const wt = fs.mkdtempSync("/tmp/factory-revert-"); fs.rmSync(wt, { recursive: true, force: true });
   const branch = `revert/${runId}-${sha.slice(0, 7)}`;
   try {
@@ -73,9 +74,9 @@ else if (shouldRevert) {
     const isMerge = git(["rev-list", "--parents", "-n", "1", sha], wt).split(" ").length > 2;
     const rv = spawnSync("git", ["revert", "--no-edit", ...(isMerge ? ["-m", "1"] : []), sha], { cwd: wt, encoding: "utf8" });
     if (rv.status !== 0) throw new Error("revert conflicts: " + (rv.stderr || "").slice(0, 200));
-    git(["commit", "-q", "--amend", "-F", "-"], wt, `Revert "${git(["log", "-1", "--format=%s", sha], wt)}"\n\nOpened by the factory after merge: ci=${ci} (${ciDetail}) smoke=${smoke}. Run ${runId}.\n\n${process.env.FACTORY_COMMIT_TRAILER ?? ""}\n`);
+    git(["commit", "-q", "--amend", "-F", "-"], wt, `Revert "${git(["log", "-1", "--format=%s", sha], wt)}"\n\nOpened by the factory after merge: ci=${ci} (${ciDetail}) smoke=${smoke}. Run ${runId}.\n\n${trailers.commit}\n`);
     git(["push", "-q", "-u", "origin", branch], wt);
-    const body = `Automatic revert proposal — **not merged by the factory**.\n\nMerged \`${sha.slice(0, 7)}\` on \`${target}\` is red: CI ${ci} (${ciDetail})${smoke !== "skipped" ? `, smoke ${smoke}` : ""}.\n\n${smokeTail ? "```\n" + smokeTail + "\n```\n\n" : ""}Run \`${runId}\`. Close this PR if the red is a flake or already fixed forward.\n\n${process.env.FACTORY_PR_TRAILER}`;
+    const body = `Automatic revert proposal — **not merged by the factory**.\n\nMerged \`${sha.slice(0, 7)}\` on \`${target}\` is red: CI ${ci} (${ciDetail})${smoke !== "skipped" ? `, smoke ${smoke}` : ""}.\n\n${smokeTail ? "```\n" + smokeTail + "\n```\n\n" : ""}Run \`${runId}\`. Close this PR if the red is a flake or already fixed forward.\n\n${trailers.pr}`;
     const num = gh(`repos/${repo}/pulls`, ["-X", "POST", "-f", `title=Revert ${sha.slice(0, 7)} on ${target} (factory: ${ci === "red" ? "CI red" : "smoke failed"})`, "-f", `head=${branch}`, "-f", `base=${target}`, "-f", `body=${body}`])?.number;
     if (num) { gh(`repos/${repo}/issues/${num}/labels`, ["-X", "POST", "-f", "labels[]=factory", "-f", "labels[]=needs-human"]); revert = `#${num}`; }
     else revert = "FAILED to open PR";

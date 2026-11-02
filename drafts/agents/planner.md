@@ -1,8 +1,10 @@
 # planner (opus, read-only on code; writes only the named artifact)
 
-You run in one of three modes. Read only the named inputs. Never pad with restatements of the request.
+You run in one of three modes. Read only the named inputs. Never pad with restatements of the request. `{run_dir}` is the
+run's directory (absolute, untracked, snapshotted to `.factory/history/<run>/` when the run ends): every artifact you write
+goes there, never into a tracked path.
 
-## mode: spec  → writes `.factory/runs/<run>/spec.md`
+## mode: spec  → writes `{run_dir}/spec.md`
 Inputs: prompt.md, triage.md, research.md, grill.md (settled Q→A decisions).
 Template:
 - `# <title>` + `surface: operate | persuade | read`
@@ -17,19 +19,20 @@ Template:
 - `## Out of scope` · `## Clarifications` (copy the settled Q→A from grill.md) · `## Left to the builder`
 Keep it ≤ 250 lines. Return ≤ 8 lines: title, counts of FR/SC/events, the two biggest open risks.
 
-## mode: tickets → writes `.factory/tickets/<feature>/NN-slug.md` (one per vertical slice)
+## mode: tickets → writes `{run_dir}/tickets/NN-slug.md` (one per vertical slice)
 Inputs: spec.md. Each ticket is a vertical slice sized to one fresh context window, in dependency order,
 with: `**Status:** ready-for-agent` · `**Blocked by:** NN` · `## Goal` · `## Acceptance criteria` as checkboxes
 referencing FR/SC ids · `## Interfaces` (Consumes / Produces: concrete signatures, routes, env names) · `## Notes`.
+`Blocked by:` lists ticket numbers (`02, 03`) or `none`; after the gate, only `run-state.mjs ticket` changes a status.
 On an empty repo, ticket 01 is the scaffold and MUST produce `.factory/setup.json` with proven check commands.
 Return ≤ 8 lines: ticket list with one-line goals and blocking edges.
 
-## mode: plan → writes `.factory/tickets/<feature>/NN/plan.md`
+## mode: plan → writes `{run_dir}/tickets/NN/plan.md`
 Inputs: the ticket, spec.md, research.md, current code (read what the ticket touches).
 Template (bmad): frontmatter `status: ready-for-dev`, `ticket:`, `context:` (files to load first, ≤ 8), `risk: low|med|high`;
 `<frozen-after-approval>` intent block (2–4 sentences, human-owned); `## Code map` (files to create/change, one line each);
 `## Tasks` Given/When/Then, test-first where a seam exists; `## Interfaces` Consumes/Produces; `## Verification` exact commands
-and expected results; `## Analytics` events to emit (from spec); `## UI states` (the named states `capture-states.mjs` must
+and expected results; `## Analytics` events to emit (from spec); `## UI states` (the named states `${CLAUDE_PLUGIN_ROOT}/scripts/capture-states.mjs` must
 picture: empty, loading, error, focus, returning visit, each with width and scheme) when the ticket touches UI;
 `## Open questions` (empty = ready). When Figma or Mobbin references were given, also write `design-ref.md` beside the plan:
 the extracted variables, the feel to borrow, and the spec's accessibility floors that override the reference.

@@ -4,11 +4,10 @@
 import fs from "node:fs";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
+import { runContext } from "./lib.mjs";
 
-const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
+const { ROOT, RUN } = runContext();
 const baseSha = process.argv[2];
-const runIdx = process.argv.indexOf("--run");
-const runId = runIdx > -1 ? process.argv[runIdx + 1] : fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
 const git = (...a) => execFileSync("git", a, { cwd: ROOT, encoding: "utf8", maxBuffer: 64 * 1024 * 1024 });
 
 // Conservative shipped defaults (same as touch-rules.json): directory/file segments and specific patterns, never bare
@@ -16,6 +15,7 @@ const git = (...a) => execFileSync("git", a, { cwd: ROOT, encoding: "utf8", maxB
 const defaults = {
   auth: {"paths": ["/auth/", "/guards/", "/middleware/", "/session", "/login", "/passport"], "content": ["@UseGuards", "jsonwebtoken", "\\bjwt\\.", "bcrypt", "argon2", "passport", "set-cookie", "Authorization:", "getServerSession", "\\bauth\\("]},
   data: {"paths": ["/prisma/", "/migrations/", "schema.prisma", "/models/", "/repositories/", "/db/", "/store."], "content": ["prisma\\.", "\\.query\\(", "INSERT INTO", "SELECT .* FROM", "knex\\(", "drizzle", "better-sqlite3", "node:sqlite", "writeFile\\("]},
+  migrations: {"paths": ["/migrations/", "/migrate/", "schema.prisma", "/alembic/versions/", "/drizzle/"], "content": []},
   network: {"paths": ["/webhooks/", "/queue", "/jobs/"], "content": ["\\bfetch\\(", "axios", "\\bgot\\(", "undici", "new WebSocket", "http\\.request"]},
   files: {"paths": ["/uploads/"], "content": ["multer", "createReadStream", "formData\\(\\)\\.get", "fs\\.promises"]},
   crypto: {"paths": [], "content": ["crypto\\.", "randomBytes", "createHash", "subtle\\."]},
@@ -42,5 +42,5 @@ for (const [cat, r] of Object.entries(rules)) {
   touches[cat] = { hit: byPath.length > 0 || byContent.length > 0, paths: byPath.slice(0, 20), patterns: byContent };
 }
 const out = { base_sha: baseSha, head: git("rev-parse", "HEAD").trim(), files_changed: files.length, touches };
-fs.writeFileSync(path.join(ROOT, ".factory/runs", runId, "touches.json"), JSON.stringify(out, null, 2) + "\n");
+fs.writeFileSync(path.join(RUN, "touches.json"), JSON.stringify(out, null, 2) + "\n");
 console.log("TOUCHES " + Object.entries(touches).filter(([, v]) => v.hit).map(([k]) => k).join(",") + ` files=${files.length}`);

@@ -6,11 +6,19 @@
 import fs from "node:fs";
 import path from "node:path";
 import { createRequire } from "node:module";
-const { chromium } = createRequire(import.meta.url)(process.env.PLAYWRIGHT_PKG || (await import("node:child_process")).execSync("npm root -g").toString().trim() + "/playwright");
+import { execFileSync } from "node:child_process";
+import { runContext } from "./lib.mjs";
 
-const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
-const runId = fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
-const RUN = path.join(ROOT, ".factory/runs", runId);
+const { ROOT, RUN } = runContext();
+// Playwright from the project first (the recipe's e2e dependency: `playwright`, or `@playwright/test`, which re-exports the
+// browsers and is the one pnpm leaves resolvable from an app), then PLAYWRIGHT_PKG, then a global install.
+const load = (dir) => { for (const m of ["playwright", "@playwright/test"]) { try { return createRequire(path.join(dir, "_.js"))(m); } catch {} } return null; };
+const setup = JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/setup.json"), "utf8"));
+const globalRoot = () => { try { return execFileSync("npm", ["root", "-g"], { encoding: "utf8" }).trim(); } catch { return null; } };
+const pw = [ROOT, ...(setup.apps || []).map(a => path.join(ROOT, a.path || "."))].map(load).find(Boolean)
+  || (process.env.PLAYWRIGHT_PKG && createRequire(import.meta.url)(process.env.PLAYWRIGHT_PKG)) || (globalRoot() && load(globalRoot()));
+if (!pw) { console.error("capture-states: no playwright in the project, PLAYWRIGHT_PKG or the global modules"); process.exit(2); }
+const { chromium } = pw;
 const spec = JSON.parse(fs.readFileSync(process.argv[2], "utf8"));
 const outDir = path.join(RUN, "captures"); fs.mkdirSync(outDir, { recursive: true });
 const browser = await chromium.launch();
@@ -52,3 +60,4 @@ for (const st of spec.states) {
 }
 await browser.close();
 fs.writeFileSync(path.join(RUN, "captures", "states.json"), JSON.stringify({ captured_at: new Date().toISOString(), results }, null, 2) + "\n");
+process.exit(results.some(r => r.error) ? 1 : 0);  // a state that could not be pictured is a recapture, not a pass

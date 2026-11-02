@@ -3,17 +3,16 @@
 // Hard facts only. The agent's single input is implementation.md's assessment block (recommendation + confidence + reason).
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
+import { runContext } from "./lib.mjs";
 
-const ROOT = (() => { let d = process.cwd(); while (!fs.existsSync(path.join(d, ".factory")) && path.dirname(d) !== d) d = path.dirname(d); return d; })();
-const runIdx = process.argv.indexOf("--run");
-const runId = runIdx > -1 ? process.argv[runIdx + 1] : fs.readFileSync(path.join(ROOT, ".factory/runs/ACTIVE"), "utf8").trim();
-const RUN = path.join(ROOT, ".factory/runs", runId);
+const { ROOT, runId, RUN } = runContext();
 const rj = (f, d = null) => { try { return JSON.parse(fs.readFileSync(path.join(RUN, f), "utf8")); } catch { return d; } };
 const rt = (f) => { try { return fs.readFileSync(path.join(RUN, f), "utf8"); } catch { return ""; } };
 // git with an argument list: branch names and SHAs come from state.json (triage output) and never pass through a shell.
 const git = (...a) => { try { return execFileSync("git", a, { cwd: ROOT, encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] }).trim(); } catch { return ""; } };
 const config = JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/config.json"), "utf8"));
+const setupRecipe = JSON.parse(fs.readFileSync(path.join(ROOT, ".factory/setup.json"), "utf8"));
 const state = rj("state.json", {});
 const evidence = rj("evidence.json", {});
 const qa = rj("qa.json", {});
@@ -62,10 +61,21 @@ fact("captures_if_ui", !uiTouched || captures > 0, `ui=${!!uiTouched} captures=$
 // the recorded base_sha is behind, and a diff from it would blame the feature for files that arrived from the base).
 const baseRef = git("rev-parse", "--verify", "-q", `origin/${state.base_branch || "develop"}`) ? `origin/${state.base_branch || "develop"}` : (state.base_branch || "develop");
 const mergeBase = git("merge-base", baseRef, "HEAD") || state.base_sha;
-const protectedTouched = (git("diff", "--name-only", `${mergeBase}..HEAD`) || "").split("\n").filter(f =>
+const changed = (git("diff", "--name-only", `${mergeBase}..HEAD`) || "").split("\n").filter(Boolean);
+const protectedTouched = changed.filter(f =>
   /^\.github\/workflows\//.test(f) || (f === ".factory/setup.json" && state.scaffold !== true) || /eslint|prettier|biome/.test(f));
 fact("no_protected_paths", protectedTouched.length === 0, protectedTouched.join(", ") || "none");
 fact("size_not_large", state.size !== "l", `size=${state.size}`);
+// Blast radius: product files changed under the configured limit, and no migrations unless a maintenance run a human approved.
+const limits = { max_files: 40, ...(config.merge_limits || {}) };
+const product = changed.filter(f => !f.startsWith(".factory/"));
+fact("blast_radius_under_limit", product.length <= limits.max_files, `${product.length} files (limit ${limits.max_files})`);
+const migrations = touches.migrations?.hit ? touches.migrations.paths : [];
+fact("no_migrations_unless_approved", !migrations.length || (state.type === "maintenance" && !!state.approvals?.migrations),
+  migrations.length ? `${migrations.join(", ")}${state.approvals?.migrations ? " (approved)" : ""} on a ${state.type} run` : "none");
+// No conflict with the current base: a real merge computed in memory (git >= 2.38), nothing checked out or written.
+const conflict = spawnSync("git", ["merge-tree", "--write-tree", "--quiet", baseRef, "HEAD"], { cwd: ROOT, encoding: "utf8" });
+fact("no_merge_conflict", conflict.status === 0, conflict.status === 0 ? `merges cleanly into ${baseRef}` : conflict.status === 1 ? `conflicts with ${baseRef}` : `merge-tree failed: ${(conflict.stderr || "").trim().slice(0, 80)}`);
 const behind = Number(git("rev-list", "--count", `HEAD..${baseRef}`) || 0);
 fact("not_behind_base", behind === 0, behind ? `${behind} commit(s) on ${baseRef} not in HEAD (run sync-base.sh before-merge)` : `up to date with ${baseRef}`);
 // implementation.md gains a status block per round; the implementer's assessment is the LAST one, not the first.
@@ -79,6 +89,23 @@ fact("no_cap_overrides", ov.length === 0, ov.length ? `human overrode: ${ov.join
 // CI classification from ci-watch (when the run has one): green or flake pass; ours/inherited/infra do not.
 const ci = rj("ci.json", null);
 fact("ci_green_at_head", !!ci && ci.sha === head && ["green", "flake"].includes(ci.cause), ci ? `${ci.cause} @${(ci.sha || "").slice(0, 7)}` : "no ci.json");
+
+// The PR as GitHub sees it (REST): it must target the run's base and its head must be the head evaluated here.
+const prFile = rj("pr.json", null);
+const repo = (git("remote", "get-url", "origin").match(/github\.com[:/]([^/\s]+\/[^/.\s]+)/) || [])[1];
+const live = prFile && repo ? (() => { const r = spawnSync("gh", ["api", `repos/${repo}/pulls/${prFile.number}`], { encoding: "utf8" }); try { return r.status === 0 ? JSON.parse(r.stdout) : null; } catch { return null; } })() : null;
+const target = state.target_branch || state.base_branch;
+fact("pr_targets_run_base", !!live && live.base?.ref === target && live.head?.sha === head,
+  live ? `PR #${live.number} ${live.head?.sha?.slice(0, 7)} -> ${live.base?.ref} (run: ${head.slice(0, 7)} -> ${target})${live.mergeable === false ? ", GitHub reports a conflict" : ""}` : prFile ? "PR not readable over REST" : "no PR yet");
+if (live?.mergeable === false) facts.find(f => f.name === "no_merge_conflict").ok = false;
+// A github-deployment preview configured for an app the diff touched must have reached `success` for this head.
+const preview = rj("preview.json", { apps: {} });
+const touchedApps = (setupRecipe.apps || []).filter(a => !a.path || a.path === "." || product.some(f => f.startsWith(a.path.replace(/\/?$/, "/"))));
+const needPreview = touchedApps.filter(a => setupRecipe.preview?.[a.name]?.mode === "github-deployment");
+const notReady = needPreview.filter(a => preview.sha !== head || preview.apps?.[a.name]?.status !== "ready");
+fact("previews_ready_for_touched_apps", notReady.length === 0, needPreview.length
+  ? notReady.map(a => `${a.name}=${preview.sha === head ? preview.apps?.[a.name]?.status || "absent" : "stale"}`).join(", ") || needPreview.map(a => `${a.name}=ready`).join(", ")
+  : "no deployment preview configured for the touched apps");
 
 const failing = facts.filter(f => !f.ok);
 const decision = { run: runId, head, mode: config.merge || "trial", decision: failing.length ? "needs-human" : "merge",
