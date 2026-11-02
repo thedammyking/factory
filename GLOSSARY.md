@@ -59,6 +59,10 @@ _Avoid_: issue, task, story, decision ticket (a wayfinder map's question)
 The implementer's sole source of truth for one ticket.
 _Avoid_: brief, design doc
 
+**Design token**:
+A named color, type, space, radius or duration value that a project's UI is built from.
+_Avoid_: token (on its own, which means model tokens), theme value, variable
+
 ### Maps
 
 **Map**:

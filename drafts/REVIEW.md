@@ -56,7 +56,7 @@ Checked against `docs/design/design.md` (fixes 1–26) and `docs/design/brief.md
   The dirty, trusted and missing-check behaviour holds.
 
 ### Skills
-- `skills/ui-craft/SKILL.md`: **new**. It is the craft floor that design.md gives the `ui-craft` skill, plus the rules taken from ai-design-skills (see below). It also sets the order of authority (floor, then `DESIGN.md`, then `design-ref.md`, then any other design skill) and the shape `/setup-factory` gives a new `DESIGN.md`. The implementer loads it when a plan has `## UI states`. Untested: no run has used it yet.
+- `skills/ui-craft/SKILL.md`: **new**. It is the craft floor that design.md gives the `ui-craft` skill, plus the rules taken from ai-design-skills (see below). It also sets the order of authority (floor, then the project's design tokens, then `design-ref.md`, then any other design skill). The implementer loads it when a plan has `## UI states`. Untested: no run has used it yet.
 
 ### Config
 - `config.json`: **works**. Caps match the brief (3/2/1 rounds, 30 dispatches, 90 + 45 min, 700k + 700k tokens) and the merge policy is `trial`. `merge_limits.max_files` (40) sets the blast-radius limit. It has no `qa.drivers.mobile` entry, so the mobile driver is implied.
@@ -136,10 +136,9 @@ Checked against `docs/design/design.md` (fixes 1–26) and `docs/design/brief.md
 - **Motion.** Animate only `transform` and `opacity`, add a `prefers-reduced-motion` fallback, and use `IntersectionObserver` for scroll effects. The factory's ≤ 300 ms ease-out stays; the source's 500 ms does not.
 - **390 px check.** No horizontal overflow, and the primary action is in the first screen. `capture-states.mjs` records `overflow`.
 - **Smaller floors.** The nested radius rule, state never shown by color alone, and gradient text checked at its lightest end.
-- **`DESIGN.md` shape.** Palettes, then role tokens that only alias them, with light and dark values.
 - **Persuade intake.** On `surface: persuade` the spec gains `## Offer`: primary action, offer, audience, top three objections, traffic source and the proof that exists. The builder check asks about any item that is missing or a placeholder.
 
-Left out: the house style (font allow and deny lists, no italics, no hyphens, gradient hero text, fixed dark colors, icon libraries, the mandatory tagline section) and the Figma write workflow. `/setup-factory` takes the look from the project, never from a skill. `landing-page-design` should not be installed next to the factory: its description claims all web UI, so an implementer would load it over the project's `DESIGN.md`. `ui-craft` says `DESIGN.md` wins, but the clash is better avoided.
+Left out: the house style (font allow and deny lists, no italics, no hyphens, gradient hero text, fixed dark colors, icon libraries, the mandatory tagline section) and the Figma write workflow. The factory takes the look from the project, never from a skill. `landing-page-design` should not be installed next to the factory: its description claims all web UI, so an implementer would load it over the project's design tokens. `ui-craft` says the project wins, but the clash is better avoided.
 
 ## UI references: proven patterns first
 The owner's rule: a UI ticket follows patterns that already work in shipped products before anything is designed from nothing. Whatever the source, a component library the codebase already has comes first. The researcher names it before anything else (step 0). `design-ref.md` maps each element to one of its components and names any new component. `ui-craft` matches a Figma or Mobbin design through the components' variants, props and theme tokens. The code lens makes a hand-built duplicate of a library component a `P1 fix`, so it goes back through the fix loop instead of reaching the PR as a note.
@@ -151,14 +150,14 @@ The order is:
 4. With no UI and no component library in the repo yet, a new component library supplies the look and components: HeroUI (HeroUI React for web, HeroUI Native for mobile) when an app is mobile or a component must exist on both, shadcn/ui for web only. The layout comes from the Mobbin picks, or else the library's examples and blocks. The first UI ticket installs the library. The choice follows the platform, so setup still asks nothing about aesthetics. A stack neither library serves (not React or React Native) gets "no proven reference".
 - **The researcher searches Mobbin, not the planner or the orchestrator.** design.md says the orchestrator calls Mobbin in short steps. That would put untrusted text in the session that acts, against its own trust-boundary rule that only the triager and researcher read untrusted input. The researcher (half C) makes at most six searches and records 2–4 picks in `research.md`'s `## UI references`. A pick is the app, the screen or flow, its link, what to borrow (layout, hierarchy, primary action, states) and what not to (the other product's brand, copy and illustrations). A pattern several apps share beats a one-off.
 - **The planner** writes `design-ref.md` for every UI ticket from that section, so a Mobbin pick reaches the implementer as factory-written text. The planner lists it in `context:`.
-- **`ui-craft`** follows the reference's structure, reuses the project's components before writing new ones, and composes new layout only for what the reference does not show, from the project's existing screens first. `DESIGN.md` still sets the look, so a pick lends its structure and never its skin.
+- **`ui-craft`** follows the reference's structure, reuses the project's components before writing new ones, and composes new layout only for what the reference does not show, from the project's existing screens first. The project's design tokens still set the look, so a pick lends its structure and never its skin.
 - **The UI lens** classifies each element against `design-ref.md` and the spec.
 - `config.json` gains `ui.figma` and `ui.mobbin`, both `false` until `/setup-factory` section (G) finds the MCP connected.
 
 Skipped: downloading the picked images. Mobbin's image URLs expire after 30 days and the picks are other companies' copyrighted UI, so the run keeps the links and the written pattern. Add a download step if a reviewer needs the pictures. Untested: no Mobbin MCP was connected here. The tool names come from design.md (`search_screens`, `search_flows`, `search_sections`), and their prefix depends on the server's name in `.mcp.json`.
 
 ## Still open
-- **`/setup-factory` (not drafted)** writes `DESIGN.md` in the `ui-craft` shape when the project has none, taking the values its existing UI already uses and never new ones, or the library's default theme when there is no UI yet. It should also offer `@axe-core/playwright` when it finds Playwright, or every capture records `axe: "missing"`. Section (G) sets `ui.figma` and `ui.mobbin` from `claude mcp list`.
+- **`/setup-factory` (not drafted)** should offer `@axe-core/playwright` when it finds Playwright, or every capture records `axe: "missing"`. Section (G) sets `ui.figma` and `ui.mobbin` from `claude mcp list`.
 - **The orchestrator skill (not drafted) has three jobs:**
   - Record the attribution lines right after `init` (gap 3).
   - On `surface: persuade`, put the `## Offer` items to the human during the grill, one question at a time.

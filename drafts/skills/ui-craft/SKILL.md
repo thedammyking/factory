@@ -1,17 +1,17 @@
 ---
 name: ui-craft
-description: "The factory's floor for UI code. Load it before writing or changing web UI in a factory ticket, which is any plan with a `## UI states` section. It reads the project's DESIGN.md and holds the measurable rules every screen must meet."
+description: "The factory's floor for UI code. Load it before writing or changing web UI in a factory ticket, which is any plan with a `## UI states` section. It holds the measurable rules every screen must meet."
 ---
 
 # UI craft
 
 Authority, highest first:
 1. The floor below. It holds whatever the other three say.
-2. The project's `DESIGN.md`: tokens, type, color, icons, motion values.
+2. The project's design tokens (type, color, space, radius, icons, motion), where `design-ref.md` says they live: its theme file, Tailwind config or CSS variables.
 3. `design-ref.md` beside the plan: the proven pattern to follow, from a Figma design, or else the existing UI's design language (with no UI yet, HeroUI's or shadcn/ui's), laid out like the Mobbin picks from shipped products when there are any. Follow its structure. Compose something new only for what it does not show, and then from the project's existing screens before anything invented.
-4. Any other design skill installed in the project. Where it disagrees with `DESIGN.md` (fonts, colors, icon sets, page structure), `DESIGN.md` wins.
+4. Any other design skill installed in the project. Where it disagrees with the project's design tokens or `design-ref.md` (fonts, colors, icon sets, page structure), the project wins.
 
-Read `DESIGN.md` first. Every color, size, space, radius and duration resolves to one of its tokens. If a value you need is missing, use the nearest token and say so in `implementation.md`. When the codebase has a component library, build every design from its components, whether the design came from Figma or Mobbin: match the design through the component's variants, props and theme tokens, never by replacing it. Write a new component only where the library has none for the job, compose it from the library's primitives, and say so in `implementation.md`. Without a library, reuse the project's existing components before writing new ones.
+Read the files `design-ref.md` names for the design tokens first. Every color, size, space, radius and duration resolves to a design token or, where the project has no theme, to a value its existing screens already use. If a value you need is missing, use the nearest one and say so in `implementation.md`. Add no theme file the plan does not ask for. When `design-ref.md` says there is no proven reference, use the stack's own defaults, define no palette, and say so in `implementation.md`. When the codebase has a component library, build every design from its components, whether the design came from Figma or Mobbin: match the design through the component's variants, props and theme tokens, never by replacing it. Write a new component only where the library has none for the job, compose it from the library's primitives, and say so in `implementation.md`. Without a library, reuse the project's existing components before writing new ones.
 
 ## Floor
 
@@ -42,12 +42,3 @@ Content
 - Never invent facts. Prices, counts, statistics, testimonials and logos come from the spec or the repo; anything else is a visible `{{placeholder}}`.
 - Errors say what failed and what to do next. Confirmations name what was done. No exclamation marks.
 - No filler: "revolutionize", "supercharge", "cutting edge", "effortless", "world class".
-
-## DESIGN.md shape
-
-When the project has no `DESIGN.md`, `/setup-factory` writes one in this shape from the existing UI: the values its theme file, CSS variables and components already use, never new ones. A project with no UI yet takes the library's default theme: HeroUI's when it has a mobile app, shadcn/ui's otherwise. An existing `DESIGN.md` is used as it is.
-
-- **Palettes**: raw colors, one palette per hue (`Primary`, `Grayscale`, `Red`, `Green`, `Yellow`…), shades `00` (near white) to `1000` (near black) with `500` the base. Translucent overlay colors live here with their opacity, because an alias cannot add one.
-- **Role tokens**: `Surface/`, `Text/`, `Border/`, `Action/`, `Icon/`, `Overlay/`, each with the variants it needs (`-Hover`, `-Click`, `-Disabled`, `-Subtle`, `-Inverted`) and a light and a dark value. Every value is an alias to a palette shade, never a raw color. Code uses role tokens only, so a rebrand changes only the palettes.
-- **Text styles**: named and numbered by group (Heading, Title, Body, Button, Caption), each on one step of a single type scale.
-- **Scales**: spacing, radius and duration.
