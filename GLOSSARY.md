@@ -91,6 +91,10 @@ _Avoid_: env, scenario
 The result of running the recipe's checks, pinned to one commit.
 _Avoid_: test results, report
 
+**Digest**:
+The short account a script gives in place of a command's full output: the failing lines quoted word for word, and where the full output is kept.
+_Avoid_: log tail, summary
+
 **Lens**:
 One read-only reviewer's angle on the diff: code, UI, security or a human's PR comments.
 _Avoid_: reviewer type, pass
