@@ -111,6 +111,10 @@ _Avoid_: reviewer type, pass
 One typed claim a lens makes about the diff, with a severity and an action.
 _Avoid_: issue, comment, bug
 
+**Eval**:
+A fixed case that checks one agent prompt's behaviour on a planted input, run in this repo before a version is tagged and never shipped.
+_Avoid_: golden task, benchmark, test (the `node:test` suites)
+
 ### Merging
 
 **Merge decision**:
