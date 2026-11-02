@@ -55,6 +55,10 @@ _Avoid_: PRD, requirements doc
 One runnable or observable check in a spec that the run must prove.
 _Avoid_: acceptance test, AC
 
+**Acceptance check**:
+The one check written at triage from the request text alone. A request without one is not ready, and on the oneshot route it is the run's only success criterion.
+_Avoid_: acceptance criterion, acceptance test
+
 **Ticket**:
 One vertical slice of a run's spec, sized to a single fresh implementer.
 _Avoid_: issue, task, story, decision ticket (a wayfinder map's question)
