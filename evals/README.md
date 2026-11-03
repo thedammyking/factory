@@ -9,6 +9,7 @@
 | `triager-one-file-bug` | a cart total that ignores quantity, in one file | `READY`, route `oneshot` |
 | `triager-not-oneshot` | "Show the user's timezone on their profile card", which needs a component change and an API change | route `build` |
 | `researcher-local-doc` | a question `docs/auth.md` answers | `answer.md` cites `docs/auth.md`, and WebFetch is called zero times |
+| `builder-check-uncheckable` | a spec whose `SC-003` says only "The export feels fast." | the last message and `builder-check.md` name `SC-003` |
 
 Every case also checks that the session dispatched the agent under test.
 
@@ -23,7 +24,7 @@ claude plugin eval . --ablation none --scaffold --allow-tools Bash Write Edit We
 Exit 0 is required before tagging. A failing case is fixed, in the prompt or the case, never waved through. Then `node evals/compare.mjs` prints each case's score and mean cost per eval run next to the last committed release, marks any case more than 20% dearer, and prints both results' Claude Code versions and pinned models. It never fails: a human judges a rise. Commit `evals/results/<version>/aggregate-result.json` with the tag. Every other result is gitignored.
 
 - `--model` pins only the session that dispatches the agent. The agents keep their frontmatter model (fact 3), so the `sonnet` alias moves with the Claude Code version that `compare.mjs` prints.
-- `--judge-model` is pinned for the cases that will grade prose; these five use only `regex` and `tool_used` graders.
+- `--judge-model` is pinned for the cases that will grade prose; these six use only `regex` and `tool_used` graders.
 - WebFetch is granted so the researcher could fetch. Its no-fetch grader means nothing if the tool is absent.
 - While editing one agent, rerun only its cases with `--case 'triager-*'`. `--case` takes one glob.
 

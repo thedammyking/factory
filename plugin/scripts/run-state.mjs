@@ -2,7 +2,15 @@
 // run-state.mjs — the only writer of a run's state.json.
 // Every command but init and status takes --run <id>, or derives the run from the run worktree it runs in.
 //   run-state.mjs init < request              -> the run worktree detached at the base tip, the run dir inside it with
-//                                                state.json and prompt.md; records the owning session; prints the state
+//                                                state.json and prompt.md; records the owning session; prints the state.
+//                                                With FACTORY_GRILL_ANSWERS set (an unattended run), copies that file in
+//                                                as grill-answers.md
+//   run-state.mjs lane                        -> a build or oneshot run, once: switches the run worktree to a new lane
+//                                                branch at its base's tip (prefix and base from triage's type and the
+//                                                branching model, then the request issue's key, then triage's slug) and
+//                                                records branch, base_branch, target_branch and base_sha
+//   run-state.mjs approve spec approved|revise -> the human's decision at the spec gate; approved covers spec.md as it is,
+//                                                and until then a build run dispatches nothing past the builder check
 //   run-state.mjs get                         -> prints state.json
 //   run-state.mjs set <key> <value>           -> sets a top-level key (JSON when it parses); `route` must be a route and
 //                                                `stage` an outcome (dispatch sets the working stages, abandon its own);
@@ -27,6 +35,7 @@
 //                                                removes a clean worktree
 //   run-state.mjs status                      -> one line per run not finished (needs-human and failed wait on a resume),
 //                                                from every run worktree's state.json
+import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -36,7 +45,10 @@ const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
 const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted"];
 const FINISHED = ["delivered", "abandoned", "answered", "charted"];
 const WAITING = ["needs-human", "failed"];  // outcomes that wait on a resume
-const OUTPUT = { triage: "triage.md", answer: "answer.md" };  // the file each stage writes in the run dir
+const OUTPUT = {  // the file each stage writes in the run dir
+  triage: "triage.md", answer: "answer.md", research: "research.md", spec: "spec.md", "builder-check": "builder-check.md",
+};
+const BEFORE_SPEC_GATE = ["triage", "research", "spec", "builder-check"];  // a build run's only stages before its spec is approved
 const CREDENTIAL = /KEY|SECRET|TOKEN|PASS|PWD|PRIVATE|CREDENTIAL|AUTH|DSN/i;  // an env name whose value the snapshot withholds
 
 const argv = process.argv.slice(2);
@@ -47,6 +59,10 @@ const now = () => new Date().toISOString();
 function die(msg) { console.error(`run-state: ${msg}`); process.exit(2); }
 function save(file, s) { s.updated_at = now(); fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\n"); }
 const log = (runDir, line) => fs.appendFileSync(path.join(runDir, "run.log"), `- ${now()} ${line}\n`);
+const readText = (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
+// An approval covers spec.md exactly as the human read it: any later change to the file needs approving again.
+const specHash = (ctx) => crypto.createHash("sha256").update(readText(path.join(ctx.runDir, "spec.md"))).digest("hex");
+const specApproved = (ctx, s) => s.approvals?.spec?.sha256 === specHash(ctx);
 function load() {
   const ctx = runContext();
   return [ctx, readJson(ctx.state)];
@@ -191,6 +207,9 @@ switch (cmd) {
     if (!config) die("no .factory/config.json: run /setup-factory first");
     const request = fs.readFileSync(0, "utf8").trim();
     if (!request) die("init reads the request on stdin");
+    // An unattended run (claude -p) answers its grill from this file, which the run keeps as grill-answers.md.
+    const answersFile = process.env.FACTORY_GRILL_ANSWERS;
+    let answers; try { answers = answersFile && fs.readFileSync(answersFile, "utf8"); } catch { die(`no grill answers at ${answersFile}`); }
     // Before triage picks a lane, a run sits at the tip of the branch most lanes start from.
     const branching = config.branching || {};
     const base = branching.model === "git-flow" ? branching.develop || "develop" : branching.main || "main";
@@ -207,6 +226,7 @@ switch (cmd) {
     git(MAIN, "worktree", "add", "-q", "--detach", worktree, sha);
     fs.mkdirSync(runDir, { recursive: true });
     fs.writeFileSync(path.join(runDir, "prompt.md"), request + "\n");
+    if (answersFile) fs.writeFileSync(path.join(runDir, "grill-answers.md"), answers);
     const s = {
       id, request, session: process.env.CLAUDE_CODE_SESSION_ID || null,
       stage: "start", route: null, base_branch: base, base_sha: sha, worktree, run_dir: runDir,
@@ -242,6 +262,9 @@ switch (cmd) {
     if (!stage) die("dispatch <stage> [--agent <id> | --log <path>]");
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+    if (s.route === "build" && !BEFORE_SPEC_GATE.includes(stage) && !specApproved(ctx, s)) {
+      die(`the spec of ${ctx.id} isn't approved: /factory approve ${ctx.id} approved`);
+    }
     const agent = arg("--agent"), childLog = arg("--log") && path.resolve(arg("--log"));
     const last = s.dispatches.at(-1);
     if ((agent || childLog) && last?.stage === stage && !last.agent && !last.log) Object.assign(last, agent && { agent }, childLog && { log: childLog });
@@ -281,6 +304,54 @@ switch (cmd) {
     if (!s.stages_done.includes(stage)) s.stages_done.push(stage);
     save(ctx.state, s);
     console.log(`done ${stage}`);
+    break;
+  }
+  case "lane": {
+    const [ctx, s] = load();
+    if (s.branch) { console.log(`on ${s.branch} from ${s.base_branch} at ${s.base_sha}`); break; }
+    if (!["build", "oneshot"].includes(s.route)) die(`only a build or oneshot run takes a lane; ${ctx.id} routes ${s.route}`);
+    const block = [...(readText(path.join(ctx.runDir, "triage.md")).matchAll(/```json\s*\n([\s\S]*?)\n```/g))].at(-1);
+    let triage; try { triage = JSON.parse(block[1]); } catch { die("triage.md has no json block that parses"); }
+    // The lane comes from the type and the branching model, never from triage's prefix; only the slug is triage's. Every
+    // lane but a hotfix starts from the base init chose.
+    const branching = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {}).branching || {};
+    const prefixes = { feature: "feature/", bugfix: "bugfix/", hotfix: "hotfix/", ...branching.prefixes };
+    const bug = branching.model === "git-flow" && triage.type === "bug", hotfix = bug && triage.in_production;
+    const kind = hotfix ? "hotfix" : bug ? "bugfix" : "feature", base = hotfix ? branching.main || "main" : s.base_branch;
+    const words = (v) => String(v ?? "").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    const key = words(s.request_issue?.key), slug = words(String(triage.branch ?? "").split("/").pop());
+    if (key.length && key.every((w, i) => slug[i] === w)) slug.splice(0, key.length);  // a key triage already wrote
+    if (!slug.length) die("triage.md names no branch");
+    const want = prefixes[kind] + [...key, ...slug.slice(0, 5)].join("-");
+    let sha; try { sha = git(ctx.MAIN, "rev-parse", "--verify", `refs/heads/${base}^{commit}`); } catch { die(`base branch '${base}' doesn't exist`); }
+    // A name taken here or on a remote gets the next free number; losing a race to another run moves on the same way.
+    const taken = (name, refs = [`refs/heads/${name}`, `refs/remotes/*/${name}`]) => git(ctx.MAIN, "for-each-ref", "--format=x", ...refs) !== "";
+    for (let n = 1; !s.branch; n++) {
+      const name = n > 1 ? `${want}-${n}` : want;
+      if (taken(name)) continue;
+      try { git(ctx.worktree, "switch", "-q", "-c", name, sha); s.branch = name; }
+      catch (e) { if (!taken(name, [`refs/heads/${name}`])) die(`can't make ${name}: ${gitError(e)}`); }
+    }
+    Object.assign(s, { base_branch: base, target_branch: base, base_sha: sha });
+    save(ctx.state, s);
+    log(ctx.runDir, `run: ${ctx.id} on ${s.branch} from ${base} at ${sha.slice(0, 7)}`);
+    console.log(`on ${s.branch} from ${base} at ${sha}`);
+    break;
+  }
+  case "approve": {
+    const [gate, decision] = args;
+    if (gate !== "spec" || !["approved", "revise"].includes(decision)) die("approve spec approved | revise (a gate's abandon is abandon)");
+    const [ctx, s] = load();
+    if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+    // The gate: the spec and the builder check are done, and nothing has been dispatched since.
+    const before = ["spec", "builder-check"], spec = path.join(ctx.runDir, "spec.md");
+    if (!before.includes(s.dispatches.at(-1)?.stage) || !before.every((d) => s.stages_done.includes(d)) || !fs.existsSync(spec)) {
+      die(`${ctx.id} isn't at the spec gate, which follows the builder check`);
+    }
+    s.approvals = { ...s.approvals, spec: decision === "approved" ? { sha256: specHash(ctx), at: now() } : undefined };
+    save(ctx.state, s);
+    log(ctx.runDir, `run: ${ctx.id} spec ${decision}`);
+    console.log(`spec ${decision}`);
     break;
   }
   case "abandon": {
@@ -369,5 +440,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | get | set | dispatch | done | spend | override | snapshot | abandon | status");
+  default: die("usage: run-state.mjs init | lane | approve | get | set | dispatch | done | spend | override | snapshot | abandon | status");
 }

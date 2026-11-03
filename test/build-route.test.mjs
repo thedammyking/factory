@@ -1,0 +1,182 @@
+// build-route.test.mjs — run-state.mjs on the build route up to the spec gate: the lane, the grill answers and approval.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { project, sh } from "./harness.mjs";
+
+const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts/run-state.mjs");
+const git = (cwd, ...args) => sh(cwd, "git", args);
+const rs = (cwd, args, input = "", env = {}) =>
+  spawnSync(process.execPath, [SCRIPT, ...args], { cwd, input, encoding: "utf8", env: { ...process.env, ...env } });
+const init = (p, request = "Add a CSV export to the reports page", env) => {
+  const r = rs(p.dir, ["init"], request + "\n", env);
+  assert.equal(r.status, 0, r.stderr);
+  return JSON.parse(r.stdout);
+};
+const state = (p, s) => JSON.parse(rs(p.dir, ["get", "--run", s.id]).stdout);
+// triage.md as the triager writes it: a rationale, then the json block.
+const triaged = (p, s, fields, route = "build") => {
+  fs.writeFileSync(path.join(s.run_dir, "triage.md"), "It adds an export.\n\n```json\n"
+    + JSON.stringify({ type: "feature", in_production: false, branch: "feature/csv-export", route, ...fields }) + "\n```\n");
+  assert.equal(rs(p.dir, ["set", "route", route, "--run", s.id]).status, 0);
+};
+const lane = (p, s) => rs(p.dir, ["lane", "--run", s.id]);
+const GIT_FLOW = { branching: { model: "git-flow", main: "main", develop: "develop", prefixes: { feature: "feature/", bugfix: "bugfix/", hotfix: "hotfix/" } } };
+
+test("under git flow a feature and a bug branch from develop and a bug in production from main, at the base's tip, which is recorded", () => {
+  const p = project({ config: GIT_FLOW });
+  p.git("switch", "-q", "-c", "develop");
+  p.git("commit", "-q", "--allow-empty", "-m", "develop moves ahead");
+  p.git("switch", "-q", "main");
+  for (const [fields, branch, base] of [
+    [{ type: "feature", branch: "feature/csv-export" }, "feature/csv-export", "develop"],
+    [{ type: "bug", branch: "bugfix/login-crash" }, "bugfix/login-crash", "develop"],
+    [{ type: "bug", in_production: true, branch: "bugfix/checkout-total" }, "hotfix/checkout-total", "main"],
+  ]) {
+    const s = init(p);
+    triaged(p, s, fields);
+    p.git("commit", "-q", "--allow-empty", "-m", `${base} moves after the run started`);  // on main, the checkout's branch
+    if (base === "develop") p.git("update-ref", "refs/heads/develop", p.git("commit-tree", "develop^{tree}", "-p", "develop", "-m", "develop moves"));
+    fs.writeFileSync(path.join(s.run_dir, "research.md"), "live state\n");
+    const r = lane(p, s);
+    assert.equal(r.status, 0, r.stderr);
+    const st = state(p, s);
+    assert.equal(git(s.worktree, "branch", "--show-current"), branch, fields.type);
+    assert.deepEqual([st.branch, st.base_branch, st.target_branch], [branch, base, base]);
+    assert.equal(st.base_sha, p.git("rev-parse", base), "the base's tip when the lane is made");
+    assert.equal(git(s.worktree, "rev-parse", "HEAD"), st.base_sha);
+    assert.equal(fs.readFileSync(path.join(s.run_dir, "research.md"), "utf8"), "live state\n", "fix 1: the switch keeps the run's live files");
+    assert.equal(git(s.worktree, "status", "--porcelain"), "");
+  }
+});
+
+test("on trunk everything branches from main with the feature prefix", () => {
+  const p = project();
+  const s = init(p, "Fix the login crash");
+  triaged(p, s, { type: "bug", in_production: true, branch: "hotfix/login-crash" });
+  assert.equal(lane(p, s).status, 0);
+  const st = state(p, s);
+  assert.deepEqual([st.branch, st.base_branch, st.target_branch, st.base_sha], ["feature/login-crash", "main", "main", p.git("rev-parse", "main")]);
+});
+
+test("the branch carries the request issue's key, never the run id, and a taken name gets the next free number", () => {
+  const p = project();
+  p.git("update-ref", "refs/remotes/origin/feature/csv-export", "HEAD");  // someone else's branch, fetched
+  p.git("branch", "feature/csv-export-2");
+  const keyed = init(p);
+  rs(p.dir, ["set", "request_issue", '{"key":"ENG-123"}', "--run", keyed.id]);
+  triaged(p, keyed, {});
+  assert.equal(lane(p, keyed).status, 0);
+  const plain = init(p);
+  triaged(p, plain, {});
+  assert.equal(lane(p, plain).status, 0);
+  const named = init(p);
+  rs(p.dir, ["set", "request_issue", '{"key":"#12"}', "--run", named.id]);
+  triaged(p, named, { branch: "feature/12-csv-export" });
+  assert.equal(lane(p, named).status, 0);
+  assert.equal(state(p, keyed).branch, "feature/eng-123-csv-export");
+  assert.equal(state(p, plain).branch, "feature/csv-export-3");
+  assert.equal(state(p, named).branch, "feature/12-csv-export", "a key triage already wrote isn't doubled");
+  for (const s of [keyed, plain, named]) assert.ok(!state(p, s).branch.includes(s.id));
+});
+
+test("only a build or oneshot run takes a lane, once; hold and answer make no branch", () => {
+  const p = project();
+  for (const route of ["hold", "answer"]) {
+    const s = init(p, `A ${route} request`);
+    triaged(p, s, {}, route);
+    const r = lane(p, s);
+    assert.equal(r.status, 2, route);
+    assert.match(r.stderr, /build or oneshot/);
+    assert.equal(git(s.worktree, "branch", "--show-current"), "", "still detached");
+  }
+  assert.equal(p.git("for-each-ref", "--format=%(refname)", "refs/heads"), "refs/heads/main");
+  const s = init(p);
+  triaged(p, s, {}, "oneshot");
+  assert.equal(lane(p, s).status, 0);
+  const again = lane(p, s);
+  assert.equal(again.status, 0, "a second call, after a resume, is a no-op");
+  assert.match(again.stdout, /feature\/csv-export/);
+  assert.equal(p.git("for-each-ref", "--format=%(refname)", "refs/heads/feature"), "refs/heads/feature/csv-export");
+  const broken = init(p, "No block");
+  fs.writeFileSync(path.join(broken.run_dir, "triage.md"), "No json block here.\n");
+  rs(p.dir, ["set", "route", "build", "--run", broken.id]);
+  assert.equal(lane(p, broken).status, 2);
+});
+
+test("an unattended run takes its grill answers from FACTORY_GRILL_ANSWERS, copied into the run dir; a missing file starts no run", () => {
+  const p = project();
+  fs.writeFileSync(path.join(p.dir, "answers.md"), "- Q: Which columns? → A: date, amount, status\n");
+  const s = init(p, "Add a CSV export", { FACTORY_GRILL_ANSWERS: "answers.md" });
+  assert.equal(fs.readFileSync(path.join(s.run_dir, "grill-answers.md"), "utf8"), "- Q: Which columns? → A: date, amount, status\n");
+  assert.ok(!fs.existsSync(path.join(init(p, "Add a PDF export").run_dir, "grill-answers.md")), "an attended run has none");
+  const r = rs(p.dir, ["init"], "Add an XLS export\n", { FACTORY_GRILL_ANSWERS: "nope.md" });
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, /nope\.md/);
+  assert.equal(p.git("worktree", "list").split("\n").length, 3, "no worktree for the run that didn't start");
+});
+
+// A build run with its spec written and builder-checked: the spec gate.
+const atGate = (p) => {
+  const s = init(p);
+  triaged(p, s, {});
+  const run = (...args) => rs(p.dir, [...args, "--run", s.id]);
+  assert.equal(lane(p, s).status, 0);
+  for (const [stage, file] of [["research", "research.md"], ["spec", "spec.md"], ["builder-check", "builder-check.md"]]) {
+    assert.equal(run("dispatch", stage).status, 0, stage);
+    fs.writeFileSync(path.join(s.run_dir, file), `# ${stage}\n\n- **SC-001** (profile: default, live-safe: yes): /reports, Export, a CSV downloads.\n`);
+    run("done", stage);
+  }
+  return [s, run];
+};
+
+test("nothing past the spec gate dispatches until the human approves the spec", () => {
+  const p = project();
+  const s = init(p);
+  triaged(p, s, {});
+  const run = (...args) => rs(p.dir, [...args, "--run", s.id]);
+  lane(p, s);
+  run("dispatch", "research");
+  fs.writeFileSync(path.join(s.run_dir, "research.md"), "Status: ok\n");
+  run("done", "research");
+  assert.equal(run("approve", "spec", "approved").status, 2, "no spec yet");
+  run("dispatch", "spec");
+  fs.writeFileSync(path.join(s.run_dir, "spec.md"), "# CSV export\n");
+  run("done", "spec");
+  assert.equal(run("approve", "spec", "approved").status, 2, "the builder check hasn't run");
+  run("dispatch", "builder-check");
+  assert.equal(run("approve", "spec", "approved").status, 2, "the builder check is still running");
+  run("done", "builder-check");
+  const refused = run("dispatch", "tickets");
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, new RegExp(`/factory approve ${s.id} approved`));
+  assert.match(run("approve", "spec", "maybe").stderr, /approved \| revise/);
+  const ok = run("approve", "spec", "approved");
+  assert.equal(ok.status, 0, ok.stderr);
+  assert.equal(run("dispatch", "tickets").status, 0);
+  assert.equal(run("approve", "spec", "revise").status, 2, "past the gate the spec is frozen");
+  assert.match(fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8"), new RegExp(`run: ${s.id} spec approved`));
+});
+
+test("a revise, or a spec that changed after its approval, needs approving again; a oneshot has no spec gate", () => {
+  const p = project();
+  const [s, run] = atGate(p);
+  assert.equal(run("approve", "spec", "approved").status, 0);
+  fs.appendFileSync(path.join(s.run_dir, "spec.md"), "- **SC-002**: an edit after the approval\n");
+  assert.equal(run("dispatch", "tickets").status, 2, "the approval covers the spec as it was");
+  assert.equal(run("approve", "spec", "revise").status, 0);
+  assert.equal(run("dispatch", "spec").status, 0, "the planner revises the spec");
+  assert.equal(run("approve", "spec", "approved").status, 2, "the revised spec isn't written yet");
+  fs.writeFileSync(path.join(s.run_dir, "spec.md"), "# CSV export, revised\n");
+  run("done", "spec");
+  assert.equal(run("dispatch", "tickets").status, 2, "a revise clears the approval");
+  assert.equal(run("approve", "spec", "approved").status, 0, "the revised spec goes back to the gate without a second builder check");
+  assert.equal(run("dispatch", "tickets").status, 0);
+  assert.match(fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8"), new RegExp(`spec approved\\n.*spec revise\\n.*spec approved\\n`));
+  const one = init(p, "Fix the cart total");
+  triaged(p, one, { type: "bug" }, "oneshot");
+  assert.equal(rs(p.dir, ["dispatch", "plan", "--run", one.id]).status, 0);
+});

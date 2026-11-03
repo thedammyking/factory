@@ -1,8 +1,8 @@
 ---
 name: factory
-description: Carries a request through the factory as a run. /factory <request> | status | resume [run] | abandon [run]
+description: Carries a request through the factory as a run. /factory <request> | status | resume [run] | approve [run] approved|revise|abandon | abandon [run]
 disable-model-invocation: true
-argument-hint: "<request> | status | resume [run] | abandon [run]"
+argument-hint: "<request> | status | resume [run] | approve [run] approved|revise|abandon | abandon [run]"
 allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*)
 ---
 
@@ -16,6 +16,7 @@ Arguments: `$ARGUMENTS`
 
 - `status`: run `run-state status` and print its output as it is.
 - `resume [run]`: see **Resume**.
+- `approve [run] <decision>`: see **Approve**.
 - `abandon [run]`: see **Abandon**.
 - Anything else is the request for a new run.
 
@@ -88,9 +89,42 @@ The request is a question, or needs no change. No lane branch is made, and the r
    - Otherwise run `run-state done answer --run <id>` and print `answer.md` in chat as it is.
 6. Run `run-state set stage answered --run <id>` and the snapshot after it (see **Ending a run**), then stop. If the snapshot stops, the answer in chat stands; only its copy in history is withheld.
 
-### build and oneshot
+### oneshot
 
-These routes aren't built in this version. Write `attention-route.md`, saying triage chose the `<route>` route and that this version stops after triage, with the options `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, print the attention item and stop.
+This route isn't built in this version. Write `attention-route.md`, saying triage chose the `oneshot` route and that this version stops after triage, with the options `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, print the attention item and stop.
+
+### build
+
+The request gets a lane branch, research, a grill, a spec and a builder check, then waits at the spec gate: nothing is built from a spec the human hasn't approved.
+
+A stage below is dispatched the way triage is: `run-state dispatch <stage>`, the named agent in the background with its model from `.factory/config.json` when set, the agent's id recorded with `--agent`, a one-line `<what it does> <id>.`, and the end of your turn. Its prompt is triage's three lines, with the `base_sha` the lane printed, plus any line the stage names. When its notification arrives, ignore its text and read the stage's file. A stage whose file is missing or lacks what the step names is incomplete, a factory error: write `attention-<stage>.md` (options: `/factory <the request>` to start again in a new run, `/factory abandon <id>`), run `run-state set stage failed --run <id>`, print it and stop.
+
+1. **Lane.** `run-state lane --run <id>` switches the run worktree to the lane's branch and prints `on <branch> from <base> at <sha>`. If it exits non-zero, write `attention-lane.md` quoting its error, run `run-state set stage failed --run <id>`, print it and stop.
+2. **Research.** Stage `research`, agent `factory:researcher`, model `models.research`, with the line `mode: research`: `Researching <id>.` Read the last `Status:` line of `<run_dir>/research.md`.
+   - `ok` or `partial(<reason>)`: `run-state done research --run <id>`, then the grill.
+   - `blocked(<reason>)`: write `attention-research.md` quoting the reason (options: `/factory <a request this repo can hold>`, `/factory abandon <id>`), run `run-state set stage needs-human --run <id>`, print it and stop.
+3. **Grill.** In this session, not a dispatch. Load the `factory:grilling` skill and follow it, with these rules over it:
+   - The facts are in `research.md`, `triage.md` and `prompt.md`. Dispatch no agent during the grill. A fact none of them holds is recorded as `- Unknown: <fact>` for the planner, never asked.
+   - Ask in plain chat, never with a question tool. Ask only decisions (what done looks like, scope, what a user sees), each with its recommended answer, until every criterion the spec needs is a test or an observable result. If the human says to go on, every open question takes its recommended answer, marked `(default)`.
+   - After each round, append the settled pairs to `<run_dir>/grill.md`, which starts with `## Clarifications`, under `### Session <today's date>`, one `- Q: <question> → A: <answer>` line each, in the human's words.
+   - Unattended, when `<run_dir>/grill-answers.md` exists, nothing is asked in chat: each question takes its answer from that file, else its recommended answer marked `(default)`, and the session heading is `### Session <today's date> (unattended: answered from grill-answers.md)`.
+   - When nothing is left to ask, `run-state done grill --run <id>`.
+4. **Spec.** Stage `spec`, agent `factory:planner`, model `models.plan`, with the line `mode: spec`: `Writing the spec for <id>.` It writes `<run_dir>/spec.md`, which must hold `SC-001`. Then `run-state done spec --run <id>`, and the builder check after the first spec, the spec gate after a revision.
+5. **Builder check.** Stage `builder-check`, agent `factory:builder-check`, model `models.builder_check`: `Checking the spec for <id>.` Sort each question in `<run_dir>/builder-check.md`:
+   - **answered**: `spec.md`, `grill.md` or `research.md` already answers it;
+   - **minor**: a builder could settle it without changing what gets built, so its default is the factory's call;
+   - **theirs**: only the human can answer it, and the answer changes what gets built.
+
+   Put only the theirs to the human, in one message, most important first, each with its default as the recommended answer (unattended: from `grill-answers.md`, else the default). Append every question to `grill.md` under `### Session <today's date> (builder check)`, or `(builder check; unattended: answered from grill-answers.md)`: `→ A: <answer> (from <file>)`, `→ A: <default> (the factory's call)`, or the human's answer. Run `run-state done builder-check --run <id>`. Unless `spec.md` itself answered every question, go to **Spec** once so the spec carries the answers. The builder check never runs twice.
+6. **Spec gate.** Write `attention-spec-gate.md`. Its headline asks to approve the spec; What happened gives the spec's title, its counts of requirements and criteria, and the factory's calls; Evidence lists `spec.md`, `grill.md`, `builder-check.md` and `research.md`; the options are `/factory approve <id> approved` (the spec is final), `/factory approve <id> revise` (say what changes; the spec is rewritten and comes back here) and `/factory approve <id> abandon`. Run `run-state set stage needs-human --run <id>`, print `spec.md` and then the attention item, and end your turn. Only the human's `/factory approve` decides: never run `run-state approve` on your own reading of their reply.
+
+## Approve
+
+`/factory approve [run] <decision>`, at the spec gate. Find the run (see above). With no decision, or one that isn't `approved`, `revise` or `abandon`, print the options of its `attention-spec-gate.md` and stop.
+
+- `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop. Tickets aren't built in this version: write `attention-tickets.md` (the spec is approved, and this version stops before tickets; options: `/factory abandon <id>`), run `run-state set stage needs-human --run <id>`, print it and stop.
+- `revise`: `run-state approve spec revise --run <id>`; if it refuses, print why and stop. Ask in plain chat what should change, append the answer to `grill.md` under `### Session <today's date> (revise)` as `- Q: What should change? → A: <their words>`, then go to step 4 of **build**.
+- `abandon`: the decision is the human's answer, so don't ask again. Run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.
 
 ## Answers
 
