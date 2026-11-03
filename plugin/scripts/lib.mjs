@@ -95,3 +95,8 @@ export function digest(output, log) {
   const from = Math.max(lines.length - (39 - hits.length), 0);
   return [...hits.filter((i) => i < from).map((i) => lines[i]), ...lines.slice(from), `full output: ${log}`].join("\n");
 }
+
+// {port:<app>} and {db} in a command, URL or env value, filled from the apps.json run-apps writes in a run dir. A
+// placeholder it can't fill stays as written.
+export const fill = (text, apps) =>
+  text.replace(/\{port:([^}]+)\}|\{db\}/g, (m, app) => String((app ? apps?.apps?.[app]?.port : apps?.db) ?? m));

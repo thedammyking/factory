@@ -7,6 +7,10 @@
 //     its full output saved to logs/<app>-<check>.log in the run dir (.fast.log under --fast); a failing one carries
 //     lib's digest of that output.
 //   - A check needing a name .factory/env.local doesn't hold is skipped, never run. An app without a test check fails it.
+//   - A check its app lists in needs_apps runs between run-apps up and down, with {port:<app>} and {db} filled in its
+//     command and env from apps.json. When up fails the check is skipped with up's output, since apps that won't come
+//     up are the environment's. --full runs run-apps down first, so a stack left up never holds a port an e2e suite's
+//     own servers need (design fix 15).
 //   - The evidence is pinned to HEAD. It's dirty when the tree is unclean outside .factory/ (the recipe included) or HEAD
 //     moved, trusted when the recipe equals HEAD's, and green when every check passed and it's clean and trusted.
 //   - red_cause says why it isn't green: inherited when every failing check fails at the base commit too (rerun there in
@@ -16,7 +20,8 @@
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync, execFileSync } from "node:child_process";
-import { readJson, git, worktreesDir, runContext, runEnv, digest } from "./lib.mjs";
+import { fileURLToPath } from "node:url";
+import { readJson, git, worktreesDir, runContext, runEnv, digest, fill } from "./lib.mjs";
 
 const mode = ["fast", "full"].find((m) => process.argv.includes(`--${m}`));
 if (!mode) { console.error("verify: usage: verify.mjs --fast | --full [--run <id>]"); process.exit(2); }
@@ -33,12 +38,15 @@ const logs = path.join(ctx.runDir, "logs");
 fs.mkdirSync(logs, { recursive: true });
 const appDir = (root, name) => path.join(root, recipe.apps.find((a) => a.name === name).path || ".");
 const NOT_RUN = { exit: null, seconds: 0, log: null };
+const logOf = (name) => path.join(logs, `${name.replace(/[^\w.-]/g, "_")}${mode === "fast" ? ".fast" : ""}.log`);
+const RUN_APPS = fileURLToPath(new URL("run-apps.mjs", import.meta.url));
+const apps = (cmd) => spawnSync(process.execPath, [RUN_APPS, cmd, "--run", ctx.id], { encoding: "utf8" });
 
 // Executes one command, its stdout and stderr interleaved into logs/<name>.log.
-function execute(cwd, cmd, name) {
-  const log = path.join(logs, `${name.replace(/[^\w.-]/g, "_")}${mode === "fast" ? ".fast" : ""}.log`);
+function execute(cwd, cmd, name, cmdEnv = env) {
+  const log = logOf(name);
   const fd = fs.openSync(log, "w"), t0 = Date.now();
-  const r = spawnSync("bash", ["-c", cmd.replaceAll("{base}", '"$FACTORY_BASE"')], { cwd, env, stdio: ["ignore", fd, fd], timeout: 10 * 60_000 });
+  const r = spawnSync("bash", ["-c", cmd.replaceAll("{base}", '"$FACTORY_BASE"')], { cwd, env: cmdEnv, stdio: ["ignore", fd, fd], timeout: 10 * 60_000 });
   if (r.error) fs.writeSync(fd, `\nverify: ${r.error.message}\n`);
   fs.closeSync(fd);
   const status = r.status === 0 ? "pass" : "fail";
@@ -59,6 +67,22 @@ function atBase(failing) {
   } finally { git(ctx.MAIN, "worktree", "remove", "--force", wt); }
 }
 
+// Runs a check that needs apps between run-apps up and down.
+function withApps(app, check, cmd) {
+  const up = apps("up");
+  try {
+    if (up.status !== 0) {
+      const log = logOf(`${app}-${check}`), output = `run-apps up failed\n${up.stdout}${up.stderr}`;
+      fs.writeFileSync(log, output);
+      return { status: "skipped", ...NOT_RUN, log, digest: digest(output, log) };
+    }
+    const recorded = readJson(path.join(ctx.runDir, "apps.json"));
+    const filled = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, typeof v === "string" ? fill(v, recorded) : v]));
+    return execute(appDir(tree, app), fill(cmd, recorded), `${app}-${check}`, filled);
+  } finally { apps("down"); }
+}
+
+if (mode === "full") apps("down");
 const before = git(tree, "rev-parse", "HEAD");
 const checks = [];
 for (const app of recipe.apps || []) {
@@ -67,9 +91,10 @@ for (const app of recipe.apps || []) {
     if (mode === "fast" && !FAST.includes(check)) continue;
     const { cmd, env: needs = [] } = typeof def === "string" ? { cmd: def } : def;
     const unavailable = needs.filter((name) => !Object.hasOwn(env, name));
-    checks.push({ app: app.name, check, cmd, ...(unavailable.length
+    const needsApps = !!app.needs_apps?.includes(check);
+    checks.push({ app: app.name, check, cmd, ...(needsApps && { needs_apps: true }), ...(unavailable.length
       ? { status: "skipped", ...NOT_RUN, digest: `${unavailable.join(", ")} not available in .factory/env.local` }
-      : execute(appDir(tree, app.name), cmd, `${app.name}-${check}`)) });
+      : needsApps ? withApps(app.name, check, cmd) : execute(appDir(tree, app.name), cmd, `${app.name}-${check}`)) });
   }
   if (!defs.test) checks.push({ app: app.name, check: "test", cmd: null, status: "fail", ...NOT_RUN, digest: "required check not in recipe" });
 }
@@ -81,7 +106,10 @@ const changed = [[".", ":(exclude).factory"], [RECIPE]]
 const dirty = changed.length > 0 || sha !== before;
 const green = checks.every((c) => c.status === "pass") && !dirty && trusted;
 const failed = checks.filter((c) => c.status === "fail");
-if (failed.some((c) => c.cmd)) atBase(failed.filter((c) => c.cmd));
+// ponytail: a check that needs apps isn't rerun at the base, so its red reads introduced; start the base's apps from
+// the base worktree if that ever costs a round.
+const rerun = failed.filter((c) => c.cmd && !c.needs_apps);
+if (rerun.length) atBase(rerun);
 // A check missing from the recipe was missing at the base too: the guard keeps a run from writing the recipe.
 const red_cause = green ? null
   : failed.length ? (failed.every((c) => !c.cmd || c.at_base?.status === "fail") ? "inherited" : "introduced")

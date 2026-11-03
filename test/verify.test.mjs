@@ -2,10 +2,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import net from "node:net";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { project, sh } from "./harness.mjs";
+import { project, sh, STUB_SERVER } from "./harness.mjs";
 
 const SCRIPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts");
 const node = (script, cwd, args, { input = "", env = process.env } = {}) =>
@@ -189,4 +190,68 @@ test("fix 1: run state written mid-run leaves the evidence clean and pinned to H
   assert.equal(git(p.wt, "rev-parse", "HEAD"), head, "the bookkeeping commit never moves the run's HEAD");
   const again = p.verify("--full");
   assert.deepEqual([again.status, again.evidence.sha, again.evidence.dirty], [0, head, false]);
+});
+
+// A run whose project holds the stub server too, with ALIVE (the file every stub lives by) and `env` in
+// .factory/env.local. After the test, pass or fail, the run's apps are brought down and ALIVE goes.
+function withApps(t, recipe, files, env = {}) {
+  const p = run(recipe, { "server.mjs": STUB_SERVER, ...files });
+  const alive = path.join(p.dir, ".alive");
+  fs.writeFileSync(alive, "");
+  fs.writeFileSync(path.join(p.dir, ".factory/env.local"), Object.entries({ ALIVE: alive, ...env }).map(([k, v]) => `${k}=${v}`).join("\n") + "\n");
+  t.after(() => { node("run-apps.mjs", p.dir, ["down", "--run", p.s.id]); fs.rmSync(alive, { force: true }); });
+  return p;
+}
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const freePort = () => new Promise((resolve) => { const s = net.createServer().listen(0, () => { const { port } = s.address(); s.close(() => resolve(port)); }); });
+
+test("a check its app lists in needs_apps runs while the run's apps are up, with {port:<app>} and {db} filled in, and the apps go down after it", (t) => {
+  const probe = "const url = process.argv[2], seen = await (await fetch(url)).json();\n"
+    + "console.log(JSON.stringify({ url, pid: seen.pid, cwd: seen.cwd, API_URL: process.env.API_URL, DATABASE_URL: process.env.DATABASE_URL }));\n";
+  const p = withApps(t, {
+    apps: [{ name: "api", path: ".", dev: "PORT={port:api} node server.mjs", health: "http://localhost:{port:api}/",
+      checks: { test: "true", integration: "node probe.mjs http://localhost:{port:api}/" }, needs_apps: ["integration"] }],
+    db: { create: "true", drop: "true" },
+  }, { "probe.mjs": probe }, { API_URL: "http://localhost:{port:api}/v1", DATABASE_URL: "postgres://localhost:5432/{db}" });
+  const r = p.verify("--full");
+  assert.equal(r.status, 0, r.stdout);
+  assert.deepEqual(statuses(r.evidence), ["api/test=pass", "api/integration=pass"]);
+  const seen = JSON.parse(fs.readFileSync(r.evidence.checks[1].log, "utf8"));
+  assert.match(seen.url, /^http:\/\/localhost:\d+\/$/);
+  assert.equal(seen.cwd, p.wt, "the check reached the run's own app");
+  const { db, apps } = JSON.parse(fs.readFileSync(path.join(p.s.run_dir, "apps.json"), "utf8"));
+  assert.deepEqual([seen.API_URL, seen.DATABASE_URL], [`${seen.url}v1`, `postgres://localhost:5432/${db}`]);
+  assert.deepEqual(apps, {});
+  assert.ok(!alive(seen.pid), "the apps went down after the check");
+  assert.equal(r.evidence.dirty, false, "apps.json and the apps' logs never dirty the tree");
+});
+
+test("a check that needs apps which won't come up is skipped with up's digest, a red the environment caused", (t) => {
+  const p = withApps(t, { apps: [{ name: "api", path: ".", dev: "echo 'Error: connect ECONNREFUSED 127.0.0.1:5432'; exit 1",
+    health: "http://localhost:{port:api}/", checks: { test: "true", integration: "echo ran" }, needs_apps: ["integration"] }] }, {});
+  const r = p.verify("--full");
+  assert.equal(r.status, 1);
+  const c = r.evidence.checks[1];
+  assert.deepEqual([c.status, r.evidence.red_cause], ["skipped", "environment"]);
+  assert.match(c.digest, /^run-apps up failed\n/);
+  assert.match(c.digest, /Error: connect ECONNREFUSED 127\.0\.0\.1:5432/);
+  assert.ok(c.digest.endsWith(`full output: ${c.log}`));
+  assert.doesNotMatch(fs.readFileSync(c.log, "utf8"), /^ran$/m, "the check never ran");
+});
+
+test("fix 15: verify --full brings down a stack left up, so an e2e suite that starts its own server gets its port", async (t) => {
+  const port = await freePort();
+  const e2e = "const s = (await import('node:http')).createServer((q, res) => res.end('e2e ran')).listen(Number(process.argv[2]));\n"
+    + "s.on('error', (e) => { console.error(`Error: ${e.code}`); process.exit(1); });\n"
+    + "s.on('listening', async () => { console.log(await (await fetch(`http://localhost:${process.argv[2]}/`)).text()); process.exit(0); });\n";
+  const p = withApps(t, { apps: [{ name: "web", path: ".", dev: `node server.mjs ${port}`, health: `http://localhost:${port}/`,
+    checks: { test: "true", e2e: `node e2e.mjs ${port}` } }] }, { "e2e.mjs": e2e });
+  const up = node("run-apps.mjs", p.dir, ["up", "--run", p.s.id]);
+  assert.equal(up.status, 0, up.stdout + up.stderr);
+  const { pid } = await (await fetch(`http://localhost:${port}/`)).json();
+  const r = p.verify("--full");
+  assert.equal(r.status, 0, r.stdout);
+  assert.deepEqual(statuses(r.evidence), ["web/test=pass", "web/e2e=pass"]);
+  assert.equal(fs.readFileSync(r.evidence.checks[1].log, "utf8"), "e2e ran\n");
+  assert.ok(!alive(pid), "the stack is down afterwards");
 });

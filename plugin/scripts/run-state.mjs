@@ -29,7 +29,8 @@
 //                                                recorded with who and why; the orchestrator never calls it on its own
 //   run-state.mjs snapshot                    -> unless a run file holds a credential from the env files, commits the run
 //                                                dir to .factory/history/<id>/ on the base and its new run.log lines to
-//                                                .factory/log.md, then removes the worktree of a finished run; a stop
+//                                                .factory/log.md, then removes the worktree of a finished run (its
+//                                                apps brought down and its database dropped first); a stop
 //                                                ends the run needs-human, prints `needs-human: <attention item>`, exits 1
 //   run-state.mjs abandon                     -> ends the run abandoned; its branch is kept, and the snapshot after it
 //                                                removes a clean worktree
@@ -39,6 +40,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { spawnSync } from "node:child_process";
 import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
@@ -404,8 +406,15 @@ switch (cmd) {
     console.log(sha ? `snapshot ${sha.slice(0, 7)} on ${s.base_branch}` : `snapshot unchanged on ${s.base_branch}`);
     // A finished run has nothing left to resume. Without --force, git refuses a worktree holding uncommitted work.
     if (!FINISHED.includes(s.stage)) console.log(`worktree kept (${s.stage})`);
-    else try { git(ctx.MAIN, "worktree", "remove", ctx.worktree); console.log("worktree removed"); }
-    catch (e) { console.log(`worktree kept: ${gitError(e)}`); }
+    else {
+      // Its apps go down first. Its own database goes with it, so a worktree git won't remove keeps it, and a drop
+      // that fails keeps the worktree to retry from.
+      const clean = !git(ctx.worktree, "status", "--porcelain");
+      const apps = spawnSync(process.execPath, [path.join(path.dirname(process.argv[1]), "run-apps.mjs"), "down", ...(clean ? ["--drop"] : []), "--run", ctx.id], { encoding: "utf8" });
+      if (apps.status) console.log(`worktree kept: run-apps down failed\n${apps.stdout}${apps.stderr}`.trim());
+      else try { git(ctx.MAIN, "worktree", "remove", ctx.worktree); console.log("worktree removed"); }
+      catch (e) { console.log(`worktree kept: ${gitError(e)}`); }
+    }
     break;
   }
   case "status": {

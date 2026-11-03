@@ -1,4 +1,5 @@
-// harness.mjs — what every factory test builds on: a throwaway project, fake CLIs on PATH and a local bare remote.
+// harness.mjs — what every factory test builds on: a throwaway project, fake CLIs on PATH, a local bare remote and a
+// stub app.
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
@@ -50,6 +51,16 @@ else { process.stderr.write(${JSON.stringify(`fake ${name}: no canned reply for 
   };
   return { bin, env: { ...process.env, PATH: bin + path.delimiter + process.env.PATH }, calls };
 }
+
+// A stub app for run-apps: `node server.mjs <port>` (else $PORT) answers every request with its pid, cwd, argv and env
+// as JSON. It exits within 100 ms of the file $ALIVE names going away, so a test cleans up the apps it started by
+// removing that file, never by killing a pid.
+export const STUB_SERVER = `import http from "node:http";
+import fs from "node:fs";
+http.createServer((req, res) => res.end(JSON.stringify({ pid: process.pid, cwd: process.cwd(), argv: process.argv.slice(2), env: process.env })))
+  .listen(Number(process.argv[2] || process.env.PORT));
+setInterval(() => fs.existsSync(process.env.ALIVE) || process.exit(), 100);
+`;
 
 // A bare repo added as the project's `origin`, with `main` pushed to it.
 export function bareRemote(p) {
