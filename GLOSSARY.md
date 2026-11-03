@@ -7,7 +7,7 @@ A Claude Code plugin that carries a one-line request through triage, spec, ticke
 ### Runs
 
 **Run**:
-One request carried through the factory, from the prompt to a terminal outcome (delivered, needs-human, failed, abandoned, or charted when the request was handed to a map).
+One request carried through the factory, from the prompt to a terminal outcome (delivered, needs-human, failed, abandoned, answered when a reply was the whole deliverable, or charted when the request was handed to a map).
 _Avoid_: job, session, pipeline execution
 
 **Request issue**:
