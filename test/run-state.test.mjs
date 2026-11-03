@@ -25,6 +25,28 @@ const init = (p, request = "Add a CSV export to the reports page") => {
   assert.equal(r.status, 0, r.stderr);
   return JSON.parse(r.stdout);
 };
+const logLines = (p) => p.git("show", "main:.factory/log.md").split("\n").map((l) => l.replace(/^- \S+ /, ""));
+// A post-commit hook that moves main by an empty commit after each of the next `times` commits, the way a human or
+// another run committing to the base between a snapshot's commit and its move would.
+const baseMovesAfterCommit = (p, times) => {
+  const counter = path.join(p.dir, ".git", "moves");
+  fs.writeFileSync(path.join(p.dir, ".git", "hooks", "post-commit"), `#!/bin/sh
+n=$(cat "${counter}" 2>/dev/null || echo 0)
+[ "$n" -ge ${times} ] && exit 0
+echo $((n + 1)) > "${counter}"
+git update-ref refs/heads/main "$(git commit-tree 'main^{tree}' -p main -m "base moved $n")"
+`, { mode: 0o755 });
+};
+const tempWorktrees = (p) => p.git("worktree", "list", "--porcelain").split("\n").filter((l) => /^worktree .*\/\.base-/.test(l));
+// The developer's env files: .factory/env.local, plus .env* files the main checkout ignores (through .git/info/exclude, so
+// the checkout stays clean).
+const envFiles = (p, files) => {
+  fs.appendFileSync(path.join(p.dir, ".git/info/exclude"), ".env*\n");
+  for (const [file, lines] of Object.entries(files)) {
+    fs.mkdirSync(path.dirname(path.join(p.dir, file)), { recursive: true });
+    fs.writeFileSync(path.join(p.dir, file), lines.join("\n") + "\n");
+  }
+};
 
 test("init makes a run worktree detached at the base tip, holding the run dir, and records the session and request", () => {
   const p = project();
@@ -130,6 +152,126 @@ test("abandon ends a run abandoned and keeps its branch and worktree; a finished
   assert.match(rs(p.dir, ["status"]).stdout, new RegExp(`^${waiting.id}\\s+needs-human\\s`), "a run waiting on the human is listed; an abandoned one isn't");
   assert.equal(rs(p.dir, ["abandon", "--run", waiting.id]).status, 0, "a run waiting on the human can be abandoned");
   assert.equal(rs(p.dir, ["status"]).stdout.trim(), "no active runs");
+});
+
+test("fix 24: snapshot commits the run dir to .factory/history/<run>/ on the base and adds only new log lines", () => {
+  const p = project();
+  const s = init(p);
+  const run = (...args) => rs(p.dir, [...args, "--run", s.id]);
+  run("set", "stage", "needs-human");
+  const first = run("snapshot");
+  assert.equal(first.status, 0, first.stderr);
+  const tracked = p.git("ls-tree", "-r", "--name-only", "main", ".factory").split("\n");
+  for (const f of ["prompt.md", "state.json", "run.log"]) assert.ok(tracked.includes(`.factory/history/${s.id}/${f}`), f);
+  assert.ok(!tracked.some((f) => f.startsWith(".factory/runs/")), "the run dir's own path is never tracked");
+  run("set", "stage", "failed");
+  assert.equal(run("snapshot").status, 0);
+  assert.deepEqual(logLines(p), [`run: ${s.id} started`, `run: ${s.id} needs-human`, `run: ${s.id} failed`]);
+  assert.equal(JSON.parse(p.git("show", `main:.factory/history/${s.id}/state.json`)).stage, "failed", "a second snapshot refreshes the copy");
+  assert.equal(p.git("status", "--porcelain"), "", "the main checkout, which holds main, is fast-forwarded with it");
+});
+
+test("snapshot applies again on a base that moved, and lands on the third try", () => {
+  const p = project();
+  const s = init(p);
+  p.git("switch", "-q", "-c", "elsewhere");  // main is checked out nowhere, so it moves by compare-and-swap
+  baseMovesAfterCommit(p, 2);
+  const r = rs(p.dir, ["snapshot", "--run", s.id]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(p.git("log", "--format=%s", "main").split("\n"),
+    [`factory(run): ${s.id} snapshot (start)`, "base moved 1", "base moved 0", "init"]);
+  assert.deepEqual(logLines(p), [`run: ${s.id} started`]);
+  assert.deepEqual(tempWorktrees(p), []);
+});
+
+test("a base that moves on all 3 tries raises an attention item, ends the run needs-human and keeps its worktree", () => {
+  const p = project();
+  const s = init(p);
+  rs(p.dir, ["set", "stage", "answered", "--run", s.id]);
+  baseMovesAfterCommit(p, 3);
+  const r = rs(p.dir, ["snapshot", "--run", s.id]);
+  assert.equal(r.status, 1);
+  assert.equal(r.stdout.trim(), `needs-human: ${path.join(s.run_dir, "attention-snapshot.md")}`);
+  assert.match(fs.readFileSync(path.join(s.run_dir, "attention-snapshot.md"), "utf8"), /^# .+\n\nRun `[^`]+`, stage `snapshot`\.\n\n## What happened\n/);
+  assert.equal(JSON.parse(rs(p.dir, ["get", "--run", s.id]).stdout).stage, "needs-human");
+  assert.ok(fs.existsSync(s.worktree));
+  assert.deepEqual(tempWorktrees(p), []);
+  assert.doesNotMatch(p.git("log", "--format=%s", "main"), /snapshot/);
+  assert.equal(p.git("status", "--porcelain"), "");
+});
+
+test("after its snapshot a run's worktree is removed on delivered, abandoned and answered, and kept on needs-human and failed", () => {
+  const p = project();
+  for (const [outcome, removed] of [["delivered", true], ["abandoned", true], ["answered", true], ["needs-human", false], ["failed", false]]) {
+    const s = init(p, `Ask about ${outcome}`);
+    rs(p.dir, outcome === "abandoned" ? ["abandon", "--run", s.id] : ["set", "stage", outcome, "--run", s.id]);
+    const r = rs(p.dir, ["snapshot", "--run", s.id]);
+    assert.equal(r.status, 0, r.stderr);
+    assert.equal(fs.existsSync(s.worktree), !removed, outcome);
+    assert.equal(p.git("worktree", "list").includes(s.worktree), !removed, outcome);
+  }
+  const s = init(p, "Ask about uncommitted work");
+  fs.writeFileSync(path.join(s.worktree, "notes.txt"), "work in progress\n");
+  rs(p.dir, ["set", "stage", "delivered", "--run", s.id]);
+  const r = rs(p.dir, ["snapshot", "--run", s.id]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /worktree kept/);
+  assert.ok(fs.existsSync(path.join(s.worktree, "notes.txt")), "a worktree holding uncommitted work is never removed");
+});
+
+test("an answered run can't be resumed: once its worktree is gone, every command says it has ended and where its record is", () => {
+  const p = project();
+  const s = init(p, "Where is the session timeout set?");
+  rs(p.dir, ["set", "stage", "answered", "--run", s.id]);
+  assert.equal(rs(p.dir, ["snapshot", "--run", s.id]).status, 0);
+  for (const args of [["get"], ["dispatch", "triage"], ["set", "stage", "needs-human"]]) {
+    const r = rs(p.dir, [...args, "--run", s.id]);
+    assert.equal(r.status, 2, args[0]);
+    assert.equal(r.stderr.trim(), `run ${s.id} has ended answered: its record is .factory/history/${s.id}/ on main`);
+  }
+});
+
+test("the secret check refuses a run file holding a credential from the env files, naming where it lives, never its value", () => {
+  const p = project();
+  envFiles(p, {
+    ".factory/env.local": ["STRIPE_SECRET_KEY=sk_test_51Habcdef", "WEBHOOK_AUTH_URL=http://localhost:4000/hook?token=whk_9f8e7d6c"],
+    "apps/api/.env.local": ["# the API's database", "export DATABASE_URL='postgres://app:hunter2hunter2@db.internal:5432/app'"],
+  });
+  for (const [leak, name, file] of [
+    ["sk_test_51Habcdef", "STRIPE_SECRET_KEY", ".factory/env.local"],
+    ["http://localhost:4000/hook?token=whk_9f8e7d6c", "WEBHOOK_AUTH_URL", ".factory/env.local"],
+    ["hunter2hunter2", "DATABASE_URL", "apps/api/.env.local"],
+  ]) {
+    const s = init(p);
+    rs(p.dir, ["set", "stage", "answered", "--run", s.id]);
+    fs.writeFileSync(path.join(s.run_dir, "answer.md"), `# Which key?\n\nThis one: ${leak}.\n`);
+    const r = rs(p.dir, ["snapshot", "--run", s.id]);
+    assert.equal(r.status, 1, name);
+    const item = fs.readFileSync(path.join(s.run_dir, "attention-secret.md"), "utf8");
+    assert.match(item, new RegExp(`\`answer\\.md\` holds the value of \`${name}\` from \`${file.replace(".", "\\.")}\``));
+    assert.ok(![r.stdout, r.stderr, item].some((out) => out.includes(leak)), "the check never prints the value");
+    assert.equal(JSON.parse(rs(p.dir, ["get", "--run", s.id]).stdout).stage, "needs-human");
+    assert.ok(fs.existsSync(s.worktree));
+  }
+  assert.doesNotMatch(p.git("log", "--format=%s", "main"), /snapshot/, "nothing is committed");
+});
+
+test("the secret check lets plain settings through: localhost URLs, short values and names that aren't credential-like", () => {
+  const p = project();
+  envFiles(p, { ".env": [
+    "NEXTAUTH_URL=http://localhost:3000",
+    "DATABASE_URL=postgres://localhost:5432/app",
+    "REDIS_URL=redis://app:pw@localhost:6379",
+    "API_TOKEN=abc1234",
+    "APP_NAME=reporting-dashboard",
+  ] });
+  const s = init(p);
+  rs(p.dir, ["set", "stage", "answered", "--run", s.id]);
+  fs.writeFileSync(path.join(s.run_dir, "answer.md"),
+    "It serves http://localhost:3000, reads postgres://localhost:5432/app and redis://app:pw@localhost:6379, as reporting-dashboard with abc1234.\n");
+  const r = rs(p.dir, ["snapshot", "--run", s.id]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(p.git("ls-tree", "-r", "--name-only", "main"), new RegExp(`\\.factory/history/${s.id}/answer\\.md`));
 });
 
 test("under git flow a run starts at develop's tip", () => {
