@@ -11,4 +11,7 @@ jobs:
         with:
           node-version: 20
       # The SKILL.md size check is a case in test/repo.test.mjs, so this runs it too.
+      # guard-paths allows every write under /tmp/, so test projects must live elsewhere, as they do on macOS.
       - run: node --test
+        env:
+          TMPDIR: ${{ runner.temp }}
