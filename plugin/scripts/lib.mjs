@@ -72,3 +72,26 @@ export function runContext() {
   }
   return { MAIN, id, ...paths };
 }
+
+// The environment every project command runs in: PATH, HOME and TMPDIR, then .factory/env.local from the main checkout
+// (untracked, so no worktree has it), then `extra`. Never the developer's shell or login profile.
+export function runEnv(main, extra = {}) {
+  const file = path.join(main, ".factory", "env.local");
+  const local = (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "").split("\n").flatMap((line) => {
+    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][\w.]*)\s*=\s*(.*)$/);
+    if (!m) return [];
+    const quoted = m[2].trim().match(/^(["'])(.*)\1$/);
+    return [[m[1], quoted ? quoted[2] : m[2].replace(/\s+#.*$/, "").trim()]];
+  });
+  return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...Object.fromEntries(local), ...extra };
+}
+
+// What a failing command's output reaches agents as, in at most 40 lines: the lines matching an error pattern (the first
+// 29 before the last 10), then as many of the last lines as fit, each quoted word for word in log order, then
+// `full output: <log>`, where the caller saved all of it.
+export function digest(output, log) {
+  const text = output.replace(/\n+$/, ""), lines = text ? text.split("\n") : [];
+  const hits = lines.flatMap((l, i) => i < lines.length - 10 && /error|fail|assert|expected|exception|✗/i.test(l) ? [i] : []).slice(0, 29);
+  const from = Math.max(lines.length - (39 - hits.length), 0);
+  return [...hits.filter((i) => i < from).map((i) => lines[i]), ...lines.slice(from), `full output: ${log}`].join("\n");
+}
