@@ -1,0 +1,7 @@
+{"type":"system","subtype":"hook_started","session_id":"3143f728-c9bd-4ddc-8067-7f4a8be02a91"}
+{"type":"system","subtype":"hook_response","session_id":"3143f728-c9bd-4ddc-8067-7f4a8be02a91"}
+{"type":"system","subtype":"status","session_id":"3143f728-c9bd-4ddc-8067-7f4a8be02a91"}
+{"type":"system","subtype":"init","session_id":"3143f728-c9bd-4ddc-8067-7f4a8be02a91"}
+{"type":"system","subtype":"compact_boundary","session_id":"3143f728-c9bd-4ddc-8067-7f4a8be02a91","compact_metadata":{"trigger":"manual","pre_tokens":60195}}
+{"type":"user","timestamp":"2026-11-03T22:40:11.552Z","session_id":"3143f728-c9bd-4ddc-8067-7f4a8be02a91","message":{"role":"user","content":"xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"}}
+{"type":"result","subtype":"success","session_id":"3143f728-c9bd-4ddc-8067-7f4a8be02a91","usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0},"modelUsage":{"claude-haiku-5-5":{"inputTokens":3051,"outputTokens":1766,"cacheReadInputTokens":148474,"cacheCreationInputTokens":49291}}}

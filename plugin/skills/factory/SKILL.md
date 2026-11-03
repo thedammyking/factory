@@ -51,6 +51,15 @@ When a command names no run, run `run-state status`. If exactly one run is liste
    - No file, no block that parses, or a `route` that isn't `oneshot | build | answer | hold | map`: the stage is incomplete. Write `attention-triage.md` (headline: triage wrote no route, a factory error; options: `/factory resume <id>` to triage again, `/factory abandon <id>`), run `run-state set stage failed --run <id>`, print the attention item and stop.
    - Otherwise run `run-state done triage --run <id>` and `run-state set route <route> --run <id>`, then follow the route.
 
+## Caps
+
+Every `run-state dispatch <stage>` that starts a stage (not the `--agent` call that follows it) first measures the run's spend from the session's transcripts and checks its caps. Its output decides what you do:
+
+- A `WARN` line: print it to the human as it is and carry on. The cap stops the run on its own if it's crossed.
+- Exit 4 with `BUDGET <cap> <used>/<limit>: <stage> not dispatched` lines, then the spend by stage: the stage wasn't dispatched. Write `attention-cap.md`: the headline says which caps were crossed; What happened quotes the `BUDGET` lines and names the stage; the evidence is `<run_dir>/state.json`; the recommendation is to split the work or lift the cap; the options are, per crossed cap, `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-state.mjs override <cap> "<reason>" --run <id>` followed by `/factory resume <id>`, and `/factory abandon <id>`. Print it with the spend lines, run `run-state set stage needs-human --run <id>` and the snapshot after it (see **Ending a run**), and stop.
+
+Only the human lifts a cap. Never run `override` on your own: only when the human tells you in this session to lift a named cap, and then with their reason in their words. A run with an override never ends `delivered`.
+
 ## Routes
 
 ### hold
@@ -118,7 +127,7 @@ Every `run-state set stage <outcome>` and every `run-state abandon` is followed 
 `/factory resume [run]` continues a run that stopped for the human.
 
 1. Find the run (see above) and read its state with `run-state get --run <id>`. If it says the run has ended, or its stage is `delivered`, `abandoned`, `answered` or `charted`, say so and stop: an ended run can't be resumed, and a follow-up is a new `/factory` request in the human's own words.
-2. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. Otherwise, print the run's attention item: there is nothing more to resume in this version.
+2. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names. The dispatch refuses again while a cap is still crossed. Otherwise, print the run's attention item: there is nothing more to resume in this version.
 
 ## Abandon
 

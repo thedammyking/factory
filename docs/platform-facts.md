@@ -27,3 +27,35 @@ The probes use a throwaway repo with a run worktree nested at `.factory/worktree
 - **Docs.** [Subagents](https://code.claude.com/docs/en/sub-agents.md): with `tools` set to Read, Grep, Glob and Bash, "the subagent can't edit files, write files, or use any MCP tools".
 - **Probe.** `claude -p --strict-mcp-config --mcp-config <ping server> --plugin-dir <probe> --allowedTools "Bash(echo *)" …` dispatches `probe:narrow` (`tools: Read, Bash(git ls-files:*), Bash(git log:*)`) and `probe:wide` (no `tools:`). Each lists its tools and tries to call `mcp__probemcp__ping`, loading it through ToolSearch when it has that. Narrow also runs `echo probe > probe.txt`, which the session allows, to show whether a `Bash(…)` specifier in `tools:` restricts Bash, which the docs don't cover. Pass: only `wide` reaches `ping`.
 - **Result.** Holds (2.1.316, 2026-11-03). Narrow saw exactly `Read` and `Bash`, with no MCP tool and no ToolSearch, so it couldn't load `ping`. Wide listed `mcp__probemcp__ping` as deferred, loaded it through ToolSearch and got `pong`. A specifier doesn't restrict Bash: narrow's `echo` ran and wrote the file. Only the permission system limits what an agent's Bash runs, so the triager declares plain `Bash` and keeps to read-only git by its prompt and the permission system: read-only git runs without a prompt, and anything else asks the human or, unattended, is denied.
+
+## From [Caps and spend metering](https://github.com/thedammyking/factory/issues/44)
+
+The probes use a throwaway repo and a probe plugin with two haiku agents: `probe:reader` reads a text file and a 16×16 PNG and runs `wc -l` through Bash, and `probe:bigreader` reads a 160 KB file in five pieces. Each probe is a `claude -p --model haiku --output-format stream-json --verbose` child that dispatches one of them. Trimmed copies of what they wrote are the fixtures in `test/fixtures/spend/`: only the fields the spend parser reads, with every text replaced by as many `x`s (at most 1,000), so no path, prompt or summary is kept.
+
+### 4. Transcripts carry each API response's `usage`, and say where every subagent's is
+
+- **Claim.** A session's transcript is `<config dir>/projects/<folder>/<session>.jsonl`, and each of its subagents' is `<session>/subagents/agent-<id>.jsonl` beside it, `<id>` being the agent id the Agent tool returns. Summing the `usage` on its messages measures a stage.
+- **Docs.** The transcript format isn't documented.
+- **Probe.** The `probe:reader` child. Pass: both transcripts are where claimed, and their sums agree with the child's own final result.
+- **Result.** Holds (2.1.317, 2026-11-03), with three traps:
+  - Claude Code writes one API response once per content block (thinking, text, each tool use), each line repeating the same `message.id` and `usage`, so a message is counted once by its id.
+  - Only `assistant` lines count. The `api-request-blob` lines repeat a request's messages, `tool_use` and `tool_result` blocks included, under `message.role`, so a parser keyed on the role counts them twice.
+  - The folder is the session's cwd with every other character than a letter or digit made `-`, so `run-state` finds it by the session id instead.
+
+  The session's transcript summed to 4 input, 36,583 cache-creation and 336 output tokens (82,416 cache reads), the result's `usage` exactly. The subagent's summed to 4, 12,373 and 545 (7,249 reads), and the two together equal the result's `modelUsage` exactly. Tool results are `user` lines of `tool_result` blocks, a string or a list of `text` and `image` blocks (the PNG read is an `image` block), named by the matching `tool_use` id. The Agent tool's own `totalTokens` (12,517) is the subagent's last request only, as #11 found. An assistant message is on disk before its tool runs (a Bash command found its own text in the transcript), so by the time `dispatch` reads the orchestrator's transcript it holds the call. Cache reads are left out of the spend: the transcript of the agent that built this slice, at 52 requests, summed to 238k cache creation and 49k output against 8.9M cache reads, so counting reads would count the context again on every turn. `run-state` reads the config dir from `CLAUDE_CONFIG_DIR` when it's set, else `~/.claude`: a `claude -p` run with `CLAUDE_CONFIG_DIR` pointing at an empty dir wrote its session's transcript under that dir's `projects/` (before it stopped, not signed in there).
+
+### 5. A child's final result has its per-model usage, the whole session's so far
+
+- **Claim.** The `result` line of a `claude -p --output-format stream-json` child has `modelUsage` per model, its own subagents included.
+- **Docs.** The Agent SDK's result message documents `modelUsage`. They don't say what a resumed session's result counts.
+- **Probe.** The `probe:reader` child, then the same session resumed with `claude -p --resume <session> "/compact"`.
+- **Result.** Holds (2.1.317, 2026-11-03). `modelUsage` includes the subagent; the result's `usage` is the main thread only. After `--resume`, `modelUsage` is the session's total so far: round 1's 49,845 plus the compaction's 4,263, 54,108 in all, restored from a `cost-state` line in the transcript, while `model_usage_since_last_result` holds this process's share. So `run-state` counts each child session once, at its latest result; summing the rounds would count round 1 twice. The stream-json log also carries every message, the child's subagents' too (with `parent_tool_use_id`), so tool results, images and compactions are counted from the same log.
+
+### 6. A compaction leaves a `compact_boundary` marker in child and subagent transcripts
+
+- **Claim.** A compaction in a child or in a subagent writes a marker that can be counted.
+- **Docs.** The marker isn't documented.
+- **Probe.** The child resumed with `/compact` (above), and the `probe:bigreader` child run with `CLAUDE_AUTOCOMPACT_PCT_OVERRIDE=2`, so its subagent compacts early.
+- **Result.** Holds (2.1.317, 2026-11-03). Each compaction writes `{"type":"system","subtype":"compact_boundary","compactMetadata":{"trigger":"manual" | "auto","preTokens":…}}` to the transcript, then a `user` line with `isCompactSummary: true`; a child's stream-json has the same line with `compact_metadata`. The subagent compacted three times (`auto`) in its own transcript, then stopped early, which doesn't bear on the marker. Two limits:
+  - A child's stream-json shows its own compactions, not its subagents'.
+  - The compaction's own API call is in no transcript, only in a child's result. The subagent's transcript summed to 81,544 tokens where the session's result puts it at about 144,700, mostly the compactions' uncached input. This is why a subagent's and the orchestrator's spend is labelled an estimate, and why compactions are counted per stage.
