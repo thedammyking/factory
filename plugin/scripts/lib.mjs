@@ -73,16 +73,22 @@ export function runContext() {
   return { MAIN, id, ...paths };
 }
 
+// An env file's NAME=value lines as [name, value, raw]: an optional `export`, the value unquoted or else cut at a ` #`
+// comment, and raw the text after `=` as written.
+// ponytail: one line per value; a quoted value spanning lines keeps only its first line. Parse dotenv's multi-line values
+// when a project needs one.
+export const envLines = (text) => text.split("\n").flatMap((line) => {
+  const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][\w.]*)\s*=\s*(.*)$/);
+  if (!m) return [];
+  const quoted = m[2].trim().match(/^(["'])(.*)\1$/);
+  return [[m[1], quoted ? quoted[2] : m[2].replace(/\s+#.*$/, "").trim(), m[2].trim()]];
+});
+
 // The environment every project command runs in: PATH, HOME and TMPDIR, then .factory/env.local from the main checkout
 // (untracked, so no worktree has it), then `extra`. Never the developer's shell or login profile.
 export function runEnv(main, extra = {}) {
   const file = path.join(main, ".factory", "env.local");
-  const local = (fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "").split("\n").flatMap((line) => {
-    const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][\w.]*)\s*=\s*(.*)$/);
-    if (!m) return [];
-    const quoted = m[2].trim().match(/^(["'])(.*)\1$/);
-    return [[m[1], quoted ? quoted[2] : m[2].replace(/\s+#.*$/, "").trim()]];
-  });
+  const local = envLines(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
   return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...Object.fromEntries(local), ...extra };
 }
 

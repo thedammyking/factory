@@ -420,3 +420,163 @@ test("apply adds @playwright/test and @axe-core/playwright as dev dependencies, 
   apply(has, g);
   assert.deepEqual(g.calls("pnpm"), [["run", "test"]]);
 });
+
+// The developer's env files: the web app's .env.example with its purposes, the API's names from its .env* files alone.
+// Every value is fake, and SECRETS lists each one that must never reach stdout or the proposal.
+const ENV = {
+  "apps/web/.env.example": "# Where the browser reaches the API\nNEXT_PUBLIC_API_URL=\nNEXTAUTH_URL=http://localhost:3000\n\n# Stripe's secret key, in test mode\nSTRIPE_SECRET_KEY=\nSTRIPE_PUBLISHABLE_KEY=\n# DEBUG=1\nSENTRY_DSN=\n",
+  "apps/web/.env.local": "NEXT_PUBLIC_API_URL=http://localhost:4000/v1\nNEXTAUTH_URL=http://localhost:3000\nSTRIPE_SECRET_KEY=sk_live_fakeSecret1\nSTRIPE_PUBLISHABLE_KEY=pk_live_fakePub2\nLOCAL_ONLY=fake-local-only\n",
+  "apps/web/.env.development": "STRIPE_PUBLISHABLE_KEY=pk_test_fakePub3\n",
+  "apps/api/.env.local": "DATABASE_URL=postgres://shop:fake-pw-local@localhost:5432/shop_dev\n",
+  "apps/api/.env.development": "DATABASE_URL=postgres://shop:fake-pw-dev@db.dev.internal/shop\nREDIS_URL=\"redis://:fake-redis-dev@cache.dev.internal:6379\"\n",
+  "apps/api/.env": "# was postgres://admin:fake-pw-old@prod-db/shop\nDATABASE_URL=postgres://shop:fake-pw-env@db.internal/shop\nREDIS_URL=redis://:fake-redis-env@cache.internal:6379\nPORT=4000\nexport JWT_SECRET=fake-jwt-env # signs sessions\n",
+};
+const SECRETS = ["/v1", "sk_live_fakeSecret1", "pk_live_fakePub2", "pk_test_fakePub3", "fake-local-only", "fake-pw-old", "fake-pw-local", "fake-pw-dev", "fake-pw-env",
+  "shop_dev", "fake-redis-dev", "fake-redis-env", "fake-jwt-env", "fake-jwt-human", "sk_test_fakeHuman5"];
+const noValue = (text, where) => { for (const s of SECRETS) assert.ok(!text.includes(s), `${where} holds the value ${s}`); };
+
+test("detect names each variable from its directory's .env.example, else from its other .env* files, with the example's comment as its purpose, and never a value", () => {
+  const p = shop({ files: { ...SHOP, ...ENV } });
+  const r = run(p, fakes(), ["detect"]);
+  assert.equal(r.status, 0, r.stderr);
+  const d = JSON.parse(r.stdout);
+  assert.deepEqual(d.recipe.env, {
+    DATABASE_URL: null, REDIS_URL: null, PORT: null, JWT_SECRET: null,
+    NEXT_PUBLIC_API_URL: "Where the browser reaches the API", NEXTAUTH_URL: null,
+    STRIPE_SECRET_KEY: "Stripe's secret key, in test mode", STRIPE_PUBLISHABLE_KEY: null, SENTRY_DSN: null,
+  }, "LOCAL_ONLY isn't in the web app's example; a commented-out line is no purpose, nor is a comment in the developer's own file");
+  assert.deepEqual(source(d, "env.NEXT_PUBLIC_API_URL"), { field: "env.NEXT_PUBLIC_API_URL", value: "Where the browser reaches the API", source: "apps/web/.env.example", guess: false });
+  assert.equal(source(d, "env.JWT_SECRET").source, "apps/api/.env");
+  noValue(r.stdout, "detect's stdout");
+  noValue(fs.readFileSync(d.file, "utf8"), "the proposal");
+});
+
+// .factory/env.local's NAME=value lines, as written
+const envLocal = (p) => Object.fromEntries(read(p, ".factory/env.local").split("\n").flatMap((l) => { const m = l.match(/^(\w+)=(.*)$/); return m ? [[m[1], m[2]]] : []; }));
+
+test("env copies each named variable from .env.local, then .env.development, then .env, a loopback URL at an app's port as {port:<app>} and a live value not at all, printing names and hosts only", () => {
+  const p = shop({ files: { ...SHOP, ...ENV } });
+  const f = fakes();
+  const d = detect(p, f);
+  const r = run(p, f, ["env"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(envLocal(p), {
+    DATABASE_URL: "postgres://shop:fake-pw-local@localhost:5432/shop_dev",
+    REDIS_URL: '"redis://:fake-redis-dev@cache.dev.internal:6379"',
+    PORT: "{port:api}",
+    JWT_SECRET: "fake-jwt-env # signs sessions",
+    NEXT_PUBLIC_API_URL: "http://localhost:{port:api}/v1",
+    NEXTAUTH_URL: "http://localhost:{port:web}",
+    STRIPE_PUBLISHABLE_KEY: "pk_test_fakePub3",
+  }, ".env.local first, then .env.development, then .env; the API at its PORT and web at Next.js's 3000 follow their apps; 5432 is no app's");
+  const text = read(p, ".factory/env.local");
+  assert.match(text, /^# Not copied: /m);
+  assert.match(text, /^# STRIPE_SECRET_KEY=$/m, "only a live value exists, so it's a gap");
+  assert.match(text, /^# SENTRY_DSN=$/m, "no file has a value");
+  assert.doesNotMatch(text, /LOCAL_ONLY|_live_/);
+  assert.equal(fs.statSync(path.join(p.dir, ".factory/env.local")).mode & 0o777, 0o600);
+  assert.equal(p.git("status", "--porcelain"), "", "before apply writes the .gitignore, git already ignores env.local");
+
+  assert.match(r.stdout, /^copied +DATABASE_URL +from apps\/api\/\.env\.local, host localhost$/m);
+  assert.match(r.stdout, /^copied +REDIS_URL +from apps\/api\/\.env\.development, host cache\.dev\.internal$/m);
+  assert.match(r.stdout, /^copied +JWT_SECRET +from apps\/api\/\.env$/m);
+  assert.match(r.stdout, /^copied +NEXT_PUBLIC_API_URL +from apps\/web\/\.env\.local, host localhost, at \{port:api\}$/m);
+  assert.match(r.stdout, /^gap +STRIPE_SECRET_KEY +a live value in apps\/web\/\.env\.local isn't copied$/m);
+  assert.match(r.stdout, /^gap +SENTRY_DSN +no value in \.env\.local, \.env\.development or \.env$/m);
+  noValue(r.stdout, "env's stdout");
+  noValue(fs.readFileSync(d.file, "utf8"), "the proposal");
+});
+
+test("prove, after env, runs every command with .factory/env.local's values and nothing from the developer's shell, each {port:<app>} at its app's port", () => {
+  const dump = path.join(scratch("factory-env-"), "env.json");
+  const web = JSON.parse(SHOP["apps/web/package.json"]);
+  web.scripts.e2e = script("fetch(process.env.NEXT_PUBLIC_API_URL).then((r) => process.exit(r.status === 404 ? 0 : 1), () => process.exit(1))");
+  const p = shop({ files: { ...SHOP, ...ENV, "apps/web/package.json": json(web) } });
+  const f = fakes();
+  detect(p, f);
+  assert.equal(run(p, f, ["env"]).status, 0);
+  // a check that records what it sees, run straight from bash
+  assert.equal(run(p, f, ["set", "apps.web.checks.test"], script(`require("fs").writeFileSync(${JSON.stringify(dump)}, JSON.stringify(process.env))`)).status, 0);
+  const shell = { ...f.env, DEV_SHELL_ONLY: "fake-shell-only", DATABASE_URL: "fake-shell-db" };
+  const r = spawnSync(process.execPath, [SCRIPT, "prove"], { cwd: p.dir, encoding: "utf8", env: shell });
+  assert.equal(r.status, 0, r.stdout);
+  assert.match(r.stdout, /^pass +web\.e2e /m, "the API answered at the URL env.local gave the web app");
+  const seen = JSON.parse(fs.readFileSync(dump, "utf8"));
+  const { PWD, SHLVL, _, __CF_USER_TEXT_ENCODING, ...rest } = seen;  // bash's own, and the one macOS sets in every process
+  assert.deepEqual(Object.keys(rest).sort(), ["DATABASE_URL", "HOME", "JWT_SECRET", "NEXTAUTH_URL", "NEXT_PUBLIC_API_URL", "PATH", "PORT", "REDIS_URL", "STRIPE_PUBLISHABLE_KEY", "TMPDIR"]);
+  assert.deepEqual([seen.DATABASE_URL, seen.REDIS_URL, seen.JWT_SECRET, seen.PATH], ["postgres://shop:fake-pw-local@localhost:5432/shop_dev", "redis://:fake-redis-dev@cache.dev.internal:6379", "fake-jwt-env", f.env.PATH]);
+  assert.match(seen.NEXT_PUBLIC_API_URL, /^http:\/\/localhost:\d+\/v1$/);
+  assert.doesNotMatch(seen.NEXT_PUBLIC_API_URL, /:4000\//, "a free port, not the developer's");
+  assert.equal(seen.NEXT_PUBLIC_API_URL, `http://localhost:${seen.PORT}/v1`, "the API's PORT is the same port");
+  noValue(r.stdout, "prove's stdout");
+
+  // a failing check that prints a value shows its name instead
+  assert.equal(run(p, f, ["set", "apps.api.checks.test"], script("console.log('cannot reach', process.env.DATABASE_URL); process.exit(1)")).status, 0);
+  const failed = run(p, f, ["prove", "api.test"]);
+  assert.equal(failed.status, 1);
+  assert.match(failed.stdout, /^  cannot reach \{env:DATABASE_URL\}$/m);
+  noValue(failed.stdout, "a failing check's output");
+});
+
+test("env again keeps every line the human wrote in env.local and adds only new names; a variable left out makes the checks needing it skipped", () => {
+  const p = shop({ files: { ...SHOP, ...ENV } });
+  const f = fakes();
+  detect(p, f);
+  run(p, f, ["env"]);
+  // the human's edits: a test key in a gap, a value changed and one of their own; SENTRY_DSN isn't available
+  const text = read(p, ".factory/env.local").replace("# STRIPE_SECRET_KEY=", "STRIPE_SECRET_KEY=sk_test_fakeHuman5")
+    .replace(/^JWT_SECRET=.*$/m, "JWT_SECRET=fake-jwt-human") + "COREPACK_ENABLE_AUTO_PIN=0\n";
+  write(p, ".factory/env.local", text);
+  // a variable the project has named since
+  fs.appendFileSync(path.join(p.dir, "apps/web/.env.example"), "FEATURE_FLAGS=\n");
+  fs.appendFileSync(path.join(p.dir, "apps/web/.env.local"), "FEATURE_FLAGS=fake-flags\n");
+  detect(p, f);
+  const r = run(p, f, ["env"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(read(p, ".factory/env.local"), `${text}FEATURE_FLAGS=fake-flags\n`);
+  assert.match(r.stdout, /^kept +STRIPE_SECRET_KEY +in \.factory\/env\.local$/m);
+  assert.match(r.stdout, /^kept +NEXT_PUBLIC_API_URL +in \.factory\/env\.local, host localhost, at \{port:api\}$/m);
+  assert.match(r.stdout, /^copied +FEATURE_FLAGS +from apps\/web\/\.env\.local$/m);
+  assert.match(r.stdout, /^gap +SENTRY_DSN +no value in /m);
+  assert.doesNotMatch(r.stdout, /COREPACK/, "only the recipe's names are listed");
+  noValue(r.stdout, "env's stdout");
+
+  // the proof shows the web app's e2e check needs SENTRY_DSN; the human gives it a purpose
+  const e2e = { cmd: "npm run e2e", env: ["SENTRY_DSN"] };
+  assert.equal(run(p, f, ["set", "apps.web.checks.e2e", JSON.stringify(e2e)]).status, 0);
+  assert.equal(run(p, f, ["set", "env.SENTRY_DSN", "Where errors are reported"]).status, 0);
+  const proved = run(p, f, ["prove"]);
+  assert.equal(proved.status, 0, proved.stdout);
+  assert.match(proved.stdout, /^skipped +web\.e2e +0s +npm run e2e\n  SENTRY_DSN not available in \.factory\/env\.local$/m);
+  apply(p, f);
+  const recipe = JSON.parse(read(p, ".factory/setup.json"));
+  assert.deepEqual(recipe.apps.find((a) => a.name === "web").checks.e2e, e2e);
+  assert.equal(recipe.env.SENTRY_DSN, "Where errors are reported");
+  assert.deepEqual(Object.keys(recipe.budgets.web).sort(), ["dev", "lint", "test", "typecheck"], "a skipped check has no budget");
+  assert.doesNotMatch(read(p, "CLAUDE.md"), /\[object Object\]/);
+  noValue(read(p, ".factory/setup.json"), "the recipe");
+
+  // once the human fills it in, the skipped check is no longer proven
+  fs.appendFileSync(path.join(p.dir, ".factory/env.local"), "SENTRY_DSN=https://fake-dsn@sentry.example/1\n");
+  const r2 = run(p, f, ["apply"]);
+  assert.equal(r2.status, 1);
+  assert.match(r2.stderr, /not proven: web\.e2e/);
+  assert.match(run(p, f, ["prove", "web.e2e"]).stdout, /^pass +web\.e2e /m);
+  apply(p, f);
+});
+
+test("the proposal lists what env.local sets by name, a URL by its host, and what isn't available; never a value", () => {
+  const p = shop({ files: { ...SHOP, ...ENV } });
+  const f = fakes();
+  detect(p, f);
+  run(p, f, ["env"]);
+  assert.equal(run(p, f, ["prove"]).status, 0);
+  const out = apply(p, f, ["--dry-run"]);
+  assert.match(out, /^## Environment\n\n`\.factory\/env\.local` sets, values never shown:\n/m);
+  assert.match(out, /^- `REDIS_URL`: host cache\.dev\.internal$/m);
+  assert.match(out, /^- `NEXT_PUBLIC_API_URL`: host localhost, at \{port:api\}$/m);
+  assert.match(out, /^- `JWT_SECRET`$/m);
+  assert.match(out, /^Not available, so the checks needing them are skipped: `STRIPE_SECRET_KEY`, `SENTRY_DSN`\.$/m);
+  assert.match(out, /^\| `env\.STRIPE_SECRET_KEY` \| `Stripe's secret key, in test mode` \| apps\/web\/\.env\.example \|$/m);
+  noValue(out, "the proposal");
+});

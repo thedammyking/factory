@@ -41,7 +41,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase } from "./lib.mjs";
+import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, envLines } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
 const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted"];
@@ -85,12 +85,7 @@ function envSecrets(main) {
   const ignored = git(main, "ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory", "--", ":(glob)**/.env*")
     .split("\0").filter((f) => /(^|\/)\.env[^/]*$/.test(f));
   return [".factory/env.local", ...ignored].filter((f) => fs.existsSync(path.join(main, f))).flatMap((file) =>
-    fs.readFileSync(path.join(main, file), "utf8").split("\n").flatMap((line) => {
-      const m = line.match(/^\s*(?:export\s+)?([A-Za-z_][\w.]*)\s*=\s*(.*)$/);
-      if (!m) return [];
-      const quoted = m[2].trim().match(/^(["'])(.*)\1$/);
-      return secretsIn(m[1], quoted ? quoted[2] : m[2].replace(/\s+#.*$/, "").trim()).map((value) => ({ name: m[1], file, value }));
-    }));
+    envLines(fs.readFileSync(path.join(main, file), "utf8")).flatMap(([name, v]) => secretsIn(name, v).map((value) => ({ name, file, value }))));
 }
 // A snapshot that stops: writes <run_dir>/attention-<name>.md in the factory skill's attention-item shape, ends the run
 // needs-human with its worktree kept, prints the item's path and exits 1.

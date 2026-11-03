@@ -1,15 +1,21 @@
 #!/usr/bin/env node
-// setup-factory.mjs — what /setup-factory runs. Nothing is written in the project before apply.
+// setup-factory.mjs — what /setup-factory runs. Nothing but the untracked .factory/env.local is written in the project
+// before apply, and no env value is ever printed or kept in the proposal.
 //   setup-factory.mjs detect [--mcp <a,b>]   -> checks the prerequisites (a package.json, a GitHub remote, a signed-in gh)
 //                                              and exits 1 with the fix for each one missing; otherwise prints the proposal
 //                                              as one JSON object and keeps it in the git dir for the next commands. --mcp
 //                                              names the MCP servers (linear, notion, figma, mobbin) visible in the setup
 //                                              session's own tool list. On a re-run the existing .factory/ values are kept,
 //                                              detection fills only what's missing, and each field it disagrees with is listed.
+//                                              The recipe's env names each variable the env files do, with its purpose.
+//   setup-factory.mjs env                    -> section C: copies each of those variables' values from the developer's env
+//                                              files into .factory/env.local, keeping every line already there, and prints
+//                                              one line per variable: copied, kept or a gap, never its value.
 //   setup-factory.mjs prove [<app>.<name> ...] -> runs every check and dev command in the proposal once (or only those named),
 //                                              in the recipe's environment, each dev command on a free port until its health
 //                                              URL answers, and the checks that need apps while they're up; records each
-//                                              one's wall-clock seconds in the proposal; exits 1 when any failed
+//                                              one's wall-clock seconds in the proposal; exits 1 when any failed. A check
+//                                              { cmd, env: [names] } needing a name .factory/env.local lacks is skipped.
 //   setup-factory.mjs set <field> [<value>]  -> sets one field of the proposal to the value, or to stdin without one;
 //                                              null drops the field
 //   setup-factory.mjs apply [--tracker <t>] [--dry-run] -> --dry-run prints the proposal: every detected value with its
@@ -23,7 +29,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, runEnv } from "./lib.mjs";
+import { readJson, arg, git, runEnv, envLines } from "./lib.mjs";
 
 const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
 const argv = process.argv.slice(2);
@@ -65,6 +71,11 @@ const PLAYWRIGHT = ["@playwright/test", "@axe-core/playwright"];
 const ADD = { npm: ["install", "-D"], pnpm: ["add", "-D"], yarn: ["add", "-D"], bun: ["add", "-d"] };
 const EXEC = { npm: ["npx"], pnpm: ["pnpm", "exec"], yarn: ["yarn"], bun: ["bunx"] };
 const GITIGNORE = [".factory/runs/", ".factory/worktrees/", ".factory/env.local"];
+const EXAMPLES = [".env.example", ".env.sample", ".env.template"];
+const VALUE_FILES = [".env.local", ".env.development", ".env"];
+const DEV_SCRIPTS = ["dev", "start:dev", "start"];
+// the dev server's port when nothing sets one, by dependency
+const DEV_PORTS = [["next", 3000], ["nuxt", 3000], ["astro", 4321], ["vite", 5173], ["@sveltejs/kit", 5173], ["@nestjs/core", 3000]];
 
 const onPath = (bin) => (process.env.PATH || "").split(path.delimiter).some((d) => {
   try { fs.accessSync(path.join(d, bin), fs.constants.X_OK); return true; } catch { return false; }
@@ -139,7 +150,7 @@ function detectApp(root, dir, name, pm, add, found) {
   }
   if (app.type === "other" && !Object.keys(checks).length) return null;
   add(`apps.${name}.type`, app.type, ...typeSource);
-  const devScript = ["dev", "start:dev", "start"].find((s) => scripts[s]);
+  const devScript = DEV_SCRIPTS.find((s) => scripts[s]);
   if (devScript && serves(app)) {
     // a web framework takes --port; a server reads PORT
     app.dev = app.type === "web" ? `${pm} run ${devScript}${pm === "npm" ? " --" : ""} --port {port:${name}}` : `PORT={port:${name}} ${pm} run ${devScript}`;
@@ -246,6 +257,9 @@ function detect(root, repo, mcp) {
     pinned,
     ...merge(keptRest, { preview }, "", disagreements),
   };
+  const names = envNames(root, recipe);
+  for (const [name, { purpose, file }] of Object.entries(names)) add(`env.${name}`, purpose, file);
+  recipe.env = merge(keptRest.env, Object.fromEntries(Object.entries(names).map(([n, v]) => [n, v.purpose])), "env", disagreements);
   const fresh = { merge_method: mergeMethod, branching, security };
   const template = readJson(path.join(TEMPLATES, "config.json"));
   const config = Object.fromEntries([...new Set([...Object.keys(template), ...Object.keys(keptConfig)])]
@@ -259,6 +273,86 @@ function detect(root, repo, mcp) {
     recipe, config, auth: found.auth, scanners, installs: installs(root, recipe, pm), sources, disagreements,
   };
   return { ...P, notes: closingNotes(P, tracker) };
+}
+
+// Section C reads the env files in the root and in each app's directory, first directory first.
+const envDirs = (recipe) => [...new Set([".", ...recipe.apps.map((a) => a.path)])];
+const envFiles = (root, dir) => !exists(root, dir) ? [] : fs.readdirSync(path.join(root, dir), { withFileTypes: true })
+  .filter((e) => e.isFile() && /^\.env(\.|$)/.test(e.name)).map((e) => e.name).sort();
+// Each variable a directory's example file names, else its other .env* files, with where it was named and its purpose: the
+// comment lines just above it in an example file. The developer's own files give none: a comment there may hold a value.
+function envNames(root, recipe) {
+  const names = {};
+  for (const dir of envDirs(recipe)) {
+    const files = envFiles(root, dir), example = EXAMPLES.find((f) => files.includes(f));
+    for (const f of example ? [example] : files) {
+      let note = [];
+      for (const line of fs.readFileSync(path.join(root, dir, f), "utf8").split("\n")) {
+        const [entry] = envLines(line), comment = !entry && line.match(/^\s*#\s*(.*?)\s*$/)?.[1];
+        if (entry) names[entry[0]] ??= { purpose: (example && note.join(" ")) || null, file: path.posix.join(dir, f) };
+        note = comment && !envLines(comment).length ? [...note, comment] : [];  // a commented-out NAME= is no purpose
+      }
+    }
+  }
+  return names;
+}
+
+// All of a value that is ever shown: a URL's host, and each app port it takes.
+function hostAndPorts(v) {
+  let host = null; try { if (/^[a-z][\w+.-]*:\/\//i.test(v)) host = new URL(v.replace(/\{port:[^}]+\}/g, "0")).hostname; } catch {}
+  const at = v.match(/\{port:[^}]+\}/g);
+  return [host && `host ${host}`, at && `at ${at.join(", ")}`].filter(Boolean);
+}
+const ENV_HEADER = "# Everything a factory run's commands see besides PATH, HOME and TMPDIR. Never commit it.\n"
+  + "# Setup copied it from your .env files; {port:<app>} becomes that app's port in each run.\n";
+
+// Section C: appends to .factory/env.local each variable of the recipe's env it doesn't name yet, set or commented out, so a
+// value the human wrote there always stays. The value comes from .env.local, then .env.development, then .env, over the root
+// and each app's directory, as written there; a live one (_live_) is passed over, and a loopback address at an app's local
+// port, or a …PORT variable set to one, takes that app's {port:<app>}. A variable with no value goes in commented out, a gap
+// for the human. Returns one line per variable, naming where its value came from and, for a URL, its host: never a value.
+// ponytail: one flat file for every app, the first directory's value winning; per-app env files if two apps' values clash.
+function copyEnv(P) {
+  const file = path.join(P.root, ".factory", "env.local"), live = (v) => v.value.includes("_live_");
+  const readOr = (f) => { try { return fs.readFileSync(f, "utf8"); } catch { return ""; } };
+  const values = VALUE_FILES.flatMap((f) => envDirs(P.recipe).flatMap((dir) =>
+    envLines(readOr(path.join(P.root, dir, f))).map(([name, value, raw]) => ({ from: path.posix.join(dir, f), dir, name, value, raw }))));
+  // each app's port on the developer's machine: a port in its dev script, else PORT in its own env files, else its
+  // framework's default; a port two apps claim follows neither
+  const ports = {};
+  for (const a of P.recipe.apps.filter((a) => a.dev)) {
+    const pkg = readJson(path.join(P.root, a.path, "package.json"), {}), deps = { ...pkg.dependencies, ...pkg.devDependencies };
+    const m = (pkg.scripts?.[DEV_SCRIPTS.find((s) => pkg.scripts?.[s])] || "").match(/(?:--port|-p)[= ]?(\d+)|\bPORT=(\d+)/);
+    const port = m?.[1] || m?.[2] || values.find((v) => v.dir === a.path && v.name === "PORT")?.value || DEV_PORTS.find(([d]) => deps[d])?.[1];
+    if (port) ports[port] = port in ports ? null : a.name;
+  }
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+  const named = new Set(envLines((text ?? "").replace(/^[ \t]*#[ \t]*/gm, "")).map(([n]) => n));
+  const names = Object.keys(P.recipe.env || {}), add = [], gaps = [], copied = {};
+  for (const name of names.filter((n) => !named.has(n))) {
+    const v = values.find((v) => v.name === name && !live(v));
+    if (!v) { gaps.push(`# ${name}=`); continue; }
+    add.push(`${name}=${/(^|_)PORT$/.test(name) && ports[v.value] ? `{port:${ports[v.value]}}`
+      : v.raw.replace(/(?<![\w.-])(localhost|127\.0\.0\.1|0\.0\.0\.0|\[::1\]):(\d+)(?!\d)/g, (m, host, port) => ports[port] ? `${host}:{port:${ports[port]}}` : m)}`);
+    copied[name] = v.from;
+  }
+  if (gaps.length) add.push("# Not copied: fill each in, or leave it commented out if the factory can't have it (the checks needing it are then skipped).", ...gaps);
+  fs.mkdirSync(path.dirname(file), { recursive: true });
+  if (text === null) fs.writeFileSync(file, ENV_HEADER + add.map((l) => `${l}\n`).join(""), { mode: 0o600 });
+  else if (add.length) fs.appendFileSync(file, `${text && !text.endsWith("\n") ? "\n" : ""}${add.join("\n")}\n`);
+  // until apply writes the .gitignore entry, the clone's own exclude file keeps env.local out of git
+  if (run("git", ["check-ignore", "-q", ".factory/env.local"], { cwd: P.root }).status !== 0) {
+    const exclude = path.join(path.dirname(P.file), "info", "exclude");
+    fs.mkdirSync(path.dirname(exclude), { recursive: true });
+    fs.appendFileSync(exclude, "\n.factory/env.local\n");
+  }
+  const set = Object.fromEntries(envLines(fs.readFileSync(file, "utf8")));
+  return names.map((name) => {
+    if (name in set) return `${copied[name] ? "copied" : "kept  "}  ${name}  ${[copied[name] ? `from ${copied[name]}` : "in .factory/env.local", ...hostAndPorts(set[name])].join(", ")}`;
+    const found = values.filter((v) => v.name === name);
+    return `gap     ${name}  ${found.some((v) => !live(v)) ? "commented out in .factory/env.local"
+      : found.length ? `a live value in ${found[0].from} isn't copied` : "no value in .env.local, .env.development or .env"}`;
+  });
 }
 
 function closingNotes(P, tracker) {
@@ -287,10 +381,14 @@ function installs(root, recipe, pm) {
   });
 }
 
+// a check is "<command>" or { cmd, env: [the names it needs] }
+const cmdOf = (check) => check?.cmd ?? check;
 // [key, command, app, name] for every check and dev command in the recipe, keyed as prove records them
 const commands = (recipe) => recipe.apps.flatMap((a) => [...Object.entries(a.checks || {}), ...(a.dev ? [["dev", a.dev]] : [])]
-  .map(([name, command]) => [`${a.name}.${name}`, command, a.name, name]));
-const proven = (P, key, command) => P.proof?.[key]?.status === "pass" && P.proof[key].cmd === command;
+  .map(([name, command]) => [`${a.name}.${name}`, cmdOf(command), a.name, name]));
+// a check skipped for a name .factory/env.local doesn't hold, as verify skips it, counts until the file holds them all
+const proven = (P, key, command) => P.proof?.[key]?.cmd === command && (P.proof[key].status === "pass"
+  || (P.proof[key].status === "skipped" && P.proof[key].missing.some((n) => !Object.hasOwn(runEnv(P.root), n))));
 
 // Every file apply manages, as [path, its content now (null when absent), its content after]. A kept value always wins;
 // the memory files are written only when missing, and CLAUDE.md changes only inside its markers.
@@ -299,13 +397,13 @@ function plan(P, tracker) {
   const template = (f) => fs.readFileSync(path.join(TEMPLATES, f), "utf8");
   const json = (o) => JSON.stringify(o, null, 2) + "\n";
   const budgets = {};
-  for (const [key, command, app, name] of commands(P.recipe)) if (proven(P, key, command)) (budgets[app] ||= {})[name] = P.proof[key].seconds;
+  for (const [key, command, app, name] of commands(P.recipe)) if (proven(P, key, command) && P.proof[key].status === "pass") (budgets[app] ||= {})[name] = P.proof[key].seconds;
   const recipe = { ...P.recipe, budgets: merge(P.recipe.budgets, budgets, "budgets", null) };
   const keptRules = kept(P.root, ".factory/touch-rules.json"), rules = merge(keptRules, JSON.parse(template("touch-rules.json")), "", null);
   const pm = P.package_manager;
   const lines = recipe.apps.flatMap((a) => {
     // a check run as `<pm> run <its name>` goes without saying
-    const cmds = Object.entries(a.checks || {}).filter(([n, c]) => c !== `${pm} run ${n}`).map(([, c]) => `\`${c}\``);
+    const cmds = Object.entries(a.checks || {}).map(([n, c]) => [n, cmdOf(c)]).filter(([n, c]) => c !== `${pm} run ${n}`).map(([, c]) => `\`${c}\``);
     return cmds.length ? [`- ${a.path === "." ? "At the root" : `In \`${a.path}\``}: ${cmds.join(", ")}.\n`] : [];
   });
   // replacements are functions, so a `$` in a command or in CLAUDE.md is never read as a pattern
@@ -339,7 +437,7 @@ function diff(file, before, after) {
 }
 
 // The proposal, section E: every detected value with its source and marked guesses, what kept values detection disagrees
-// with, the installs, and each file's diff.
+// with, what .factory/env.local sets, the installs, and each file's diff.
 function printProposal(P, tracker, files) {
   const cell = (v) => String(v).replaceAll("|", "\\|");
   console.log("## Detected\n\n| Field | Value | Source |\n|---|---|---|");
@@ -351,6 +449,14 @@ function printProposal(P, tracker, files) {
   if (P.disagreements.length) {
     console.log("\n## Kept, though detection disagrees\n");
     for (const d of P.disagreements) console.log(`- \`${d.field}\`: kept ${d.kept === null ? "none" : `\`${JSON.stringify(d.kept)}\``}, detected \`${JSON.stringify(d.detected)}\``);
+  }
+  // section C's result: what a run's commands will see, and the host each URL points at (a shared database shows here)
+  const envFile = path.join(P.root, ".factory", "env.local");
+  if (fs.existsSync(envFile)) {
+    const set = Object.fromEntries(envLines(fs.readFileSync(envFile, "utf8"))), gone = Object.keys(P.recipe.env || {}).filter((n) => !(n in set));
+    console.log("\n## Environment\n\n`.factory/env.local` sets, values never shown:\n");
+    for (const [name, value] of Object.entries(set)) console.log(`- \`${name}\`${hostAndPorts(value).length ? `: ${hostAndPorts(value).join(", ")}` : ""}`);
+    if (gone.length) console.log(`\nNot available, so the checks needing them are skipped: ${gone.map((n) => `\`${n}\``).join(", ")}.`);
   }
   const planned = installs(P.root, P.recipe, P.package_manager);
   if (planned.length) {
@@ -388,15 +494,22 @@ async function prove(P, only) {
   const env = Object.fromEntries(Object.entries(runEnv(P.root)).map(([k, v]) => [k, v === undefined ? v : sub(v)]));
   P.proof ||= {};
   let failed = 0;
+  // a failure's output reaches the chat, so each env.local value in it (8 characters or more) shows as {env:<its name>}
+  const secrets = Object.entries(env).filter(([k, v]) => !["PATH", "HOME", "TMPDIR"].includes(k) && v?.length >= 8).sort(([, a], [, b]) => b.length - a.length);
   const record = (key, cmd, ok, t0, why) => {
     const seconds = Math.round((Date.now() - t0) / 100) / 10;
     P.proof[key] = { cmd, status: ok ? "pass" : "fail", seconds };
     if (!ok) failed++;
-    console.log(`${ok ? "pass" : "fail"}  ${key}  ${seconds}s  ${cmd}${ok ? "" : `\n${why}`}`);
+    console.log(`${ok ? "pass" : "fail"}  ${key}  ${seconds}s  ${cmd}${ok ? "" : `\n${secrets.reduce((t, [k, v]) => t.replaceAll(v, `{env:${k}}`), why)}`}`);
   };
   const check = (a, name) => new Promise((resolve) => {
-    const t0 = Date.now();
-    const child = spawn("bash", ["-c", sub(a.checks[name])], { cwd: path.join(P.root, a.path), env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
+    const t0 = Date.now(), cmd = cmdOf(a.checks[name]), missing = (a.checks[name].env || []).filter((n) => !Object.hasOwn(env, n));
+    if (missing.length) {
+      P.proof[`${a.name}.${name}`] = { cmd, status: "skipped", seconds: 0, missing };
+      console.log(`skipped  ${a.name}.${name}  0s  ${cmd}\n  ${missing.join(", ")} not available in .factory/env.local`);
+      return resolve();
+    }
+    const child = spawn("bash", ["-c", sub(cmd)], { cwd: path.join(P.root, a.path), env, detached: true, stdio: ["ignore", "pipe", "pipe"] });
     groups.add(child.pid);
     let out = "";
     for (const s of [child.stdout, child.stderr]) s.on("data", (d) => { out = (out + d).slice(-20_000); });
@@ -406,7 +519,7 @@ async function prove(P, only) {
     child.on("close", (code, signal) => {
       clearTimeout(timer);
       groups.delete(child.pid);
-      record(`${a.name}.${name}`, a.checks[name], code === 0, t0, lastLines(`${out}\nexited ${code ?? signal}`));
+      record(`${a.name}.${name}`, cmd, code === 0, t0, lastLines(`${out}\nexited ${code ?? signal}`));
       resolve();
     });
   });
@@ -456,6 +569,10 @@ switch (cmd) {
     console.log(JSON.stringify(proposal, null, 2));
     break;
   }
+  case "env": {
+    for (const line of copyEnv(loadProposal())) console.log(line);
+    break;
+  }
   case "prove": {
     if (await prove(loadProposal(), args)) process.exit(1);
     break;
@@ -466,10 +583,10 @@ switch (cmd) {
     const P = loadProposal(), keys = field.split(".");
     // a command such as `true` stays a string: only null, a list, an object or a quoted string is read as JSON
     let value = raw; if (/^(null$|[[{"])/.test(raw)) try { value = JSON.parse(raw); } catch {}
-    // a field as the proposal's table names it: apps.<name>.…, pinned and preview.… are the recipe's, branching.… and the
-    // like the config's
+    // a field as the proposal's table names it: apps.<name>.…, pinned, preview.… and env.… are the recipe's, branching.… and
+    // the like the config's
     if (keys[0] === "tracker") die("the tracker is apply's --tracker");
-    if (!["apps", "pinned", "preview"].includes(keys[0]) && !(keys[0] in P.config)) die(`${field} isn't a field setup writes`);
+    if (!["apps", "pinned", "preview", "env"].includes(keys[0]) && !(keys[0] in P.config)) die(`${field} isn't a field setup writes`);
     let node = keys[0] in P.config ? P.config : P.recipe;
     for (const [i, k] of keys.slice(0, -1).entries()) {
       node = Array.isArray(node) ? node.find((a) => a.name === k) : isObj(node[k]) || Array.isArray(node[k]) ? node[k] : (node[k] = {});
@@ -515,5 +632,5 @@ switch (cmd) {
     if (failed) process.exit(1);
     break;
   }
-  default: die("usage: setup-factory.mjs detect [--mcp <a,b>] | prove [<app>.<name> ...] | set <field> [<value>] | apply [--tracker <t>] [--dry-run]");
+  default: die("usage: setup-factory.mjs detect [--mcp <a,b>] | env | prove [<app>.<name> ...] | set <field> [<value>] | apply [--tracker <t>] [--dry-run]");
 }
