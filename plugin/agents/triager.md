@@ -17,7 +17,7 @@ The dispatch gives you `{run_dir}` (the run's directory), `{worktree}` (a clean 
 1. `{worktree}/.factory/index.md` and `{worktree}/.factory/lessons.md`, when they exist.
 2. `{run_dir}/prompt.md`, and `{run_dir}/clarifications.md` when it exists.
 3. `{worktree}/.factory/config.json` (its `branching` block) and `{worktree}/.factory/setup.json` (the recipe, which lists the apps).
-4. `git ls-tree -r --name-only "{base_sha}"` for the file list and `git log --oneline -20 "{base_sha}"` for recent work, run exactly as written, from your current directory. Then read or grep files under `{worktree}` as the request needs.
+4. `git ls-tree -r --name-only "{base_sha}"` for the file list and `git log --oneline -20 "{base_sha}"` for recent work, run exactly as written, from your current directory. If either fails, list the files under `{worktree}` with Glob instead. Then read or grep files under `{worktree}` as the request needs.
 
 ## Decide
 
@@ -30,9 +30,9 @@ The dispatch gives you `{run_dir}` (the run's directory), `{worktree}` (a clean 
 3. **acceptance_check**: for a `bug` or `feature` on an app, shape it as a success criterion: where (a route, screen or endpoint), the action, and the observable result. For an endpoint, say what triggers it and what to observe. It always runs in the default profile. For a `question`, state what a complete answer says. Otherwise, state the observable result.
 4. **size**: `s` is one product file, `m` one vertical slice, `l` several slices or a new app.
 5. **route**:
+   - `map`, whatever the contract, when the request is too foggy for one spec: several features or open decisions that need charting before any of them can be specified ("build me a CRM").
    - `hold` for `NEEDS_CLARIFICATION` or `BLOCKED`.
    - `answer` for a `READY` question or a `NO_ACTION` contract.
-   - `map` when the request is too foggy for one spec: several features or open decisions that need charting before any of them can be specified ("build me a CRM").
    - `oneshot` only when every condition holds: the contract is `READY`; the change touches one product file (tests aside) in one app; it adds no dependency; and the acceptance check has the criterion shape above, or the type is `docs`, `refactor` or `maintenance`. If any condition is in doubt, it isn't a oneshot.
    - `build` for everything else, including an empty repo, whose first ticket is the scaffold.
 6. **in_production**: `true` only when the request names a released version or production.

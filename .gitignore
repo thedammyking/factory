@@ -1,2 +1,8 @@
 reference/
 .claude/worktrees/
+# Eval results, except a release's aggregate-result.json under evals/results/<version>/ (a dotted name; a run's own
+# results directory is a timestamp).
+evals/results/*
+!evals/results/*.*.*/
+evals/results/*.*.*/*
+!evals/results/*.*.*/aggregate-result.json
