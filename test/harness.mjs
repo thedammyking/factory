@@ -6,7 +6,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 
 const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
-const sh = (cwd, cmd, args) => { const r = spawnSync(cmd, args, { cwd, encoding: "utf8" }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
+export const sh = (cwd, cmd, args) => { const r = spawnSync(cmd, args, { cwd, encoding: "utf8" }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
 
 const RECIPE = { apps: [{ name: "app", type: "backend", path: ".", checks: { test: "true" } }] };
 
