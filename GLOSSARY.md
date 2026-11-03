@@ -103,6 +103,10 @@ _Avoid_: config, manifest
 A named environment the recipe can start the apps in, for success criteria that need other conditions.
 _Avoid_: env, scenario
 
+**Preview**:
+A copy of a PR's head that the project's own host, or a command in the recipe, makes reachable for the human to try. The factory only reads where it is and never builds one. Starting the apps locally is not a preview.
+_Avoid_: review app, preview environment, local preview, staging (the target branch's deployment)
+
 **Evidence**:
 The result of running the recipe's checks, pinned to one commit.
 _Avoid_: test results, report
