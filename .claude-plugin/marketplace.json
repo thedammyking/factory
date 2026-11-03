@@ -1,0 +1,11 @@
+{
+  "name": "factory",
+  "owner": { "name": "Oluwadamilola Babalola" },
+  "plugins": [
+    {
+      "name": "factory",
+      "source": "./plugin",
+      "description": "Carries a one-line request through triage, spec, tickets, implementation, verification, review and PR to a merge decision made from facts."
+    }
+  ]
+}
