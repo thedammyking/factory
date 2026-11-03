@@ -1,0 +1,6 @@
+{
+  "name": "factory",
+  "description": "Carries a one-line request through triage, spec, tickets, implementation, verification, review and PR to a merge decision made from facts.",
+  "author": { "name": "Oluwadamilola Babalola" },
+  "license": "MIT"
+}
