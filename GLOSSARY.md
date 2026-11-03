@@ -119,6 +119,10 @@ _Avoid_: pinned spec, e2e spec, Playwright spec
 The short account a script gives in place of a command's full output: the failing lines quoted word for word, and where the full output is kept.
 _Avoid_: log tail, summary
 
+**Capture**:
+A picture of one named state of an app's UI, taken by a script, that the UI lens judges.
+_Avoid_: screenshot
+
 **Lens**:
 One read-only reviewer's angle on the diff: code, UI, security or a human's PR comments.
 _Avoid_: reviewer type, pass
