@@ -17,7 +17,8 @@
 //                                              one's wall-clock seconds in the proposal; exits 1 when any failed. A check
 //                                              { cmd, env: [names] } needing a name .factory/env.local lacks is skipped.
 //   setup-factory.mjs set <field> [<value>]  -> sets one field of the proposal to the value, or to stdin without one;
-//                                              null drops the field
+//                                              null drops the field. notion_parent takes a Notion page's URL and keeps its
+//                                              ID, setting docs notion, or null for docs repo
 //   setup-factory.mjs apply [--tracker <t>] [--dry-run] -> --dry-run prints the proposal: every detected value with its
 //                                              source, guesses marked, and each file's diff. Without it, refuses a command
 //                                              that wasn't proven, then writes .factory/, the .gitignore entries and the
@@ -586,6 +587,19 @@ switch (cmd) {
     // a field as the proposal's table names it: apps.<name>.…, pinned, preview.… and env.… are the recipe's, branching.… and
     // the like the config's
     if (keys[0] === "tracker") die("the tracker is apply's --tracker");
+    // B. Specs: a parent page's URL sends approved specs to Notion (docs notion) under that page's ID; null keeps them in
+    // the repo alone (docs repo)
+    if (field === "notion_parent") {
+      const id = value && String(value).split(/[?#]/)[0].replaceAll("-", "").match(/[0-9a-f]{32}$/i)?.[0].toLowerCase();
+      if (value !== null && !id) die(`${raw} names no Notion page: give the parent page's URL, or null`);
+      if (id && !P.mcp.includes("notion")) die("no Notion MCP in this session's tool list, so specs stay in the repo");
+      P.config.docs = id ? "notion" : "repo";
+      if (id) P.config.notion_parent = id.replace(/^(.{8})(.{4})(.{4})(.{4})/, "$1-$2-$3-$4-");
+      else delete P.config.notion_parent;
+      save(P);
+      console.log(id ? `set docs notion, under page ${P.config.notion_parent}` : "set docs repo");
+      break;
+    }
     if (!["apps", "pinned", "preview", "env"].includes(keys[0]) && !(keys[0] in P.config)) die(`${field} isn't a field setup writes`);
     let node = keys[0] in P.config ? P.config : P.recipe;
     for (const [i, k] of keys.slice(0, -1).entries()) {

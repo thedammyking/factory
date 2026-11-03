@@ -197,6 +197,29 @@ test("set refuses a field setup doesn't write, and the tracker, which is apply's
   assert.equal(proposal({ file: path.join(p.dir, ".git/factory-setup.json") }).config.branching.model, "git-flow");
 });
 
+test("section B: a Notion parent page's URL sends specs to Notion under that page's ID, and null keeps them in the repo", () => {
+  const p = shop();
+  const f = fakes();
+  detect(p, f);
+  const unseen = run(p, f, ["set", "notion_parent", "0123456789abcdef0123456789abcdef"]);
+  assert.equal(unseen.status, 2, "section B is only for a session that sees a Notion MCP");
+  assert.match(unseen.stderr, /no Notion MCP/);
+  detect(p, f, ["--mcp", "notion"]);
+  const config = () => proposal({ file: path.join(p.dir, ".git/factory-setup.json") }).config;
+  assert.equal(config().docs, "repo", "the default, before the answer");
+  const bad = run(p, f, ["set", "notion_parent", "https://example.com/specs"]);
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /names no Notion page/);
+  const r = run(p, f, ["set", "notion_parent", "https://www.notion.so/acme/Specs-0123456789ABCDEF0123456789abcdef?pvs=4"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual([config().docs, config().notion_parent], ["notion", "01234567-89ab-cdef-0123-456789abcdef"]);
+  const diff = run(p, f, ["apply", "--dry-run"]).stdout;
+  assert.match(diff, /^\+  "docs": "notion",$/m);
+  assert.match(diff, /^\+  "notion_parent": "01234567-89ab-cdef-0123-456789abcdef"$/m);
+  assert.equal(run(p, f, ["set", "notion_parent", "null"]).status, 0);
+  assert.deepEqual([config().docs, "notion_parent" in config()], ["repo", false]);
+});
+
 test("prove runs every check, dev command and health route once and records wall-clock seconds, writing nothing in the project", () => {
   const p = shop();
   const f = fakes();

@@ -26,6 +26,13 @@ On a re-run (`existing` is true) the project's `.factory/` values are the defaul
 
 Always ask, in one message, leading with the recommendation from `tracker`: "Which tracker holds your request issues and maps? I recommend `<tracker>`." Offer `github` (GitHub Issues on this repo), `linear` and `local` (files under `.factory/`). A "yes" takes the recommendation. When the answer is `linear`, add one line: Linear moves an issue when its PR opens and merges only through Linear's GitHub integration, which setup can't check.
 
+## B. Specs
+
+Only when a Notion server was visible in **Detection**; otherwise skip this section. Ask, in one message: "Copy each approved spec to a Notion page for people who don't read the repo? Give the URL of the parent page to put them under, or say no." On a re-run whose proposal has `config.notion_parent`, recommend keeping that page. The factory only writes these pages and never reads them back.
+
+- A URL: `setup-factory set notion_parent '<the URL>'`, which keeps the page's ID and sets `docs` to `notion`. If it says the URL names no Notion page, ask again.
+- No: `setup-factory set notion_parent null`, which sets `docs` to `repo`.
+
 ## C. Environment
 
 A script copies the dev environment, so no value ever reaches the chat. Never read or print a `.env*` file or `.factory/env.local`, and never ask for a value: a human who pastes one into the chat is told to put it in the file instead.

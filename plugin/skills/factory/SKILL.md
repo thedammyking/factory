@@ -122,9 +122,13 @@ A stage below is dispatched the way triage is: `run-state dispatch <stage>`, the
 
 `/factory approve [run] <decision>`, at the spec gate. Find the run (see above). With no decision, or one that isn't `approved`, `revise` or `abandon`, print the options of its `attention-spec-gate.md` and stop.
 
-- `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop. Tickets aren't built in this version: write `attention-tickets.md` (the spec is approved, and this version stops before tickets; options: `/factory abandon <id>`), run `run-state set stage needs-human --run <id>`, print it and stop.
+- `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop; otherwise do the **Notion push** first. Tickets aren't built in this version: write `attention-tickets.md` (the spec is approved, and this version stops before tickets; options: `/factory abandon <id>`), run `run-state set stage needs-human --run <id>`, print it and stop.
 - `revise`: `run-state approve spec revise --run <id>`; if it refuses, print why and stop. Ask in plain chat what should change, append the answer to `grill.md` under `### Session <today's date> (revise)` as `- Q: What should change? → A: <their words>`, then go to step 4 of **build**.
 - `abandon`: the decision is the human's answer, so don't ask again. Run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.
+
+## Notion push
+
+Every `run-state approve spec approved` that succeeds is followed at once by `run-state notion --run <id>`, before the step after it. A `skip:` line means there's nothing to push. Otherwise it prints the page as JSON: with the Notion MCP's tools in this session, replace the title and content of the page at `page` with `title` and `content`, or, when `page` is null, create a child page of `parent` with them. Then run `run-state notion pushed <the page's URL> --run <id>`. If no Notion tool is visible, or a call fails or is refused, run `run-state notion failed "<why, in one line>" --run <id>` instead. Never retry it, and never let it stop the run. Only the spec is pushed, and nothing is read back from Notion.
 
 ## Answers
 

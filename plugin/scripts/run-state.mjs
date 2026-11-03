@@ -11,6 +11,12 @@
 //                                                records branch, base_branch, target_branch and base_sha
 //   run-state.mjs approve spec approved|revise -> the human's decision at the spec gate; approved covers spec.md as it is,
 //                                                and until then a build run dispatches nothing past the builder check
+//   run-state.mjs notion [pushed <url> | failed "<why>"] -> an approved spec's Notion copy, which the orchestrator pushes
+//                                                through the Notion MCP: prints `skip: …` when the config names no Notion
+//                                                parent page (docs repo), else the page as JSON (parent, the page to
+//                                                overwrite or null, title, content opening with the copy notice); pushed
+//                                                writes the page's URL into spec.md's frontmatter, keeping the approval;
+//                                                failed logs the one line a failed push leaves
 //   run-state.mjs get                         -> prints state.json
 //   run-state.mjs set <key> <value>           -> sets a top-level key (JSON when it parses); `route` must be a route and
 //                                                `stage` an outcome (dispatch sets the working stages, abandon its own);
@@ -62,9 +68,11 @@ function die(msg) { console.error(`run-state: ${msg}`); process.exit(2); }
 function save(file, s) { s.updated_at = now(); fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\n"); }
 const log = (runDir, line) => fs.appendFileSync(path.join(runDir, "run.log"), `- ${now()} ${line}\n`);
 const readText = (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
-// An approval covers spec.md exactly as the human read it: any later change to the file needs approving again.
+// An approval covers spec.md exactly as the human read it: any later change to the file needs approving again, but for
+// the Notion page's URL that `notion pushed` writes into its frontmatter.
 const specHash = (ctx) => crypto.createHash("sha256").update(readText(path.join(ctx.runDir, "spec.md"))).digest("hex");
 const specApproved = (ctx, s) => s.approvals?.spec?.sha256 === specHash(ctx);
+const FRONTMATTER = /^---\n([\s\S]*?\n)?---(?:\n|$)/;  // spec.md's, its lines in [1]
 function load() {
   const ctx = runContext();
   return [ctx, readJson(ctx.state)];
@@ -351,6 +359,38 @@ switch (cmd) {
     console.log(`spec ${decision}`);
     break;
   }
+  case "notion": {
+    const [what, detail] = args;
+    const [ctx, s] = load();
+    // Only an approved spec is copied, so a route without one never reaches Notion.
+    if (!specApproved(ctx, s)) die(`the spec of ${ctx.id} isn't approved, and only an approved spec goes to Notion`);
+    // A push is best effort: its failure is one line in the log, and the run carries on.
+    if (what === "failed") { log(ctx.runDir, `run: ${ctx.id} spec not copied to Notion: ${detail || "no reason given"}`); console.log("logged"); break; }
+    if (what === "pushed") {
+      if (!/^https:\/\/\S+$/.test(detail || "")) die("notion pushed <the page's URL>");
+      // The URL goes into the frontmatter, and the approval is moved to the spec with it: this is the one change to an
+      // approved spec that doesn't need approving again, made only while the approval still covers the rest.
+      const file = path.join(ctx.runDir, "spec.md"), text = readText(file), fm = text.match(FRONTMATTER);
+      const lines = (fm?.[1] ?? "").split("\n").slice(0, -1).filter((l) => !l.startsWith("notion:"));
+      fs.writeFileSync(file, `---\n${[...lines, `notion: ${detail}`].join("\n")}\n---\n${fm ? text.slice(fm[0].length) : `\n${text}`}`);
+      s.notion_page = detail;
+      s.approvals.spec.sha256 = specHash(ctx);
+      save(ctx.state, s);
+      log(ctx.runDir, `run: ${ctx.id} spec copied to Notion: ${detail}`);
+      console.log(`notion: ${detail} in spec.md`);
+      break;
+    }
+    if (what) die("notion [pushed <url> | failed \"<why>\"]");
+    const config = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {});
+    if (config.docs !== "notion" || !config.notion_parent) { console.log("skip: .factory/config.json names no Notion parent page"); break; }
+    const text = readText(path.join(ctx.runDir, "spec.md")), body = text.replace(FRONTMATTER, "").replace(/^\n+/, "");
+    const title = body.match(/^# (.+)$/m)?.[1].trim();
+    console.log(JSON.stringify({
+      parent: config.notion_parent, page: s.notion_page ?? null, title: title ? `${title} (${ctx.id})` : ctx.id,
+      content: `Copy of \`spec.md\` from run \`${ctx.id}\`. Edits and comments here are not read by the factory.\n\n${body}`,
+    }, null, 2));
+    break;
+  }
   case "abandon": {
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is already ${s.stage}`);
@@ -444,5 +484,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | approve | get | set | dispatch | done | spend | override | snapshot | abandon | status");
+  default: die("usage: run-state.mjs init | lane | approve | notion | get | set | dispatch | done | spend | override | snapshot | abandon | status");
 }

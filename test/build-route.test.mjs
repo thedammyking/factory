@@ -180,3 +180,86 @@ test("a revise, or a spec that changed after its approval, needs approving again
   triaged(p, one, { type: "bug" }, "oneshot");
   assert.equal(rs(p.dir, ["dispatch", "plan", "--run", one.id]).status, 0);
 });
+
+// The Notion push (#64): run-state says what to push and records the page; the MCP call itself is the orchestrator's.
+const NOTION = { docs: "notion", notion_parent: "01234567-89ab-cdef-0123-456789abcdef" };
+const SPEC = "---\nsurface: operate\n---\n\n# CSV export\n\n- **SC-001** (profile: default, live-safe: yes): /reports, Export, a CSV downloads.\n";
+const NOTICE = (id) => `Copy of \`spec.md\` from run \`${id}\`. Edits and comments here are not read by the factory.`;
+
+test("only an approved spec is pushed: a child page of notion_parent titled with the spec's title and the run id, opening with the copy notice", () => {
+  const p = project({ config: NOTION });
+  const [s, run] = atGate(p);
+  fs.writeFileSync(path.join(s.run_dir, "spec.md"), SPEC);
+  const early = run("notion");
+  assert.equal(early.status, 2, "nothing is pushed before the approval");
+  assert.match(early.stderr, /isn't approved/);
+  assert.equal(run("approve", "spec", "approved").status, 0);
+  const r = run("notion");
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(JSON.parse(r.stdout), {
+    parent: NOTION.notion_parent, page: null, title: `CSV export (${s.id})`,
+    content: `${NOTICE(s.id)}\n\n# CSV export\n\n- **SC-001** (profile: default, live-safe: yes): /reports, Export, a CSV downloads.\n`,
+  });
+});
+
+test("the page's URL goes into the spec's frontmatter without undoing its approval, and a re-approval overwrites the same page", () => {
+  const p = project({ config: NOTION });
+  const [s, run] = atGate(p);
+  const spec = path.join(s.run_dir, "spec.md"), PAGE = "https://www.notion.so/acme/CSV-export-fedcba9876543210fedcba9876543210";
+  fs.writeFileSync(spec, SPEC);
+  assert.equal(run("approve", "spec", "approved").status, 0);
+  assert.equal(run("notion", "pushed", "https://www.notion.so/x\nsurface: persuade").status, 2, "a URL is one line");
+  const r = run("notion", "pushed", PAGE);
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(fs.readFileSync(spec, "utf8"), SPEC.replace("surface: operate\n", `surface: operate\nnotion: ${PAGE}\n`));
+  assert.equal(JSON.parse(run("notion").stdout).page, PAGE);
+
+  // revised at the gate and approved again: the planner's new spec has no frontmatter, and the same page is overwritten
+  assert.equal(run("approve", "spec", "revise").status, 0);
+  run("dispatch", "spec");
+  fs.writeFileSync(spec, "# CSV export, revised\n");
+  run("done", "spec");
+  assert.equal(run("approve", "spec", "approved").status, 0);
+  const again = JSON.parse(run("notion").stdout);
+  assert.deepEqual([again.page, again.title], [PAGE, `CSV export, revised (${s.id})`]);
+  assert.equal(run("notion", "pushed", PAGE).status, 0);
+  assert.equal(fs.readFileSync(spec, "utf8"), `---\nnotion: ${PAGE}\n---\n\n# CSV export, revised\n`);
+  assert.equal(run("dispatch", "tickets").status, 0, "the approval holds");
+  assert.match(fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8"), new RegExp(`run: ${s.id} spec copied to Notion: ${PAGE}\\n`));
+});
+
+test("a failed push is one line in the log and changes nothing else; docs in the repo, a route without a spec or a spec changed since its approval push nothing", () => {
+  const p = project({ config: NOTION });
+  const [s, run] = atGate(p);
+  const spec = path.join(s.run_dir, "spec.md"), text = () => fs.readFileSync(spec, "utf8");
+  assert.equal(run("approve", "spec", "approved").status, 0);
+  const before = text();
+  const failed = run("notion", "failed", "no Notion tool in this session");
+  assert.equal(failed.status, 0, failed.stderr);
+  const logged = fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8").split("\n").filter((l) => l.includes("Notion"));
+  assert.deepEqual(logged.map((l) => l.replace(/^- \S+ /, "")), [`run: ${s.id} spec not copied to Notion: no Notion tool in this session`]);
+  assert.equal(text(), before, "the frontmatter gets no URL");
+  assert.equal(JSON.parse(run("notion").stdout).page, null);
+  assert.equal(run("dispatch", "tickets").status, 0, "the run carries on");
+
+  const [e, erun] = atGate(p);
+  assert.equal(erun("approve", "spec", "approved").status, 0);
+  fs.appendFileSync(path.join(e.run_dir, "spec.md"), "- **SC-002**: an edit after the approval\n");
+  const edited = fs.readFileSync(path.join(e.run_dir, "spec.md"), "utf8");
+  assert.equal(erun("notion", "pushed", "https://www.notion.so/0123456789abcdef0123456789abcdef").status, 2);
+  assert.equal(fs.readFileSync(path.join(e.run_dir, "spec.md"), "utf8"), edited, "an unapproved change is never approved along with the URL");
+
+  const answer = init(p, "How are reports exported?");
+  triaged(p, answer, { type: "question" }, "answer");
+  for (const args of [[], ["failed", "no spec"]]) {
+    assert.equal(rs(p.dir, ["notion", ...args, "--run", answer.id]).status, 2, "a route with no spec never reaches Notion");
+  }
+
+  const repo = project();
+  const [r, rrun] = atGate(repo);
+  assert.equal(rrun("approve", "spec", "approved").status, 0);
+  const skip = rrun("notion");
+  assert.equal(skip.status, 0, skip.stderr);
+  assert.match(skip.stdout, /^skip: /);
+  assert.ok(!fs.readFileSync(path.join(r.run_dir, "run.log"), "utf8").includes("Notion"));
+});
