@@ -148,3 +148,7 @@ _Avoid_: merge policy
 **Watch**:
 The fixed window after the factory's own merge in which it checks the target branch and, on red, opens a revert PR that it never merges.
 _Avoid_: post-merge monitoring, canary
+
+**Login wall**:
+A host's sign-in page in front of a deployment, which the watch counts as blocked, never red. The app's own sign-in is not a login wall.
+_Avoid_: deployment protection, auth wall, password page
