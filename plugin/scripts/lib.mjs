@@ -125,6 +125,13 @@ export function runEnv(main, extra = {}) {
   return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...Object.fromEntries(local), ...extra };
 }
 
+// The one device a run's mobile apps go on, from .factory/env.local as setup records it: the iOS simulator
+// FACTORY_IOS_DEVICE (its UDID) where the machine has one, else the Android emulator FACTORY_ANDROID_DEVICE (its AVD
+// name); null with neither, which NO_DEVICE says.
+export const device = (env) => env.FACTORY_IOS_DEVICE ? { platform: "ios", id: env.FACTORY_IOS_DEVICE }
+  : env.FACTORY_ANDROID_DEVICE ? { platform: "android", id: env.FACTORY_ANDROID_DEVICE } : null;
+export const NO_DEVICE = "no device in .factory/env.local (FACTORY_IOS_DEVICE or FACTORY_ANDROID_DEVICE)";
+
 // What a failing command's output reaches agents as, in at most 40 lines: the lines matching an error pattern (the first
 // 29 before the last 10), then as many of the last lines as fit, each quoted word for word in log order, then
 // `full output: <log>`, where the caller saved all of it.

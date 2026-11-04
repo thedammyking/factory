@@ -8,6 +8,7 @@ import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { project, sh, STUB_SERVER } from "./harness.mjs";
+import { fakeDevice, DEVICES } from "./device.mjs";
 
 const SCRIPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts");
 const node = (script, cwd, args, { input = "", env = process.env } = {}) =>
@@ -337,4 +338,63 @@ test("a pinned .spec.ts runs with the project's Playwright from the directory of
   const seen = JSON.parse(fs.readFileSync(c.log, "utf8"));
   assert.deepEqual([seen.argv, seen.cwd], [["--no", "playwright", "test", "e2e/r1-01-signup.spec.ts"], path.join(p.wt, "web")]);
   assert.match(seen.BASE_URL, /^http:\/\/localhost:\d+$/);
+});
+
+// A run whose mobile app goes on a fake device, .factory/env.local naming the iOS simulator unless `device` is false,
+// with qa's flows in its pinned .maestro/. After the test, pass or fail, the run's apps are brought down.
+const MOBILE_APP = { name: "mobile", type: "mobile", path: ".", build: "mkdir -p build/Shop.app && echo build/Shop.app", app_id: "com.example.shop", checks: { test: "true" } };
+const FLOW = (n, criterion) => `# pinned by qa from .factory/history/r1/spec.md\nappId: com.example.shop\nname: "[r1] SC-00${n}: ${criterion}"\n---\n- launchApp: {clearState: true}\n`;
+const FLOWS = { ".maestro/r1-01-total-SC-001.yaml": FLOW(1, "the total shows"), ".maestro/r1-01-total-SC-002.yaml": FLOW(2, "the total is 42.50") };
+function onDevice(t, { device = true, junit } = {}) {
+  const d = fakeDevice(t, { junit });
+  const p = run({ apps: [MOBILE_APP], pinned: [".maestro"] }, { ...FLOWS, ".gitignore": ".factory/runs/\n.factory/worktrees/\n.factory/env.local\nbuild/\n" });
+  fs.writeFileSync(path.join(p.dir, ".factory/env.local"), device ? `FACTORY_IOS_DEVICE=${DEVICES.ios.udid}\n` : "");
+  t.after(() => node("run-apps.mjs", p.dir, ["down", "--run", p.s.id], { env: d.env }));
+  return { ...p, d };
+}
+const RED = '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n  <testsuite name="Test Suite" tests="2" failures="1">\n'
+  + '    <testcase id="r1-01-total-SC-001" name="[r1] SC-001: the total shows" status="SUCCESS"/>\n'
+  + '    <testcase id="r1-01-total-SC-002" name="[r1] SC-002: the total is 42.50 > 0" status="ERROR">\n'
+  + '      <failure>Assertion is false: &quot;Total 42.50&quot; is visible</failure>\n    </testcase>\n  </testsuite>\n</testsuites>\n';
+
+test("verify --full runs a mobile app's pinned Maestro flows as one pinned check that needs the apps: up takes the device, maestro test reports JUnit, whose failures are the digest, and down gives the device back; the evidence has Maestro's version", (t) => {
+  const p = onDevice(t, { junit: RED });
+  const r = p.verify("--full", p.d.env);
+  assert.equal(r.status, 1, r.stdout);
+  assert.deepEqual(statuses(r.evidence), ["mobile/test=pass", "mobile/.maestro=fail"]);
+  const c = r.evidence.checks[1], junit = path.join(p.s.run_dir, "logs/maestro-mobile.xml");
+  assert.deepEqual([c.pinned, c.needs_apps], [true, true]);
+  assert.deepEqual(p.d.calls("maestro"), [["--version"], ["test", "--format", "junit", "--output", junit, ".maestro"]], "the whole directory, run once");
+  assert.match(fs.readFileSync(c.log, "utf8"), /^MAESTRO_CLI_NO_ANALYTICS=1$/m);
+  assert.equal(c.digest, `[r1] SC-002: the total is 42.50 > 0: Assertion is false: "Total 42.50" is visible\nfull output: ${c.log}`);
+  assert.equal(r.evidence.maestro_version, "2.12.1");
+  assert.deepEqual([r.evidence.red_cause, r.evidence.pinned_only], ["introduced", true], "a red only in pinned flows is qa's to rule on");
+  const ios = p.d.state().ios;
+  assert.deepEqual([ios.booted, ios.appearance], [false, "light"], "down gave the simulator back");
+  assert.ok(!fs.existsSync(p.d.lock));
+});
+
+test("verify --pinned <flow> runs that one Maestro flow with the apps up, into evidence-pinned.json", (t) => {
+  const p = onDevice(t);
+  const r = node("verify.mjs", p.dir, ["--pinned", path.join(p.wt, ".maestro/r1-01-total-SC-001.yaml")], { env: p.d.env });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const e = JSON.parse(fs.readFileSync(path.join(p.s.run_dir, "evidence-pinned.json"), "utf8"));
+  assert.deepEqual([e.green, statuses(e), e.maestro_version], [true, ["mobile/.maestro/r1-01-total-SC-001.yaml=pass"], "2.12.1"]);
+  assert.deepEqual(p.d.calls("maestro").at(-1), ["test", "--format", "junit", "--output", path.join(p.s.run_dir, "logs/maestro-mobile.pinned.xml"), ".maestro/r1-01-total-SC-001.yaml"]);
+});
+
+test("with no device in .factory/env.local a Maestro check is skipped, an environment red that never goes to qa, and a project without a mobile app has nothing of Maestro's", (t) => {
+  const p = onDevice(t, { device: false });
+  const r = p.verify("--full", p.d.env);
+  assert.equal(r.status, 1, r.stdout);
+  const c = r.evidence.checks[1];
+  assert.deepEqual([c.check, c.status, c.digest], [".maestro", "skipped", "no device in .factory/env.local (FACTORY_IOS_DEVICE or FACTORY_ANDROID_DEVICE)"]);
+  assert.deepEqual([r.evidence.red_cause, r.evidence.pinned_only], ["environment", false]);
+  for (const cli of ["xcrun", "adb", "emulator"]) assert.deepEqual(p.d.calls(cli), [], cli);
+  assert.deepEqual(p.d.calls("maestro"), [["--version"]]);
+
+  const web = withApps(t, API(), { "e2e/r1-01-total.test.mjs": PINNED_OK, ".maestro/r1-01-total-SC-001.yaml": FLOWS[".maestro/r1-01-total-SC-001.yaml"] });
+  const e = web.verify("--full", p.d.env).evidence;
+  assert.deepEqual([e.green, "maestro_version" in e], [true, false]);
+  assert.deepEqual(p.d.calls("maestro"), [["--version"]], "no Maestro call");
 });

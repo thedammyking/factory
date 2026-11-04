@@ -8,7 +8,13 @@
 //     the project's own) in one of the recipe's `pinned` directories. Each is a check of its own, marked pinned, run in
 //     the app whose path holds it while the apps are up, with that app's URL as BASE_URL. --pinned <path> runs only that
 //     test, in the worktree holding it, wherever it's called from, into evidence-pinned.json.
-//   - pinned_only marks a red where every check that didn't pass is pinned, on a clean and trusted tree: qa rules on it.
+//   - A mobile app's pinned directory holds Maestro flows. Once qa has pinned one there (<run>-<NN>-<slug>-SC-###.yaml),
+//     --full runs the directory as one check, marked pinned, with the apps up (run-apps up takes the device's
+//     machine-wide lock, down gives the device back): `maestro test --format junit` with MAESTRO_CLI_NO_ANALYTICS=1, its
+//     report at logs/maestro-<app>.xml, and a red's digest that report's failures. --pinned <flow> runs that flow alone.
+//     With no device in .factory/env.local, or no maestro, it's skipped, never run. maestro_version is in the evidence.
+//   - pinned_only marks a red where something failed and every check that didn't pass is pinned, on a clean and
+//     trusted tree: qa rules on it.
 //   - A check is "<command>" or { cmd, env: [names it needs] }. It runs under bash in its app's path with lib's runEnv,
 //     its full output saved to logs/<app>-<check>.log in the run dir (.fast.log or .pinned.log); a failing one carries
 //     lib's digest of that output.
@@ -27,7 +33,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, worktreesDir, runContext, runEnv, digest, fill } from "./lib.mjs";
+import { readJson, arg, git, worktreesDir, runContext, runEnv, digest, fill, device, NO_DEVICE } from "./lib.mjs";
 
 const mode = ["fast", "full", "pinned"].find((m) => process.argv.includes(`--${m}`));
 if (!mode) { console.error("verify: usage: verify.mjs --fast | --full | --pinned <path> [--run <id>]"); process.exit(2); }
@@ -78,7 +84,7 @@ function atBase(failing) {
 
 // Runs a check that needs apps between run-apps up and down. A pinned test gets its path, from its app's, as
 // $FACTORY_PINNED, never spliced into the command, and its app's URL as BASE_URL.
-function withApps(app, check, cmd, pinnedPath) {
+function withApps(app, check, cmd, pinnedPath, extra = {}) {
   const up = apps("up");
   try {
     if (up.status !== 0) {
@@ -89,9 +95,37 @@ function withApps(app, check, cmd, pinnedPath) {
     const recorded = readJson(path.join(ctx.runDir, "apps.json"));
     const filled = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, typeof v === "string" ? fill(v, recorded) : v]));
     const url = recorded?.apps?.[app]?.url;
-    if (pinnedPath) Object.assign(filled, { FACTORY_PINNED: pinnedPath }, url && { BASE_URL: new URL(url).origin });
+    if (pinnedPath) Object.assign(filled, { FACTORY_PINNED: pinnedPath }, url && { BASE_URL: new URL(url).origin }, extra);
     return execute(appDir(tree, app), fill(cmd, recorded), `${app}-${check}`, filled);
-  } finally { apps("down"); }
+  } finally {
+    // a down that fails leaves the developer's device unrestored, which the human sees here
+    const down = apps("down");
+    if (down.status) console.log(`run-apps down failed\n${down.stdout}${down.stderr}`.trim());
+  }
+}
+
+// A Maestro check of the flows at `flows` (from its app's path), as withApps runs one, skipped as the environment's
+// with no device or no maestro; a red's digest is its JUnit report's failures, when it wrote one.
+function maestro(app, check, cmd, flows) {
+  const skip = (why) => ({ status: "skipped", ...NOT_RUN, digest: why });
+  if (!device(env)) return skip(NO_DEVICE);
+  if (!maestroVersion) return skip("maestro --version failed: is Maestro installed?");
+  const junit = logOf(`maestro-${app}`).replace(/\.log$/, ".xml");
+  const c = withApps(app, check, cmd, flows, { FACTORY_JUNIT: junit, MAESTRO_CLI_NO_ANALYTICS: "1" });
+  const failures = c.status === "fail" ? junitFailures(junit) : [];
+  return failures.length ? { ...c, digest: digest(failures.join("\n"), c.log) } : c;
+}
+// Each failed testcase of a JUnit report as `<name>: <message>`, word for word; [] without a report. An attribute's
+// value may hold a `>`, which XML needn't escape there.
+// ponytail: named and numeric entities only; read CDATA too if Maestro's report ever uses it.
+const XML = { lt: "<", gt: ">", quot: '"', apos: "'", amp: "&" };
+const unxml = (s = "") => s.replace(/&(lt|gt|quot|apos|amp|#x?[0-9a-f]+);/gi, (_, e) => e[0] !== "#" ? XML[e] : String.fromCodePoint(Number(e[1] === "x" ? `0${e.slice(1)}` : e.slice(1))));
+function junitFailures(file) {
+  let xml; try { xml = fs.readFileSync(file, "utf8"); } catch { return []; }
+  return [...xml.matchAll(/<testcase\b((?:[^>"]|"[^"]*")*?)(?:\/>|>([\s\S]*?)<\/testcase>)/g)].flatMap(([, attrs, body = ""]) => {
+    const f = body.match(/<(failure|error)\b((?:[^>"]|"[^"]*")*?)(?:\/>|>([\s\S]*?)<\/\1>)/);
+    return f ? [`${unxml(attrs.match(/\bname="([^"]*)"/)?.[1])}: ${unxml(f[2].match(/\bmessage="([^"]*)"/)?.[1] ?? f[3]).trim()}`] : [];
+  });
 }
 
 // Pinned tests by file type, each found by qa's naming in a pinned directory, and the app whose path holds one, deepest first.
@@ -103,10 +137,22 @@ const holder = (rel) => (recipe.apps || []).map((a) => [a, path.normalize(a.path
   .filter(([, p]) => p === "." || rel.startsWith(p + path.sep)).sort(([, a], [, b]) => b.length - a.length)[0]?.[0];
 const pinnedTests = onlyTest ? [path.relative(tree, fs.realpathSync(onlyTest))] : mode === "fast" ? [] : pinnedDirs.flatMap((d) => fs.existsSync(path.join(tree, d))
   ? fs.readdirSync(path.join(tree, d)).filter((f) => QA_NAMED.test(f) && runner(f)).sort().map((f) => path.join(d, f)) : []);
-if (onlyTest && !(pinnedDirs.some((d) => pinnedTests[0].startsWith(d + path.sep)) && runner(pinnedTests[0]) && holder(pinnedTests[0]))) {
-  console.error(`verify: ${pinnedTests[0]} isn't a ${Object.keys(RUNNERS).join(" or ")} in an app's pinned directory (${pinnedDirs.join(", ") || "the recipe has none"})`); process.exit(2);
+// A mobile app's pinned directory holding a flow qa pinned is one Maestro check, run whole as Maestro runs a directory;
+// --pinned may name one flow.
+const MAESTRO = 'maestro test --format junit --output "$FACTORY_JUNIT" "$FACTORY_PINNED"';
+const FLOW = /^[a-z0-9][a-z0-9-]*-\d{2}-[a-z0-9-]+-SC-\d{3}\.yaml$/;  // <run>-<NN>-<slug>-SC-###.yaml
+const flowDirs = mode !== "full" ? [] : pinnedDirs.filter((d) => holder(d)?.type === "mobile" && fs.existsSync(path.join(tree, d)) && fs.readdirSync(path.join(tree, d)).some((f) => FLOW.test(f)));
+const isMaestro = (rel) => flowDirs.includes(rel) || (FLOW.test(path.basename(rel)) && holder(rel)?.type === "mobile");
+if (onlyTest && !(pinnedDirs.some((d) => pinnedTests[0].startsWith(d + path.sep)) && (runner(pinnedTests[0]) || isMaestro(pinnedTests[0])) && holder(pinnedTests[0]))) {
+  console.error(`verify: ${pinnedTests[0]} isn't a ${Object.keys(RUNNERS).join(" or ")} in an app's pinned directory (${pinnedDirs.join(", ") || "the recipe has none"}), nor a <run>-<NN>-<slug>-SC-###.yaml flow in a mobile app's`); process.exit(2);
 }
+pinnedTests.push(...flowDirs);
 
+// undefined without a Maestro check, null when maestro --version fails
+const maestroVersion = !pinnedTests.some(isMaestro) ? undefined : (() => {
+  const r = spawnSync("maestro", ["--version"], { env: { ...env, MAESTRO_CLI_NO_ANALYTICS: "1" }, encoding: "utf8", timeout: 60_000 });
+  return r.status === 0 ? r.stdout.match(/\d+\.\d+\.\d+\S*/)?.[0] ?? r.stdout.trim() : null;
+})();
 if (mode === "full") apps("down");
 const before = git(tree, "rev-parse", "HEAD");
 const checks = [];
@@ -125,8 +171,8 @@ for (const app of onlyTest ? [] : recipe.apps || []) {
 }
 // ponytail: the apps go up and down around each pinned test; bring them up once for all if the minutes show it.
 for (const rel of pinnedTests) {
-  const app = holder(rel), cmd = runner(rel), check = { check: rel, cmd, needs_apps: true, pinned: true };
-  checks.push(app ? { app: app.name, ...check, ...withApps(app.name, rel, cmd, path.relative(path.normalize(app.path || "."), rel)) }
+  const app = holder(rel), cmd = isMaestro(rel) ? MAESTRO : runner(rel), check = { check: rel, cmd, needs_apps: true, pinned: true };
+  checks.push(app ? { app: app.name, ...check, ...(isMaestro(rel) ? maestro : withApps)(app.name, rel, cmd, path.relative(path.normalize(app.path || "."), rel)) }
     : { app: null, ...check, status: "fail", ...NOT_RUN, digest: "no app's path holds this pinned directory" });
 }
 // The run's bookkeeping under .factory/ isn't product, but the recipe is. Not lib's git(), whose trim would eat the
@@ -145,8 +191,9 @@ if (rerun.length) atBase(rerun);
 const red_cause = green ? null
   : failed.length ? (failed.every((c) => !c.cmd || c.at_base?.status === "fail") ? "inherited" : "introduced")
   : dirty || !trusted ? "incomplete" : "environment";
-const pinned_only = !green && !dirty && trusted && checks.every((c) => c.status === "pass" || c.pinned);
-const evidence = { mode, sha, green, dirty, trusted, red_cause, pinned_only, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString() };
+const pinned_only = !green && !dirty && trusted && failed.length > 0 && checks.every((c) => c.status === "pass" || c.pinned);
+const evidence = { mode, sha, green, dirty, trusted, red_cause, pinned_only, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString(),
+  ...(maestroVersion !== undefined && { maestro_version: maestroVersion }) };
 const file = path.join(out, mode === "full" ? "evidence.json" : `evidence-${mode}.json`);
 fs.writeFileSync(file, JSON.stringify(evidence, null, 2) + "\n");
 

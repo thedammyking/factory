@@ -8,6 +8,7 @@ import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { project, STUB_SERVER } from "./harness.mjs";
+import { fakeDevice, DEVICES } from "./device.mjs";
 
 const SCRIPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts");
 const script = (name, cwd, args, env = process.env) => new Promise((resolve) => {
@@ -31,7 +32,7 @@ setInterval(() => fs.existsSync(process.env.ALIVE) || process.exit(), 100);
 // A project whose main commit holds `recipe`, the stub server and `files`, with `env` and ALIVE (the file every stub
 // lives by) in .factory/env.local. start() begins a run; apps(s, ...args) runs run-apps.mjs for it. After the test,
 // pass or fail, every run's apps are brought down and ALIVE goes, so no stub outlives it.
-function stack(t, recipe, { env = {}, files = {} } = {}) {
+function stack(t, recipe, { env = {}, files = {}, cli = process.env } = {}) {
   const p = project({ recipe });
   for (const [f, text] of Object.entries({ "server.mjs": STUB_SERVER, ...files })) {
     fs.mkdirSync(path.dirname(path.join(p.dir, f)), { recursive: true });
@@ -42,7 +43,7 @@ function stack(t, recipe, { env = {}, files = {} } = {}) {
   fs.writeFileSync(alive, "");
   fs.writeFileSync(path.join(p.dir, ".factory/env.local"), Object.entries({ ALIVE: alive, ...env }).map(([k, v]) => `${k}=${v}`).join("\n") + "\n");
   const runs = [];
-  const apps = (s, ...args) => script("run-apps.mjs", p.dir, [...args, "--run", s.id]);
+  const apps = (s, ...args) => script("run-apps.mjs", p.dir, [...args, "--run", s.id], cli);
   t.after(async () => {
     for (const s of runs) await apps(s, "down");
     fs.rmSync(alive, { force: true });
@@ -253,4 +254,177 @@ test("an app that doesn't come up fails up, its full output saved and its digest
   assert.deepEqual(digest.slice(-3), ["Error: connect ECONNREFUSED 127.0.0.1:5432", "run-apps: api exited 1", `full output: ${apps.api.log}`]);
   assert.match(r.stdout, /^--- worker has no health URL in the recipe$/m);
   assert.ok(await answers(apps.web.url), "an app that did come up stays up for down to stop");
+});
+
+// A mobile app whose build makes the platform's .app or .apk and prints its path last, as a real build ends.
+const BUILD = 'if [ "$FACTORY_PLATFORM" = ios ]; then mkdir -p build/Shop.app && echo compiled && echo build/Shop.app; '
+  + "else mkdir -p build && touch build/shop.apk && echo compiled && echo build/shop.apk; fi";
+const MOBILE = (fields = {}) => ({ name: "mobile", type: "mobile", path: "mobile", build: BUILD, app_id: "com.example.shop", checks: { test: "true" }, ...fields });
+const DEV_SERVER = "node ../server.mjs {port:mobile}";
+const until = async (ok, ms = 10_000) => {
+  for (const end = Date.now() + ms; !ok(); await new Promise((res) => setTimeout(res, 50))) if (Date.now() > end) throw new Error(`not so after ${ms} ms`);
+};
+// [the calls that match, the rest in order]: a device log's stream starts in the background, so its place among the
+// other calls is the OS's to pick
+const split = (calls, match) => [calls.filter(match), calls.filter((c) => !match(c))];
+// A stack whose .factory/env.local records the platform's device, as setup does, with run-apps on a fake device.
+function mobile(t, platform, recipe, { device } = {}) {
+  const d = fakeDevice(t, device);
+  const env = { ios: { FACTORY_IOS_DEVICE: DEVICES.ios.udid }, android: { FACTORY_ANDROID_DEVICE: DEVICES.android.avd } }[platform];
+  return { ...stack(t, recipe, { env, files: { "mobile/.keep": "" }, cli: d.env }), d };
+}
+
+test("an iOS app: up boots the simulator only when it's down, builds, installs and launches by URL, healthy once in front; shot is 1x; down puts back the look it recorded and shuts down what it booted", async (t) => {
+  const launch = "exp+shop://expo-development-client/?url=http%3A%2F%2Flocalhost%3A{port:mobile}";
+  const p = mobile(t, "ios", { apps: [WEB_API.apps[1], MOBILE({ dev: DEV_SERVER, launch_url: launch })] });
+  const s = p.start("Show the cart total"), udid = DEVICES.ios.udid;
+  let r = await p.apps(s, "up");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const { apps, device } = p.recorded(s);
+  const [streamed, sent] = split(p.d.calls("xcrun"), (c) => c[3] === "log");
+  assert.deepEqual(sent, [
+    ["simctl", "list", "devices", "-j"], ["simctl", "boot", udid], ["simctl", "bootstatus", udid],
+    ["simctl", "ui", udid, "appearance"], ["simctl", "ui", udid, "content_size"],
+    ["simctl", "install", udid, path.join(s.worktree, "mobile/build/Shop.app")],
+    ["simctl", "openurl", udid, launch.replace("{port:mobile}", apps.mobile.port)],
+    ["simctl", "spawn", udid, "launchctl", "list"],
+  ]);
+  assert.deepEqual(streamed, [["simctl", "spawn", udid, "log", "stream", "--style", "compact", "--predicate", 'process == "Shop"']]);
+  assert.deepEqual([p.d.calls("adb"), p.d.calls("emulator")], [[], []], "one platform per run");
+  assert.deepEqual([device.platform, device.id, device.booted, device.settings], ["ios", udid, true, { appearance: "light", text_size: "large" }]);
+  assert.equal(apps.mobile.ok, true);
+  assert.match(r.stdout, new RegExp(`^run-apps up: profile=default api=${apps.api.url} mobile=up$`, "m"));
+  assert.equal((await get(`http://localhost:${apps.mobile.port}/`)).cwd, path.join(s.worktree, "mobile"), "the dev server runs on {port:mobile}");
+  assert.match(fs.readFileSync(apps.mobile.log, "utf8"), /^log stream /m, "the device's log streams to the app's log");
+  assert.ok(alive(apps.mobile.stream));
+  assert.equal((await p.apps(s, "status")).stdout.trim().split("\n").at(-1), "mobile up");
+
+  r = await p.apps(s, "shot", "cart");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const shot = path.join(s.run_dir, "captures/cart.png");
+  assert.equal(r.stdout.trim(), shot);
+  assert.deepEqual(p.d.calls("sips"), [["--resampleWidth", "393", shot]], "1179 px at 3x is 393 points");
+  assert.equal(fs.readFileSync(shot).readUInt32BE(16), 393);
+
+  p.d.change("ios", { appearance: "dark", content_size: "accessibility-extra-extra-extra-large" });  // a capture's, say
+  r = await p.apps(s, "down");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(p.d.calls("xcrun").slice(-3), [["simctl", "ui", udid, "appearance", "light"], ["simctl", "ui", udid, "content_size", "large"], ["simctl", "shutdown", udid]]);
+  const after = p.d.state().ios;
+  assert.deepEqual([after.booted, after.appearance, after.content_size], [false, "light", "large"], "the simulator is left as it was");
+  assert.ok(!alive(apps.mobile.stream), "the log stream went down");
+  assert.equal(p.recorded(s).device, undefined);
+  assert.ok(!fs.existsSync(p.d.lock), "the device lock is released");
+});
+
+test("an Android app on an emulator already running: up keeps it running, sets its dp size at density 160, installs on every up, reverses every recorded port and launches by app id; down gives back the developer's own settings", async (t) => {
+  const p = mobile(t, "android", { apps: [WEB_API.apps[1], MOBILE({ dev: DEV_SERVER })] },
+    { device: { android: { booted: true, override_size: "900x2000", override_density: "300" } } });
+  const s = p.start("Show the cart total"), S = ["-s", DEVICES.android.serial], before = p.d.state().android;
+  let r = await p.apps(s, "up");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const { apps, device } = p.recorded(s);
+  const [streamed, sent] = split(p.d.calls("adb"), (c) => c[2] === "logcat");
+  assert.deepEqual(sent, [
+    ["devices"], [...S, "emu", "avd", "name"],
+    [...S, "shell", "wm", "size"], [...S, "shell", "wm", "density"], [...S, "shell", "cmd", "uimode", "night"], [...S, "shell", "settings", "get", "system", "font_scale"],
+    [...S, "shell", "wm", "size", "480x1067"], [...S, "shell", "wm", "density", "160"],
+    [...S, "install", "-r", path.join(s.worktree, "mobile/build/shop.apk")],
+    [...S, "reverse", `tcp:${apps.api.port}`, `tcp:${apps.api.port}`], [...S, "reverse", `tcp:${apps.mobile.port}`, `tcp:${apps.mobile.port}`],
+    [...S, "shell", "cmd", "package", "list", "packages", "-U", "'com.example.shop'"],
+    [...S, "shell", "monkey", "-p", "'com.example.shop'", "-c", "android.intent.category.LAUNCHER", "1"],
+    [...S, "shell", "dumpsys", "activity", "activities"],
+  ]);
+  assert.deepEqual(streamed, [[...S, "logcat", "-v", "threadtime", "-T", "1", "--uid=10123"]], "the app's own log, from now on");
+  assert.deepEqual([p.d.calls("emulator"), p.d.calls("xcrun")], [[], []], "a running emulator is never booted again");
+  assert.deepEqual([device.platform, device.booted, device.settings], ["android", false, { appearance: "no", text_size: "1.0", density: "300", size: "900x2000" }]);
+  r = await p.apps(s, "shot", "cart");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(fs.readFileSync(path.join(s.run_dir, "captures/cart.png")).readUInt32BE(16), 480, "already 1x at density 160");
+  assert.deepEqual(p.d.calls("sips"), []);
+
+  assert.equal((await p.apps(s, "up")).status, 0);
+  assert.equal(p.d.calls("adb").filter((c) => c[2] === "install").length, 2, "built and installed on every up");
+  const { stream } = p.recorded(s).apps.mobile;
+  p.d.change("android", { night: "yes", font_scale: "1.3" });
+  r = await p.apps(s, "down");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const after = p.d.state().android;
+  for (const k of ["booted", "override_size", "override_density", "night", "font_scale", "reversed"]) assert.deepEqual(after[k], before[k], k);
+  assert.ok(!p.d.calls("adb").some((c) => c.includes("kill")), "an emulator up didn't boot keeps running");
+  assert.ok(!alive(stream));
+});
+
+test("an emulator up had to boot runs headless, and down resets its size and density and kills it", async (t) => {
+  const p = mobile(t, "android", { apps: [MOBILE()] });
+  const s = p.start("Show the cart total"), serial = DEVICES.android.serial;
+  let r = await p.apps(s, "up");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const { device } = p.recorded(s), adb = () => p.d.calls("adb").map((c) => c.join(" "));
+  assert.deepEqual(p.d.calls("emulator"), [["-avd", "Pixel_9", "-no-window"]]);
+  for (const c of ["wait-for-device", "shell getprop sys.boot_completed", "shell wm size 411x914", "shell wm density 160"]) assert.ok(adb().includes(`-s ${serial} ${c}`), c);
+  assert.deepEqual([device.booted, device.settings], [true, { appearance: "no", text_size: "1.0", density: null, size: null }]);
+  assert.ok(alive(device.pid));
+  r = await p.apps(s, "down");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(adb().slice(-5), ["shell wm size reset", "shell wm density reset", "shell cmd uimode night no", "shell settings put system font_scale 1.0", "emu kill"].map((c) => `-s ${serial} ${c}`));
+  await until(() => !alive(device.pid));
+  assert.deepEqual([p.d.state().android.booted, p.d.state().android.override_density], [false, null]);
+});
+
+test("every simulator and emulator is behind one machine-wide lock from up to down, which a holder that died with the device's settings unrestored keeps", async (t) => {
+  const d = fakeDevice(t, { ios: { booted: true } });
+  const two = () => stack(t, { apps: [MOBILE()] }, { env: { FACTORY_IOS_DEVICE: DEVICES.ios.udid }, files: { "mobile/.keep": "" }, cli: d.env });
+  const [p, q] = [two(), two()];
+  const [a, b] = [p.start("Show the cart total"), q.start("Show the cart total")];
+  assert.equal(a.id, b.id, "two projects' runs can share an id");
+  let r = await p.apps(a, "up");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const { up: waiting } = await waits(q, b);
+  assert.equal((await p.apps(a, "down")).status, 0);
+  r = await waiting;
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.ok(r.stdout.split("\n").includes(`run-apps: waiting for the device lock, held by run ${a.id} (${path.join(a.run_dir, "apps.json")})`), r.stdout);
+  // b's processes die without a down, as in a crash, leaving the simulator's look recorded but not restored.
+  const { stream } = q.recorded(b).apps.mobile;
+  process.kill(-stream, "SIGKILL");
+  await until(() => !alive(stream));
+  const { up: again } = await waits(p, a);
+  assert.equal((await q.apps(b, "down")).status, 0, "b's down, or its reconcile, restores it and releases the lock");
+  assert.equal((await again).status, 0);
+  assert.equal((await p.apps(a, "down")).status, 0);
+  assert.ok(!fs.existsSync(d.lock));
+});
+
+test("a mobile build runs under the device lock, and one that fails fails up with its digest before the device is touched", async (t) => {
+  const p = mobile(t, "ios", { apps: [MOBILE({ build: "echo 'error: no such module ExpoModulesCore'; exit 65" })] });
+  const s = p.start("Show the cart total"), log = path.join(s.run_dir, "logs/mobile.build.log");
+  fs.writeFileSync(p.d.lock, JSON.stringify({ run: "other", apps: "/elsewhere/apps.json", pids: [process.pid] }));  // another run's qa, say
+  const { up } = await waits(p, s, 700);
+  assert.ok(!fs.existsSync(log), "no build while another run holds the device");
+  fs.rmSync(p.d.lock);
+  const r = await up;
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, new RegExp(`^--- mobile build exited 65\nerror: no such module ExpoModulesCore\nrun-apps: mobile build exited 65\nfull output: ${log}$`, "m"));
+  assert.deepEqual([p.d.calls("xcrun"), p.recorded(s).apps.mobile.ok], [[], false]);
+  assert.equal((await p.apps(s, "down")).status, 0);
+  assert.ok(!fs.existsSync(p.d.lock), "down releases it");
+});
+
+test("a mobile app with no device in .factory/env.local is skipped, and a project without a mobile app never touches a device", async (t) => {
+  const d = fakeDevice(t);
+  const p = stack(t, { apps: [WEB_API.apps[1], MOBILE()] }, { files: { "mobile/.keep": "" }, cli: d.env });
+  const s = p.start("Show the cart total");
+  let r = await p.apps(s, "up");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^run-apps up: profile=default api=\S+ mobile=skip$/m);
+  assert.match(r.stdout, /^run-apps: mobile skipped: no device in \.factory\/env\.local \(FACTORY_IOS_DEVICE or FACTORY_ANDROID_DEVICE\)$/m);
+  r = await p.apps(s, "shot", "cart");
+  assert.deepEqual([r.status, r.stderr.trim()], [1, "run-apps: no device is up: run-apps up first"]);
+  assert.equal((await p.apps(s, "down")).status, 0);
+  const w = stack(t, WEB_API, { files: { "web/.keep": "" }, cli: d.env }), ws = w.start("Add a CSV export");
+  for (const cmd of ["up", "status", "down"]) assert.equal((await w.apps(ws, cmd)).status, 0, cmd);
+  for (const cli of ["xcrun", "adb", "emulator", "maestro", "sips"]) assert.deepEqual(d.calls(cli), [], cli);
+  assert.ok(!fs.existsSync(d.lock), "no device lock");
+  assert.ok(!("device" in w.recorded(ws)));
 });

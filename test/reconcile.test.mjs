@@ -7,7 +7,8 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { project } from "./harness.mjs";
+import { project, script } from "./harness.mjs";
+import { fakeDevice, DEVICES } from "./device.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts/run-state.mjs");
 // Claude Code's config dir, where a session's transcript is projects/<folder>/<session>.jsonl; never the real ~/.claude.
@@ -130,4 +131,22 @@ test("the downtime of a run cut off mid-stage isn't counted against its minutes 
   const again = r.run(["dispatch", "triage"]);
   assert.equal(again.status, 0, again.stdout);
   assert.match(r.run(["spend"]).stdout, /^minutes 0\/90$/m);
+});
+
+test("reconcile gives the developer's simulator back the look a crashed run's up recorded, and shuts down only what that up booted", (t) => {
+  const d = fakeDevice(t);
+  const p = project({ recipe: { apps: [{ name: "mobile", type: "mobile", path: ".", build: "mkdir -p build/Shop.app && echo build/Shop.app", app_id: "com.example.shop", checks: { test: "true" } }] } });
+  fs.writeFileSync(path.join(p.dir, ".factory/env.local"), `FACTORY_IOS_DEVICE=${DEVICES.ios.udid}\n`);
+  const env = { ...d.env, CLAUDE_CONFIG_DIR: CONFIG, CLAUDE_CODE_SESSION_ID: "s-1" };
+  const s = JSON.parse(script("run-state.mjs", p.dir, ["init"], { input: "Show the cart total\n", env }).stdout);
+  const up = script("run-apps.mjs", p.dir, ["up", "--run", s.id], { env });
+  assert.equal(up.status, 0, up.stdout + up.stderr);
+  // A capture switches the look, then the session dies before its run-apps down.
+  d.change("ios", { appearance: "dark", content_size: "accessibility-extra-extra-extra-large" });
+  const r = script("run-state.mjs", p.dir, ["reconcile", "--run", s.id], { env });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^run-apps down$/m);
+  const ios = d.state().ios;
+  assert.deepEqual([ios.booted, ios.appearance, ios.content_size], [false, "light", "large"]);
+  assert.ok(!fs.existsSync(d.lock), "the device is free for the next run");
 });
