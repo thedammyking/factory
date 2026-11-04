@@ -23,11 +23,14 @@
 //        RESEARCH   NEEDS_CONTEXT: one researcher dispatch answers its question in tickets/NN/context.md
 //        ATTENTION  for the human: a red inherited or environment, BLOCKED: intent_gap or environment, a bad plan after
 //                   the amendment, NEEDS_CONTEXT after the researcher's answer, no evidence, or a setup that failed
-//   run-stage.mjs merge <NN> -> after MERGE: merges factory/<run>/NN into the run branch, runs verify --full at the new
-//      head, then takes the ticket's apps and database down (run-apps down --drop there) and removes its worktree and
-//      branch. MERGED (the ticket marked done) when the run head is green;
-//      ATTENTION when it's red, or on a conflict, which is aborted and leaves everything as it was. Merges of one run
-//      wait on each other, and none goes into a run head whose evidence is red.
+//   run-stage.mjs merge <NN> -> after MERGE: merges factory/<run>/NN into the run branch. When the merge added or changed
+//      an app manifest (lib's MANIFEST) or a lockfile, it runs the recipe's setup in the run worktree, else the package
+//      manager's install (logs/install-NN.log); for a manifest, `setup-factory.mjs redetect` then re-detects and commits
+//      the recipe there. It runs verify --full at the new head, then takes the ticket's apps and database down (run-apps
+//      down --drop there) and removes its worktree and branch. MERGED (the ticket marked done) when the run head is
+//      green; ATTENTION when it's red, when the install or re-detecting fails, or on a conflict, which is aborted and
+//      leaves everything as it was. Merges of one run wait on each other, and none goes into a run head whose evidence
+//      is red.
 //   run-stage.mjs verify <NN> -> after qa:NN is done: verify --full judges the ticket's worktree again, qa's pinned tests
 //      included, and the verdict is as implement's. A resume that finds implement:NN done runs it too.
 //   run-stage.mjs review-fix -> one review fix round, once `run-state round review` has counted it and findings.json's
@@ -48,7 +51,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed } from "./lib.mjs";
+import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed, MANIFEST } from "./lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
@@ -93,6 +96,16 @@ const state = () => readJson(ctx.state);
 const say = (word, why) => { console.log(`${word} ${n}: ${why}`); process.exit(0); };
 const die = (msg) => { console.error(`run-stage: ${msg}`); process.exit(2); };
 const head = () => fs.existsSync(wt) ? git(wt, "rev-parse", "HEAD") : null;
+// The recipe's setup, or an install, under bash in cwd with lib's runEnv and its output saved to log. One that fails
+// prints the digest of its output and returns false.
+function runSetup(cwd, command, log) {
+  fs.mkdirSync(path.dirname(log), { recursive: true });
+  const fd = fs.openSync(log, "w"), r = spawnSync("bash", ["-c", command], { cwd, env: runEnv(ctx.MAIN), stdio: ["ignore", fd, fd], timeout: 10 * 60_000 });
+  fs.closeSync(fd);
+  if (r.status !== 0) console.log(digest(fs.readFileSync(log, "utf8"), log));
+  return r.status === 0;
+}
+const LOCKFILE = /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
 // A docs, refactor or maintenance oneshot has no qa: the recipe's checks are its only proof, and the merge decision
 // needs-human (#24).
 // ponytail: merge-decision's triage.md parse, copied; share it from lib once the parallel edits have landed.
@@ -144,6 +157,20 @@ if (cmd === "merge") {
     try { git(ctx.worktree, "merge", "--abort"); } catch {}
     say("ATTENTION", `merging ${branch} into ${s.branch} conflicts${files.length ? ` in ${files.join(", ")}` : `: ${gitError(e)}`}, so the merge was aborted`);
   }
+  // A ticket that adds or changes an app's manifest or a lockfile installs what it added in the run worktree first, by
+  // the recipe's setup, else its package manager's install: the run worktree has no dependencies of its own, and the
+  // main checkout's it finds by walking up lack the ticket's (in an empty repo, there are none).
+  const touched = git(ctx.worktree, "diff", "--name-only", tip, "HEAD").split("\n"), recipe = readJson(path.join(ctx.worktree, ".factory", "setup.json"), {});
+  const install = touched.some((f) => MANIFEST.test(f) || LOCKFILE.test(f)) && (recipe.setup || (recipe.package_manager && `${recipe.package_manager} install`));
+  if (install && !runSetup(ctx.worktree, install, path.join(ctx.runDir, "logs", `install-${n}.log`))) {
+    say("ATTENTION", `merged ${branch}, but \`${install}\` failed in the run worktree, as printed above, so verify didn't run`);
+  }
+  // A ticket that adds or changes an app's manifest re-detects the recipe on the run branch, so verify judges the head
+  // with it, and later tickets, run-apps and qa read it there.
+  const redetected = touched.some((f) => MANIFEST.test(f)) && node("setup-factory.mjs", ["redetect", "--worktree", ctx.worktree]);
+  if (redetected) console.log(`${redetected.stdout}${redetected.status ? redetected.stderr : ""}`.trim());
+  if (redetected?.status) say("ATTENTION", `merged ${branch}, but re-detecting the recipe failed, as printed above: `
+    + `run ${path.join(HERE, "setup-factory.mjs")} redetect --worktree ${ctx.worktree} once it's fixed`);
   const v = node("verify.mjs", ["--full", "--run", ctx.id], { cwd: ctx.MAIN }), sha = git(ctx.worktree, "rev-parse", "HEAD");
   console.log(v.stdout.split("\n")[0]);
   // The ticket's apps go down first, and its database with its worktree; a drop that fails keeps the worktree to retry
@@ -153,7 +180,7 @@ if (cmd === "merge") {
   if (apps.status) console.log(`ticket worktree kept: run-apps down failed\n${apps.stdout}${apps.stderr}`.trim());
   else try { git(ctx.MAIN, "worktree", "remove", "--force", wt); git(ctx.MAIN, "branch", "-q", "-D", branch); } catch (e) { console.log(`ticket worktree kept: ${gitError(e)}`); }
   const ev = readJson(path.join(ctx.runDir, "evidence.json"));
-  if (!ev?.green || ev.sha !== sha) say("ATTENTION", `verify --full is red at the run head ${sha.slice(0, 7)} after merging two green sides, red_cause ${ev?.red_cause}`);
+  if (!ev?.green || ev.sha !== sha) say("ATTENTION", `verify --full is red at the run head ${sha.slice(0, 7)} after merging two green sides${redetected ? " and re-detecting the recipe" : ""}, red_cause ${ev?.red_cause}`);
   if (told(runState("ticket", n, "done")).status) say("ATTENTION", `merged at ${sha.slice(0, 7)} and green, but ticket ${n} couldn't be marked done`);
   say("MERGED", `at ${sha.slice(0, 7)} on ${s.branch}, where verify --full is green`);
 }
@@ -265,17 +292,10 @@ if (!fs.existsSync(wt)) {
   try { git(ctx.MAIN, "branch", branch, cut); } catch (e) { unmade(e); }
   try { git(ctx.MAIN, "worktree", "add", "-q", wt, branch); } catch (e) { try { git(ctx.MAIN, "branch", "-q", "-D", branch); } catch {} unmade(e); }
   const setup = readJson(path.join(wt, ".factory", "setup.json"), {}).setup;
-  if (setup) {
-    const log = path.join(ctx.runDir, "logs", `setup-${n}.log`);
-    fs.mkdirSync(path.dirname(log), { recursive: true });
-    const fd = fs.openSync(log, "w"), r = spawnSync("bash", ["-c", setup], { cwd: wt, env: runEnv(ctx.MAIN), stdio: ["ignore", fd, fd], timeout: 10 * 60_000 });
-    fs.closeSync(fd);
-    if (r.status !== 0) {
-      // Nothing is committed yet, so the next attempt cuts the worktree again and reruns the setup.
-      git(ctx.MAIN, "worktree", "remove", "--force", wt); git(ctx.MAIN, "branch", "-q", "-D", branch);
-      console.log(digest(fs.readFileSync(log, "utf8"), log));
-      say("ATTENTION", "the recipe's setup failed in the ticket's worktree");
-    }
+  if (setup && !runSetup(wt, setup, path.join(ctx.runDir, "logs", `setup-${n}.log`))) {
+    // Nothing is committed yet, so the next attempt cuts the worktree again and reruns the setup.
+    git(ctx.MAIN, "worktree", "remove", "--force", wt); git(ctx.MAIN, "branch", "-q", "-D", branch);
+    say("ATTENTION", "the recipe's setup failed in the ticket's worktree");
   }
 }
 

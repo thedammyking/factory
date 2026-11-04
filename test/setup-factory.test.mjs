@@ -489,6 +489,51 @@ test("a repo with no package.json gets `pnpm init` in the proposal, run once by 
   assert.deepEqual([recipe.apps, recipe.package_manager], [[], "pnpm"]);
 });
 
+test("redetect proves what new or changed manifests bring, adds it to the recipe with kept values and allow left alone, leaves out what fails its proof and commits it", () => {
+  const p = shop();
+  const f = fakes();
+  setUp(p, f);
+  apply(p, f);
+  // the human's edits, kept: a check changed, one dropped, and a rule allowed
+  const KEPT = script("1 + 1");
+  const before = JSON.parse(read(p, ".factory/setup.json"));
+  before.apps.find((a) => a.name === "api").checks.test = KEPT;
+  delete before.apps.find((a) => a.name === "api").checks.build;
+  before.allow = ["Bash(docker compose up:*)"];
+  write(p, ".factory/setup.json", before);
+  p.git("add", "-A"); p.git("commit", "-qm", "setup");
+  // a ticket's commit: a new web app whose lint fails, and a lint script added to the API
+  write(p, "packages/admin/package.json", { name: "@shop/admin", scripts: { test: script("0"), lint: script("console.log('2 problems'); process.exit(1)") }, dependencies: { next: "15.0.0" } });
+  write(p, "apps/api/package.json", { ...JSON.parse(SHOP["apps/api/package.json"]), scripts: { ...JSON.parse(SHOP["apps/api/package.json"]).scripts, lint: script("0") } });
+  write(p, "apps/web/notes.md", "not a manifest\n");
+  p.git("add", "-A"); p.git("commit", "-qm", "Add the admin app");
+
+  const r = run(p, f, ["redetect", "--worktree", p.dir]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^pass +admin\.test /m);
+  assert.match(r.stdout, /^fail +admin\.lint .*\n(  .*\n)*  2 problems$/m, "with the failure's output");
+  assert.match(r.stdout, /^added +admin +\(web, packages\/admin\)$/m);
+  assert.match(r.stdout, /^added +api\.lint +`npm run lint`$/m);
+  assert.match(r.stdout, /^left out +admin\.lint +`npm run lint`: it failed its proof$/m);
+  assert.doesNotMatch(r.stdout, /web\.|ui\./, "an app whose manifest didn't change isn't re-detected");
+  const after = JSON.parse(p.git("show", "HEAD:.factory/setup.json"));
+  assert.deepEqual(after.apps.map((a) => a.name), ["api", "web", "ui", "admin"]);
+  assert.deepEqual(after.apps[3], { name: "admin", type: "web", path: "packages/admin", checks: { test: "npm run test" } });
+  const api = before.apps.find((a) => a.name === "api");
+  assert.deepEqual(after.apps[0], { ...api, checks: { ...api.checks, lint: "npm run lint" } }, "its new script's check joins; the kept test stays and the dropped build stays dropped");
+  assert.deepEqual(after.apps.slice(1, 3), before.apps.slice(1, 3));
+  assert.deepEqual(after.pinned, [...before.pinned, "packages/admin/e2e"], "the new app's directory joins the kept list");
+  assert.deepEqual(after.allow, before.allow);
+  assert.match(p.git("log", "-1", "--format=%s"), /^factory\(run\): re-detect the recipe$/);
+  assert.equal(p.git("status", "--porcelain"), "", "committed");
+
+  const head = p.git("rev-parse", "HEAD");
+  const again = run(p, f, ["redetect", "--worktree", p.dir]);
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /^nothing to re-detect: no app manifest changed since the recipe was committed$/m);
+  assert.equal(p.git("rev-parse", "HEAD"), head, "nothing committed");
+});
+
 test("apply adds @playwright/test and @axe-core/playwright as dev dependencies, with Chromium, to a web app lacking them", () => {
   const site = { "package.json": json({ name: "site", scripts: { test: "vitest run" }, dependencies: { next: "15.0.0" } }), "pnpm-lock.yaml": "lockfileVersion: '9.0'\n", "next.config.js": "module.exports = {};\n" };
   const p = shop({ files: site });

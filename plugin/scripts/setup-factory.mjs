@@ -38,13 +38,18 @@
 //                                              CLAUDE.md block, installs Playwright and axe for a web app lacking them, and
 //                                              prints the closing notes. Writing an applied proposal again changes nothing.
 //                                              In an empty repo it runs `pnpm init` first, and exits 1 if that fails.
+//   setup-factory.mjs redetect --worktree <run worktree> -> what run-stage merge runs once a ticket adds or changes an app
+//                                              manifest: detects and proves those apps' new commands there, merges them into
+//                                              its .factory/setup.json with kept values and allow left alone, and commits it
+//                                              on its branch. Prints each app or command added, and each command left out for
+//                                              failing its proof, which the run dir's redetect.json keeps for the PR.
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, runEnv, envLines, device, cli, PLATFORM_NAMES, watchEnv, smokeHeaders, loginWall } from "./lib.mjs";
+import { readJson, arg, git, mainRoot, attributed, runEnv, envLines, device, cli, PLATFORM_NAMES, watchEnv, smokeHeaders, loginWall, MANIFEST } from "./lib.mjs";
 
 const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
 const argv = process.argv.slice(2);
@@ -150,6 +155,8 @@ function workspaceDirs(root, pkg) {
 }
 
 const serves = (app) => app.type === "web" || app.type === "backend";  // what has a dev server and a preview
+// the script that provides a check: the first of its names present, `npm init`'s placeholder test aside
+const checkScript = (scripts, names) => names.find((s) => scripts[s] && !/no test specified/.test(scripts[s]));
 
 // One app of the recipe, or null for a package with no indicator and no checks. `add` records each value's source, and
 // found.pinned and found.auth collect the app's pinned directory and auth library.
@@ -166,7 +173,7 @@ function detectApp(root, dir, name, pm, add, found) {
   }
   const checks = {};
   for (const [check, names] of Object.entries(CHECKS)) {
-    const script = names.find((s) => scripts[s] && !/no test specified/.test(scripts[s]));
+    const script = checkScript(scripts, names);
     if (script) checks[check] = [`${pm} run ${script}`, `${at("package.json")} scripts.${script}`];
   }
   if (app.type === "other" && !Object.keys(checks).length) return null;
@@ -236,9 +243,8 @@ function merge(kept, fresh, at, disagree, fill = true) {
   return kept;
 }
 
-function detect(root, repo, mcp) {
-  const sources = [], disagreements = [], found = { auth: {}, pinned: {} };
-  const add = (field, value, source, guess = false) => sources.push({ field, value, source, guess });
+// The package manager and every app under root, as detect and redetect read them.
+function detectApps(root, add, found) {
   const pkg = readJson(path.join(root, "package.json"), {});
   const lock = LOCKS.find(([f]) => exists(root, f)), declared = pkg.packageManager?.split("@")[0];
   // the recipe's package manager leads on a re-run, as the kept tracker does, but an empty repo's is pnpm: it has no
@@ -251,7 +257,13 @@ function detect(root, repo, mcp) {
   const dirs = workspaceDirs(root, pkg), base = (d) => path.posix.basename(d);
   const nameOf = (d) => d === "." ? pkg.name?.split("/").pop() || path.basename(root)
     : dirs.filter((x) => base(x) === base(d)).length > 1 ? d.replaceAll("/", "-") : base(d);
-  const apps = dirs.map((d) => detectApp(root, d, nameOf(d), pm, add, found)).filter(Boolean);
+  return { pm, apps: dirs.map((d) => detectApp(root, d, nameOf(d), pm, add, found)).filter(Boolean) };
+}
+
+function detect(root, repo, mcp) {
+  const sources = [], disagreements = [], found = { auth: {}, pinned: {} };
+  const add = (field, value, source, guess = false) => sources.push({ field, value, source, guess });
+  const { pm, apps } = detectApps(root, add, found);
   const info = ghJson(`repos/${repo.slug}`);
 
   // previews: one read of recent deployments; an app named by a non-production environment is matched, and a web app no
@@ -540,13 +552,14 @@ const stopGroups = (sig) => { for (const pid of groups) try { process.kill(-pid,
 process.on("exit", () => stopGroups("SIGKILL"));
 for (const sig of ["SIGINT", "SIGTERM", "SIGHUP"]) process.on(sig, () => process.exit(1));
 
-async function prove(P, only) {
+// `main` is the checkout whose .factory/env.local the commands see, P.root's own unless P.root is a run's worktree.
+async function prove(P, only, main = P.root) {
   const want = (key) => !only.length || only.includes(key);
   const ports = {};
   for (const a of P.recipe.apps) if (a.dev) ports[a.name] = await freePort();
   const sub = (s) => s.replace(/\{port:([^}]+)\}/g, (m, name) => ports[name] ?? m);
   // the environment a run's commands get, with each app's port in place of its {port:<app>}
-  const env = Object.fromEntries(Object.entries(runEnv(P.root)).map(([k, v]) => [k, v === undefined ? v : sub(v)]));
+  const env = Object.fromEntries(Object.entries(runEnv(main)).map(([k, v]) => [k, v === undefined ? v : sub(v)]));
   P.proof ||= {};
   let failed = 0;
   // a failure's output reaches the chat, so each env.local value in it (8 characters or more) shows as {env:<its name>}
@@ -625,7 +638,6 @@ async function prove(P, only) {
       : tree.hits.length ? tree.hits.map((h) => `  ${h.check_id.split(".").pop()} ${h.path}:${h.start?.line}`).join("\n") : "  nothing found in the planted file");
   }
   groups.clear();
-  save(P);
   return failed;
 }
 
@@ -743,6 +755,60 @@ async function mobile(P) {
   return 1;
 }
 
+// After a ticket's merge (#78): each app whose manifest (lib's MANIFEST) changed since the worktree wt's recipe was last
+// committed is detected again. A new app joins the recipe, and a kept one gains each check or dev command whose script
+// is new to its package.json since then, so one the human dropped stays dropped and its kept values and allow are left
+// alone. Each new command is proven in wt first, one that fails is left out, and a new app's pinned directory joins the
+// list. The recipe is committed on wt's branch, and a run's worktree keeps what was added and left out in its run dir's
+// redetect.json, for the PR.
+async function redetect(wt) {
+  const file = ".factory/setup.json", recipe = exists(wt, file) ? kept(wt, file) : die(`no ${file} in ${wt}`);
+  const since = git(wt, "log", "-1", "--format=%H", "--", file) || die(`${file} isn't committed in ${wt}`);
+  const changed = git(wt, "diff", "--name-only", since, "HEAD").split("\n").filter((f) => MANIFEST.test(f));
+  // a kept app is known by its path: a new directory sharing its basename renames it in detection
+  const found = { auth: {}, pinned: {} }, held = (a) => (recipe.apps || []).find((x) => (x.path || ".") === a.path);
+  const scriptsAt = (dir) => { try { return JSON.parse(git(wt, "show", `${since}:${path.posix.join(dir, "package.json")}`)).scripts || {}; } catch { return {}; } };
+  const gain = (h, a) => {
+    const old = scriptsAt(a.path), checks = Object.fromEntries(Object.entries(a.checks).filter(([c]) => !(c in (h.checks || {})) && !checkScript(old, CHECKS[c])));
+    const needs = Object.keys(checks).filter((c) => NEEDS_APPS.includes(c));
+    return { ...h, checks: { ...h.checks, ...checks }, ...(a.dev && !h.dev && !DEV_SCRIPTS.some((s) => old[s]) && { dev: a.dev, health: a.health }),
+      ...(needs.length && { needs_apps: [...(h.needs_apps || []), ...needs] }) };
+  };
+  const apps = detectApps(wt, () => {}, found).apps.filter((a) => changed.some((f) => path.posix.dirname(f) === a.path))
+    .map((a) => held(a) ? gain(held(a), a) : a);
+  if (!apps.length) { console.log("nothing to re-detect: no app manifest changed since the recipe was committed"); return; }
+  const next = { ...recipe, apps: [...(recipe.apps || []).map((h) => apps.find((x) => x.path === (h.path || ".")) ?? h), ...apps.filter((a) => !held(a))] };
+  const keys = new Set(commands({ apps: recipe.apps || [] }).map(([k]) => k)), fresh = commands(next).filter(([k]) => !keys.has(k));
+  const P = { root: wt, recipe: next, config: {}, proof: {} };  // no semgrep: the project rules are setup's to prove
+  if (fresh.length) await prove(P, fresh.map(([k]) => k), mainRoot(wt));
+  const left = fresh.filter(([k]) => P.proof[k].status !== "pass");
+  for (const [, , name, check] of left) {
+    const a = next.apps.find((x) => x.name === name);
+    if (check === "dev") { delete a.dev; delete a.health; } else delete a.checks[check];
+    a.needs_apps = a.needs_apps?.filter((c) => c !== check);
+    if (!a.needs_apps?.length) delete a.needs_apps;
+  }
+  const added = apps.filter((a) => !held(a)), pinned = [].concat(recipe.pinned ?? []);
+  const pins = added.map((a) => found.pinned[a.name]).filter((d) => d && !pinned.includes(d));
+  if (pins.length) next.pinned = [...pinned, ...pins];
+  const gained = fresh.filter(([k, , name]) => !added.some((a) => a.name === name) && P.proof[k].status === "pass");
+  const lines = [...added.map((a) => `added  ${a.name}  (${a.type}, ${a.path})`), ...gained.map(([k, c]) => `added  ${k}  \`${c}\``),
+    ...left.map(([k, c]) => `left out  ${k}  \`${c}\`: it failed its proof`)];
+  for (const l of lines) console.log(l);
+  const runDir = path.join(wt, ".factory", "runs", path.basename(wt)), state = readJson(path.join(runDir, "state.json"));
+  if (state && lines.length) {
+    const record = path.join(runDir, "redetect.json"), r = readJson(record, { added: [], left_out: {} });
+    r.added = [...new Set([...r.added, ...added.map((a) => a.name), ...gained.map(([k]) => k)])];
+    for (const [k, c] of fresh) if (P.proof[k].status === "pass") delete r.left_out[k]; else r.left_out[k] = c;
+    fs.writeFileSync(record, JSON.stringify(r, null, 2) + "\n");
+  }
+  if (JSON.stringify(next) === JSON.stringify(recipe)) { console.log("nothing new for the recipe"); return; }
+  fs.writeFileSync(path.join(wt, file), JSON.stringify(next, null, 2) + "\n");
+  // --no-verify: the project's commit hooks never judge the factory's recipe.
+  git(wt, "commit", "-q", "--no-verify", "-m", attributed(`factory(run): re-detect the recipe\n\n${lines.join("\n")}`, "commit", state), "--", file);
+  console.log(`committed ${file} on ${git(wt, "branch", "--show-current") || "HEAD"}`);
+}
+
 switch (cmd) {
   case "detect": {
     let root; try { root = git(process.cwd(), "rev-parse", "--show-toplevel"); } catch { die("not a git repository: run it in the project's checkout"); }
@@ -761,7 +827,14 @@ switch (cmd) {
     break;
   }
   case "prove": {
-    if (await prove(loadProposal(), args)) process.exit(1);
+    const P = loadProposal(), failed = await prove(P, args);
+    save(P);
+    if (failed) process.exit(1);
+    break;
+  }
+  case "redetect": {
+    const wt = arg("--worktree", null, argv) || die("redetect --worktree <run worktree>");
+    await redetect(path.resolve(wt));
     break;
   }
   case "mobile": {
@@ -875,5 +948,5 @@ switch (cmd) {
     if (failed) process.exit(1);
     break;
   }
-  default: die("usage: setup-factory.mjs detect [--mcp <a,b>] | env | probe | prove [<app>.<name> ...] | mobile | set <field> [<value>] | apply [--tracker <t>] [--dry-run]");
+  default: die("usage: setup-factory.mjs detect [--mcp <a,b>] | env | probe | prove [<app>.<name> ...] | mobile | set <field> [<value>] | apply [--tracker <t>] [--dry-run] | redetect --worktree <run worktree>");
 }

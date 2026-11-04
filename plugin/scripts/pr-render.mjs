@@ -13,6 +13,7 @@
 //                per criterion opening its route, a bare path and never the path half of a URL (design fix 26). Above
 //                the evidence table, an "Unverified on <platform>" line for each platform the run didn't verify its
 //                mobile app on whose native code the diff changes.
+//                After the Spec line, the Recipe line once redetect.json says what re-detecting the recipe added and left out.
 //   comment.md   the decision comment, when there is one: "Merged at <sha>" with --merged or once decision.json records
 //                the factory's merge, "Would merge (trial)" for a
 //                merge decision, the attention item for a needs-human one (written as attention-merge.md too), and the
@@ -71,6 +72,11 @@ const rulings = walks.flatMap((w) => [
   ...(w.repaired || []).map((t) => `- \`${t.test}\`: repaired (${t.change}): ${t.why}`),
 ]);
 const notion = fm.match(/^notion:[ \t]*(\S+)/m)?.[1];
+// The Recipe line, once a ticket's app manifests re-detected the recipe on the run branch (#78): what it added, and each
+// command left out of it for failing its proof.
+const redetect = json("redetect.json"), leftOut = Object.entries(redetect?.left_out || {});
+const recipeLine = !redetect ? "" : `\n\nRecipe: re-detected on this branch${redetect.added.length ? `, adding ${redetect.added.map((a) => `\`${a}\``).join(", ")}` : ""}.`
+  + (leftOut.length ? ` Left out, each having failed its proof:\n${leftOut.map(([k, c]) => `- \`${k}\`: \`${c}\``).join("\n")}` : "");
 // One platform per run (#17): each platform the evidence didn't verify on whose native code the diff changes.
 const verifiedOn = ev.platform ? `the run verified on ${PLATFORM_NAMES[ev.platform]}` : "the run had no device";
 const unverified = !(recipe.apps || []).some((a) => a.type === "mobile") ? "" : unverifiedNative(recipe, ev.platform ?? null, runDiff(ctx).files)
@@ -119,7 +125,7 @@ ${list(rulings)}
 ## Anti-goals
 ${section("Anti-goals") || "- none in the spec"}
 
-Spec: ${notion ?? `\`${history}/${oneshot ? "triage" : "spec"}.md\``}
+Spec: ${notion ?? `\`${history}/${oneshot ? "triage" : "spec"}.md\``}${recipeLine}
 ${s.request_issue?.closing ? `\n${s.request_issue.closing}\n` : ""}
 ## Verify in 2 minutes
 ${previews.length ? `On the preview of \`${short(head)}\`:\n${previews.map(([n, a]) => `- ${n}: ${a.url}`).join("\n")}\n\n` : ""}Locally:

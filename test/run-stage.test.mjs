@@ -214,6 +214,72 @@ test("a merge that conflicts is aborted and left as it was, and a run head that 
   assert.match(fs.readFileSync(path.join(red.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: in-progress$/m, "the ticket isn't done");
 });
 
+test("a merged ticket that adds an app runs the recipe's setup in the run worktree, then re-detects the recipe on the run branch before verify, leaving out a script that fails its proof, which the PR lists; one that changes no manifest commits nothing", (t) => {
+  const r = ticketReady(t);
+  // its test passes only where the recipe's setup ran: in the run worktree, that's the merge's, before the proof
+  const api = { name: "api", scripts: { test: "test -f ../../.deps", lint: "node -e 'process.exit(1)'" }, dependencies: { fastify: "4.0.0" } };
+  r.play([{ files: { "csv.js": "1\n", "package.json": JSON.stringify({ ...JSON.parse(PACKAGE), workspaces: ["apps/*"] }), "apps/api/package.json": JSON.stringify(api) },
+    commit: "Add the API", write: { [r.impl]: report("DONE") } }]);
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
+  const ticketHead = git(r.wt, "rev-parse", "HEAD");
+  const out = r.stage("merge", "01");
+  const head = git(r.s.worktree, "rev-parse", "HEAD");
+  assert.equal(lastLine(out), `MERGED 01: at ${head.slice(0, 7)} on feature/csv-export, where verify --full is green`);
+  assert.equal(git(r.s.worktree, "rev-parse", "HEAD~1"), ticketHead);
+  assert.equal(git(r.s.worktree, "log", "-1", "--format=%s"), "factory(run): re-detect the recipe", "committed on the run branch");
+  assert.match(out.stdout, /^added +api +\(backend, apps\/api\)$/m);
+  assert.match(out.stdout, /^left out +api\.lint +`npm run lint`: it failed its proof$/m);
+  const recipe = JSON.parse(git(r.s.worktree, "show", "HEAD:.factory/setup.json"));
+  assert.deepEqual(recipe.apps, [RECIPE.apps[0], { name: "api", type: "backend", path: "apps/api", checks: { test: "npm run test" } }]);
+  assert.deepEqual([recipe.setup, recipe.pinned], [RECIPE.setup, ["apps/api/e2e"]]);
+  const e = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence.json"), "utf8"));
+  assert.deepEqual([e.sha, e.green, e.checks.map((c) => `${c.app}/${c.check}`)], [head, true, ["app/test", "app/typecheck", "api/test"]], "verify judged the new recipe");
+  const pr = r.node("pr-render.mjs", ["--run", r.s.id]);
+  assert.equal(pr.status, 0, pr.stderr);
+  assert.match(fs.readFileSync(path.join(r.s.run_dir, "pr.md"), "utf8"), /^Recipe: re-detected on this branch, adding `api`\. Left out, each having failed its proof:\n- `api\.lint`: `npm run lint`$/m);
+
+  const plain = green(t), plainHead = git(plain.wt, "rev-parse", "HEAD");
+  const merged = plain.stage("merge", "01");
+  assert.match(lastLine(merged), /^MERGED 01:/);
+  assert.doesNotMatch(merged.stdout, /re-detect|added|left out/);
+  assert.equal(git(plain.s.worktree, "rev-parse", "HEAD"), plainHead, "nothing committed after the ticket's own commits");
+  assert.ok(!fs.existsSync(path.join(plain.s.worktree, ".deps")), "and no setup ran in the run worktree");
+});
+
+test("a merged lockfile installs the run worktree's dependencies with the package manager when the recipe has no setup, a failed install stops for the human, and a merge touching neither installs nothing", (t) => {
+  const { setup, ...noSetup } = RECIPE;
+  // a fake pnpm, first on the ticket's PATH, recording each call's argv and cwd and exiting `status`
+  const ready = (status = 0) => {
+    const r = ticketReady(t, { recipe: { ...noSetup, package_manager: "pnpm" } });
+    fs.writeFileSync(path.join(r.env.PATH.split(path.delimiter)[0], "pnpm"), `#!${process.execPath}
+require("node:fs").appendFileSync(${JSON.stringify(path.join(r.fake, "pnpm.jsonl"))}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }) + "\\n");
+console.log("ERR_PNPM_OUTDATED_LOCKFILE"); process.exitCode = ${status};
+`, { mode: 0o755 });
+    const pnpm = () => { try { return fs.readFileSync(path.join(r.fake, "pnpm.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)); } catch { return []; } };
+    return { ...r, pnpm };
+  };
+  const LOCKED = { files: { ...CSV.files, "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" }, commit: "Lock the dependencies" };
+
+  const r = ready();
+  r.play([{ ...LOCKED, write: { [r.impl]: report("DONE") } }]);
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
+  assert.match(lastLine(r.stage("merge", "01")), /^MERGED 01:/);
+  assert.deepEqual(r.pnpm(), [{ argv: ["install"], cwd: r.s.worktree }], "once, in the run worktree");
+
+  const failing = ready(1);
+  failing.play([{ ...LOCKED, write: { [failing.impl]: report("DONE") } }]);
+  assert.match(lastLine(failing.stage("implement", "01")), /^MERGE 01:/);
+  const out = failing.stage("merge", "01");
+  assert.equal(lastLine(out), `ATTENTION 01: merged ${failing.branch}, but \`pnpm install\` failed in the run worktree, as printed above, so verify didn't run`);
+  assert.match(out.stdout, /ERR_PNPM_OUTDATED_LOCKFILE\nfull output: .*install-01\.log/);
+
+  const plain = ready();
+  plain.play([{ ...CSV, write: { [plain.impl]: report("DONE") } }]);
+  assert.match(lastLine(plain.stage("implement", "01")), /^MERGE 01:/);
+  assert.match(lastLine(plain.stage("merge", "01")), /^MERGED 01:/);
+  assert.deepEqual(plain.pnpm(), []);
+});
+
 // An attempt that commits csv.js with index.js broken by `word`, so each word fails the typecheck its own way.
 const broken = (r, word) => ({ files: { "csv.js": "1\n", "index.js": `const ${word} = ;\n` }, commit: `Try ${word}`, write: { [r.impl]: report("DONE") } });
 const round = (r) => r.node("run-state.mjs", ["round", "implement:01", "--run", r.s.id]);

@@ -189,6 +189,9 @@ export const PLATFORM_NAMES = { ios: "iOS", android: "Android" };
 export const unverifiedNative = (recipe, verified, files) => Object.keys(PLATFORM_NAMES).filter((p) => p !== verified).map((platform) => ({ platform,
   files: files.filter((f) => (recipe.apps || []).some((a) => a.type === "mobile" && f.startsWith(`${path.posix.join(a.path || ".", platform)}/`))) }))
   .filter((u) => u.files.length);
+// An app's manifest in its directory, its package.json, or a mobile app's app.json or app.config.*: a ticket that adds
+// or changes one re-detects the recipe (#78).
+export const MANIFEST = /(^|\/)(package\.json|app\.json|app\.config\.[cm]?[jt]s)$/;
 
 // What a failing command's output reaches agents as, in at most 40 lines: the lines matching an error pattern (the first
 // 29 before the last 10), then as many of the last lines as fit, each quoted word for word in log order, then
