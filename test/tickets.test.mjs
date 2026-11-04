@@ -23,8 +23,8 @@ const cut = (s, edges) => {
 };
 const read = (s, name) => fs.readFileSync(path.join(s.run_dir, "tickets", `${name}.md`), "utf8");
 // A build run past the spec gate, with nothing dispatched since.
-function specApproved() {
-  const p = project();
+function specApproved(config) {
+  const p = project({ config });
   const s = JSON.parse(rs(p.dir, ["init"], "Add a CSV export to the reports page\n").stdout);
   const run = (...args) => rs(p.dir, [...args, "--run", s.id]);
   fs.writeFileSync(path.join(s.run_dir, "triage.md"), "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch: "feature/csv-export" }) + "\n```\n");
@@ -39,8 +39,8 @@ function specApproved() {
   return { p, s, run };
 }
 // The ticket gate: the tickets cut and the stage done.
-function atTicketGate(edges) {
-  const r = specApproved();
+function atTicketGate(edges, config) {
+  const r = specApproved(config);
   r.run("dispatch", "tickets");
   cut(r.s, edges);
   r.run("done", "tickets");
@@ -121,15 +121,19 @@ test("ticket <NN> <status> rewrites only that ticket's Status line, bold or not,
   assert.match(fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8"), new RegExp(`run: ${s.id} ticket 01-export-endpoint ready-for-agent -> in-progress\\n`));
 });
 
-test("next-ticket prints the takeable tickets, in-progress first, then DONE once all are done, else BLOCKED with what each open one waits on", () => {
-  const { run } = atTicketGate({ "01-export-endpoint": "none", "02-export-button": "01", "03-file-name": "none", "04-empty-state": "2, #3" });
+test("next-ticket lists the started tickets, then starts takeable ones while fewer than parallel_tickets (2) are started, then DONE once all are done, else BLOCKED with what each open one waits on", () => {
+  const { run } = atTicketGate({ "01-export-endpoint": "none", "02-export-button": "01", "03-file-name": "none", "04-empty-state": "2, #3", "05-help-text": "none" });
   assert.equal(run("approve", "tickets", "approved").status, 0);
   const next = () => { const r = run("next-ticket"); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
-  assert.equal(next(), "NEXT 01-export-endpoint\nNEXT 03-file-name", "every ready ticket with nothing open before it");
+  assert.equal(next(), "NEXT 01-export-endpoint\nNEXT 03-file-name\nWAIT 05-help-text: parallel_tickets is 2", "two at once, in order");
   run("ticket", "03", "in-progress");
-  assert.equal(next(), "NEXT 03-file-name\nNEXT 01-export-endpoint", "a ticket already started comes first");
+  assert.equal(next(), "STARTED 03-file-name\nNEXT 01-export-endpoint\nWAIT 05-help-text: parallel_tickets is 2", "a started ticket holds its place");
+  run("ticket", "01", "in-progress");
+  assert.equal(next(), "STARTED 01-export-endpoint\nSTARTED 03-file-name\nWAIT 05-help-text: parallel_tickets is 2");
   run("ticket", "01", "done");
+  assert.equal(next(), "STARTED 03-file-name\nNEXT 02-export-button\nWAIT 05-help-text: parallel_tickets is 2", "the next starts when a started one is done");
   run("ticket", "03", "done");
+  run("ticket", "05", "done");
   assert.equal(next(), "NEXT 02-export-button", "04 still waits on 2, which is 02");
   run("ticket", "02", "blocked");
   assert.equal(next(), "BLOCKED 02-export-button: blocked\nBLOCKED 04-empty-state: waits on 02");
@@ -137,6 +141,53 @@ test("next-ticket prints the takeable tickets, in-progress first, then DONE once
   assert.equal(next(), "NEXT 04-empty-state");
   run("ticket", "04", "done");
   assert.equal(next(), "DONE");
+
+  const one = atTicketGate({ "01-export-endpoint": "none", "02-file-name": "none" }, { parallel_tickets: 1 });
+  assert.equal(one.run("approve", "tickets", "approved").status, 0);
+  assert.equal(one.run("next-ticket").stdout.trim(), "NEXT 01-export-endpoint\nWAIT 02-file-name: parallel_tickets is 1", "one at a time when the config says so");
+});
+
+// tickets/<NN>/plan.md with `files` as its code map, and a path that only an interface names.
+const plan = (s, n, files) => {
+  fs.mkdirSync(path.join(s.run_dir, "tickets", n), { recursive: true });
+  fs.writeFileSync(path.join(s.run_dir, "tickets", n, "plan.md"), `---\nstatus: ready\nticket: ${n}\n---\n\n# Plan ${n}\n\n## Code map\n`
+    + files.map((f) => `- \`${f}\` (change): its part\n`).join("") + "\n## Interfaces\n- Consumes: `csv()` at `src/csv.js:3`\n\n## Tasks\n1. **Given** a report\n");
+};
+
+test("two tickets whose plans' code maps share a file never run at once, the one implementing or else planned first going on, and a manifest or lockfile counts as every one", () => {
+  const { s, run } = atTicketGate({ "01-export-endpoint": "none", "02-export-button": "none", "03-file-name": "none", "04-help-text": "none" });
+  assert.equal(run("approve", "tickets", "approved").status, 0);
+  const next = () => run("next-ticket").stdout.trim();
+  const planned = (n, files) => { run("dispatch", `plan:${n}`); plan(s, n, files); run("done", `plan:${n}`); };  // as the orchestrator plans one
+  for (const n of ["01", "02"]) run("ticket", n, "in-progress");
+  planned("02", ["./src/csv.js", "src/button.js"]);
+  planned("01", ["src/report.js", "src/csv.js"]);
+  assert.equal(next(), "WAIT 01-export-endpoint: its code map shares src/csv.js with 02-export-button\nSTARTED 02-export-button\nWAIT 03-file-name: parallel_tickets is 2\nWAIT 04-help-text: parallel_tickets is 2",
+    "the one planned first, which the orchestrator checked and started first, goes on");
+  run("ticket", "01", "ready-for-agent");
+  assert.equal(next(), "STARTED 02-export-button\nWAIT 01-export-endpoint: its code map shares src/csv.js with 02-export-button\nNEXT 03-file-name\nWAIT 04-help-text: parallel_tickets is 2",
+    "a ticket that waited keeps waiting on its plan, and its slot goes to the next");
+  run("ticket", "03", "in-progress");
+  planned("03", ["src/name.js"]);
+  assert.equal(next(), "STARTED 02-export-button\nSTARTED 03-file-name\nWAIT 01-export-endpoint: its code map shares src/csv.js with 02-export-button\nWAIT 04-help-text: parallel_tickets is 2",
+    "a path only an interface names isn't in the code map");
+
+  run("ticket", "01", "in-progress");
+  run("ticket", "03", "done");
+  assert.equal(run("dispatch", "implement:01").status, 0);
+  const implementing = "STARTED 01-export-endpoint\nWAIT 02-export-button: its code map shares src/csv.js with 01-export-endpoint\nWAIT 04-help-text: parallel_tickets is 2";
+  assert.equal(next(), implementing, "the one implementing goes on, whichever was planned first");
+  assert.equal(run("dispatch", "plan:01").status, 0);
+  assert.equal(next(), implementing, "a plan set aside while it's amended still counts");
+
+  run("ticket", "02", "done");
+  run("ticket", "04", "in-progress");
+  plan(s, "01", ["package.json", "src/report.js"]);
+  plan(s, "04", ["apps/web/pnpm-lock.yaml", "src/help.js"]);
+  assert.equal(next(), "STARTED 01-export-endpoint\nWAIT 04-help-text: its code map shares package.json and the lockfile with 01-export-endpoint",
+    "a new dependency touches the manifest and the lockfile");
+  plan(s, "04", ["src/help.js"]);
+  assert.equal(next(), "STARTED 01-export-endpoint\nSTARTED 04-help-text");
 });
 
 test("the ticket gate refuses tickets the frontier can't order: a missing Status or Blocked by line, a shared number, or a wait on a later ticket", () => {

@@ -62,7 +62,7 @@ test("on trunk everything branches from main with the feature prefix", () => {
   assert.deepEqual([st.branch, st.base_branch, st.target_branch, st.base_sha], ["feature/login-crash", "main", "main", p.git("rev-parse", "main")]);
 });
 
-test("the branch carries the request issue's key, never the run id, and a taken name gets the next free number", () => {
+test("the branch carries the request issue's key, and the run id only when its name is taken", () => {
   const p = project();
   p.git("update-ref", "refs/remotes/origin/feature/csv-export", "HEAD");  // someone else's branch, fetched
   p.git("branch", "feature/csv-export-2");
@@ -78,9 +78,15 @@ test("the branch carries the request issue's key, never the run id, and a taken 
   triaged(p, named, { branch: "feature/12-csv-export" });
   assert.equal(lane(p, named).status, 0);
   assert.equal(state(p, keyed).branch, "feature/eng-123-csv-export");
-  assert.equal(state(p, plain).branch, "feature/csv-export-3");
+  assert.equal(state(p, plain).branch, `feature/csv-export-${plain.id}`);
   assert.equal(state(p, named).branch, "feature/12-csv-export", "a key triage already wrote isn't doubled");
-  for (const s of [keyed, plain, named]) assert.ok(!state(p, s).branch.includes(s.id));
+  for (const s of [keyed, named]) assert.ok(!state(p, s).branch.includes(s.id));
+  const again = init(p);
+  triaged(p, again, {});
+  p.git("branch", `feature/csv-export-${again.id}`);
+  const r = lane(p, again);
+  assert.equal(r.status, 2);
+  assert.match(r.stderr, new RegExp(`can't make feature/csv-export-${again.id}: the name is taken`));
 });
 
 test("only a build or oneshot run takes a lane, once; hold and answer make no branch", () => {

@@ -398,7 +398,7 @@ test("reconcile commits what a cut-off implementer left uncommitted as a wip com
   const fast = JSON.parse(fs.readFileSync(path.join(r.tickets, "evidence-fast.json"), "utf8"));
   assert.deepEqual([fast.sha, fast.green], [sha, true], "the salvaged tree's own fast checks");
   assert.match(out, /^ticket 01 verify fast: green=true /m);
-  assert.match(out, /^NEXT 01-csv-export$/m, "then the ticket frontier");
+  assert.match(out, /^STARTED 01-csv-export$/m, "then the ticket frontier");
   assert.match(fs.readFileSync(path.join(r.s.run_dir, "run.log"), "utf8"), /run: \S+ implement:01 wip\(factory\): salvaged from round 0 at \w{7}\n/);
 });
 
@@ -474,7 +474,7 @@ test("a resume that finds a ticket's implement stage done continues nothing, and
   const fast = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence-fast.json"), "utf8"));
   assert.equal(fast.sha, git(r.s.worktree, "rev-parse", "HEAD"), "with nothing cut off, the run branch's fast checks");
   assert.match(out, /^verify fast: green=false .* app\/test=fail/m, "where the ticket isn't merged yet");
-  assert.match(out, /^NEXT 01-csv-export$/m);
+  assert.match(out, /^STARTED 01-csv-export$/m);
   assert.match(lastLine(r.stage("verify", "01")), /^MERGE 01: DONE, and verify --full is green at \w{7}$/);
   assert.deepEqual([r.calls().length, r.state().dispatches.length], [1, before]);
 });

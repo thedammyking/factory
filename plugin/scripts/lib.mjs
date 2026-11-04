@@ -8,7 +8,18 @@ import { execFileSync } from "node:child_process";
 
 export const readJson = (p, fallback = null) => { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return fallback; } };
 export const arg = (k, fallback = null, argv = process.argv) => { const i = argv.indexOf(k); return i > -1 ? argv[i + 1] : fallback; };
-export const git = (cwd, ...a) => execFileSync("git", a, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim();
+// git's worktree and branch commands read every worktree's admin files, so they fail while any other process, another
+// run's scripts included, is adding or removing a worktree, and under reftable they can lose the ref lock to another
+// writer (docs/platform-facts.md, fact 14). Such a failure has changed nothing (but for the branch a `worktree add -b` makes, so
+// no script passes -b), and it's tried again, 5 times in all over about a second.
+const RACED = /failed to read .*\/commondir|cannot lock ref/;
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+export const git = (cwd, ...a) => {
+  for (let n = 1; ; n++) try { return execFileSync("git", a, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch (e) {
+    if (n === 5 || !["worktree", "branch"].includes(a[0]) || !RACED.test(e.stderr)) throw e;
+    pause(100 * n);
+  }
+};
 // the line of a failed git call that says why: its first error: or fatal: line, else its last
 export function gitError(e) {
   const lines = String(e.stderr || e.message).trim().split("\n");
@@ -55,6 +66,21 @@ export function commitToBase(main, base, message, apply) {
 // A ticket's worktree, .factory/worktrees/<run>-NN/, on its local branch factory/<run>/NN (never pushed).
 export const ticketWorktree = (main, id, n) => path.join(worktreesDir(main), `${id}-${n}`);
 export const ticketBranch = (id, n) => `factory/${id}/${n}`;
+
+// Holds `file` as a lock until this process exits, waiting while a live process holds it and taking it over from one that
+// died. Parallel tickets run their scripts at once: run-state holds its run's around each command, so none loses
+// another's state.json write, and run-stage its run's merge lock, so ticket branches merge one at a time.
+// ponytail: the holder is known by its PID alone, so a PID reused after a crash holds the lock until that process ends,
+// and two waiters taking over one dead holder's lock can both get it; add a lease if crashed holders become common.
+export function lock(file) {
+  for (;;) {
+    try { fs.writeFileSync(file, `${process.pid}\n`, { flag: "wx" }); break; } catch (e) { if (e.code !== "EEXIST") throw e; }
+    let pid; try { pid = Number(fs.readFileSync(file, "utf8")); } catch { continue; }  // released meanwhile
+    let alive = true; try { process.kill(pid, 0); } catch (e) { alive = e.code === "EPERM"; }  // 0, a lock being written, is alive
+    if (alive) pause(50); else fs.rmSync(file, { force: true });
+  }
+  process.on("exit", () => fs.rmSync(file, { force: true }));
+}
 
 // The run named by --run, else the one whose worktree holds cwd. Exits 2 when neither names a run with a state.json.
 // From a ticket's worktree, ticket is its NN and tree that worktree; otherwise ticket is null and tree the run worktree.

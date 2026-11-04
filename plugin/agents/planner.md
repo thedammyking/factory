@@ -130,7 +130,7 @@ Rules:
 - 900 to 1,600 tokens (about 3,500 to 6,500 characters). Nothing that a file in `context:` already says.
 - `context:` lists at most 8 files to read before anything else, repo-relative, plus `design-ref.md` by its absolute path when you write one.
 - The intent block is the spec's `<frozen-after-approval>` block, copied word for word.
-- `## Code map` lists every file to create or change, one line each.
+- `## Code map` lists every file to create or change, one line each, and a new dependency as a change to its manifest and the lockfile. Two tickets run at once only when their code maps share no file.
 - Each task is Given / When / Then, with the test that proves it. Where a test seam exists, the task writes that test first and sees it fail before the code changes. A ticket that fixes a bug starts with its regression test, which fails on the code as it is and is committed alone, before the fix.
 - Every test path is outside the recipe's `pinned` directories: those hold `qa`'s pinned tests, which the implementer can't write.
 - `## Verification` gives the exact commands, from the recipe's checks and the tests the tasks add, each with the result that means done.

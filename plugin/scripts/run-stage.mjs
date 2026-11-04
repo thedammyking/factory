@@ -24,7 +24,8 @@
 //                   the amendment, NEEDS_CONTEXT after the researcher's answer, no evidence, or a setup that failed
 //   run-stage.mjs merge <NN> -> after MERGE: merges factory/<run>/NN into the run branch, runs verify --full at the new
 //      head, then removes the ticket's worktree and branch. MERGED (the ticket marked done) when the run head is green;
-//      ATTENTION when it's red, or on a conflict, which is aborted and leaves everything as it was.
+//      ATTENTION when it's red, or on a conflict, which is aborted and leaves everything as it was. Merges of one run
+//      wait on each other, and none goes into a run head whose evidence is red.
 //   run-stage.mjs verify <NN> -> after qa:NN is done: verify --full judges the ticket's worktree again, qa's pinned tests
 //      included, and the verdict is as implement's. A resume that finds implement:NN done runs it too.
 import crypto from "node:crypto";
@@ -32,7 +33,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit } from "./lib.mjs";
+import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock } from "./lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
@@ -87,8 +88,12 @@ function verdict(s) {
 }
 
 if (cmd === "merge") {
+  lock(`${ctx.runDir}.merge.lock`);  // one ticket branch at a time, its verify --full included
   const s = state(), [word, why] = verdict(s);
   if (word !== "MERGE") die(`ticket ${n} isn't ready to merge: ${why}`);
+  // Nothing merges into a red run head, so a red after a merge is always one between two green sides.
+  const runEv = readJson(path.join(ctx.runDir, "evidence.json")), tip = git(ctx.worktree, "rev-parse", "HEAD");
+  if (runEv?.sha === tip && !runEv.green) say("ATTENTION", `the run head is red at ${tip.slice(0, 7)}, so ${branch} isn't merged into it`);
   try { git(ctx.worktree, "merge", "-q", "--no-edit", branch); } catch (e) {
     const files = git(ctx.worktree, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
     try { git(ctx.worktree, "merge", "--abort"); } catch {}
@@ -135,7 +140,11 @@ process.stdout.write(d.stdout);
 if (d.status) { process.stderr.write(d.stderr); process.exit(d.status); }
 const cut = state().dispatches.find((x) => x.stage === stage).sha;
 if (!fs.existsSync(wt)) {
-  try { git(ctx.MAIN, "worktree", "add", "-q", "-b", branch, wt, cut); } catch (e) { say("ATTENTION", `the ticket's worktree couldn't be made: ${gitError(e)}`); }
+  // The branch first, never `worktree add -b`, which can fail with its branch made (lib's git), and a branch whose
+  // worktree couldn't be made goes again, so the next attempt makes both.
+  const unmade = (e) => say("ATTENTION", `the ticket's worktree couldn't be made: ${gitError(e)}`);
+  try { git(ctx.MAIN, "branch", branch, cut); } catch (e) { unmade(e); }
+  try { git(ctx.MAIN, "worktree", "add", "-q", wt, branch); } catch (e) { try { git(ctx.MAIN, "branch", "-q", "-D", branch); } catch {} unmade(e); }
   const setup = readJson(path.join(wt, ".factory", "setup.json"), {}).setup;
   if (setup) {
     const log = path.join(ctx.runDir, "logs", `setup-${n}.log`);

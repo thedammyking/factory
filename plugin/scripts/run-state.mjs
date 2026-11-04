@@ -7,8 +7,9 @@
 //                                                as grill-answers.md
 //   run-state.mjs lane                        -> a build or oneshot run, once: switches the run worktree to a new lane
 //                                                branch at its base's tip (prefix and base from triage's type and the
-//                                                branching model, then the request issue's key, then triage's slug) and
-//                                                records branch, base_branch, target_branch and base_sha
+//                                                branching model, then the request issue's key, then triage's slug, and
+//                                                the run id only when that name is taken) and records branch,
+//                                                base_branch, target_branch and base_sha
 //   run-state.mjs approve spec approved|revise -> the human's decision at the spec gate; approved covers spec.md as it is,
 //                                                and until then a build run dispatches nothing past the builder check
 //   run-state.mjs notion [pushed <url> | failed "<why>"] -> an approved spec's Notion copy, which the orchestrator pushes
@@ -22,9 +23,12 @@
 //                                                dispatches nothing past the tickets
 //   run-state.mjs ticket <NN> <status>        -> after the ticket gate, the only change to a ticket's Status line that
 //                                                keeps the approval
-//   run-state.mjs next-ticket                 -> after the ticket gate, `NEXT <NN-slug>` per takeable ticket (in-progress
-//                                                first), else `DONE`, else `BLOCKED <NN-slug>: <why>` per open ticket,
-//                                                from lib's frontier
+//   run-state.mjs next-ticket                 -> after the ticket gate, a line per takeable ticket of lib's frontier,
+//                                                in-progress first: `STARTED <NN-slug>` for one that goes on, `NEXT
+//                                                <NN-slug>` (start it) while fewer than config's parallel_tickets (2) are
+//                                                started, else `WAIT <NN-slug>: <why>`, which a ticket also gets while its
+//                                                plans' code map shares a file with a started one's; else `DONE`,
+//                                                else `BLOCKED <NN-slug>: <why>` per open ticket
 //   run-state.mjs get                         -> prints state.json
 //   run-state.mjs set <key> <value>           -> sets a top-level key (JSON when it parses); `route` must be a route and
 //                                                `stage` an outcome (dispatch sets the working stages, abandon its own);
@@ -75,7 +79,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit } from "./lib.mjs";
+import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
 const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted", "suspended"];
@@ -98,7 +102,8 @@ const args = argv.slice(1).filter((a, i, all) => !a.startsWith("--") && !["--run
 const now = () => new Date().toISOString();
 
 function die(msg) { console.error(`run-state: ${msg}`); process.exit(2); }
-function save(file, s) { s.updated_at = now(); fs.writeFileSync(file, JSON.stringify(s, null, 2) + "\n"); }
+// Written whole by a rename, so a script reading state.json while a ticket's command writes it never sees half of it.
+function save(file, s) { s.updated_at = now(); fs.writeFileSync(`${file}.tmp`, JSON.stringify(s, null, 2) + "\n"); fs.renameSync(`${file}.tmp`, file); }
 const log = (runDir, line) => fs.appendFileSync(path.join(runDir, "run.log"), `- ${now()} ${line}\n`);
 const readText = (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
 // An approval covers spec.md exactly as the human read it: any later change to the file needs approving again, but for
@@ -111,6 +116,44 @@ const FRONTMATTER = /^---\n([\s\S]*?\n)?---(?:\n|$)/;  // spec.md's, its lines i
 const readTickets = (ctx) => frontier(path.join(ctx.runDir, "tickets"));
 const ticketsHash = (ctx) => crypto.createHash("sha256").update(JSON.stringify(readTickets(ctx).items.map((t) => [t.id, t.text]))).digest("hex");
 const ticketsApproved = (ctx, s) => s.approvals?.tickets?.sha256 === ticketsHash(ctx);
+// The files a ticket's plans change, [] before it has one: each path the `## Code map` of tickets/<NN>/plan.md lists,
+// and of each plan set aside beside it (so a plan being written again still counts), any manifest or lockfile counted as
+// one file, since a new dependency touches the manifest and the lockfile.
+// ponytail: so two tickets touching dependencies never pair, even in apps with lockfiles of their own; key it by
+// lockfile if that costs parallelism.
+const DEPENDENCIES = /(^|\/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
+const codeMap = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => /^plan(\.round\d+)?\.md$/.test(f))
+  .flatMap((f) => [...(readText(path.join(dir, f)).match(/^## Code map\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? "").matchAll(/^\s*- `([^`]+)`/gm)])
+  .map(([, f]) => f.replace(/^\.\//, "")).map((f) => DEPENDENCIES.test(f) ? "package.json and the lockfile" : f);
+// next-ticket's lines, which reconcile prints too.
+function frontierLines(ctx, s) {
+  const { open, next, done } = readTickets(ctx);
+  if (!open.length) return ["DONE"];
+  if (!next.length) return open.map((t) => `BLOCKED ${t.id}: ${t.status === "ready-for-agent" ? `waits on ${(t.blockedBy || []).filter((b) => !done.has(b)).join(", ")}` : t.status}`);
+  // A started ticket holds one of parallel_tickets until it's done. One not yet implemented waits while its code map
+  // shares a file with a started one that goes on: implementing, or else planned first, the order the orchestrator
+  // checks and starts them in. One not started waits while its plans' does with any started or starting.
+  // ponytail: two implementing tickets both go on when an amended plan adds a file the other has; the merge's conflict
+  // check catches what that lets through.
+  const slots = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {}).parallel_tickets ?? 2;
+  const maps = new Map(next.map((t) => [t, codeMap(path.join(ctx.runDir, "tickets", t.n))]));
+  const shares = (t, others) => others.map((u) => [maps.get(t).find((f) => maps.get(u).includes(f)), u]).find(([f]) => f);
+  const waits = (t, [file, u]) => `WAIT ${t.id}: its code map shares ${file} with ${u.id}`;
+  const implementing = (t) => s.dispatches.some((d) => d.stage === `implement:${t.n}`);
+  const planned = (t) => { const i = s.stages_done.indexOf(`plan:${t.n}`); return i < 0 ? Infinity : i; };
+  const started = next.filter((t) => t.status === "in-progress"), goingOn = [], holders = [...started], lines = new Map();
+  for (const t of [...started.filter(implementing), ...started.filter((t) => !implementing(t)).sort((a, b) => planned(a) - planned(b))]) {
+    const clash = !implementing(t) && shares(t, goingOn);
+    if (clash) lines.set(t, waits(t, clash)); else goingOn.push(t);
+  }
+  for (const t of next.filter((t) => t.status !== "in-progress")) {
+    const clash = shares(t, holders);
+    if (clash) lines.set(t, waits(t, clash));
+    else if (holders.length < slots) { holders.push(t); lines.set(t, `NEXT ${t.id}`); }
+    else lines.set(t, `WAIT ${t.id}: parallel_tickets is ${slots}`);
+  }
+  return next.map((t) => lines.get(t) ?? `STARTED ${t.id}`);
+}
 // Why a cut can't be approved: the frontier orders tickets by their Status and Blocked by lines, and a ticket waits only on
 // one numbered before it.
 const ticketProblems = (items) => items.flatMap((t) => [
@@ -121,6 +164,7 @@ const ticketProblems = (items) => items.flatMap((t) => [
 ].filter(Boolean));
 function load() {
   const ctx = runContext();
+  lock(`${ctx.runDir}.lock`);  // beside the run dir, so no snapshot copies it; held to exit, so no command spawns run-state
   return [ctx, readJson(ctx.state)];
 }
 // The strings in one env assignment that must never be committed or posted, [] when it holds none: the value of a
@@ -336,8 +380,8 @@ switch (cmd) {
     }
     const agent = arg("--agent"), childLog = arg("--log") && path.resolve(arg("--log"));
     const child = childLog && { log: childLog, ...(arg("--pid") && { pid: Number(arg("--pid")) }), ...(arg("--session") && { session: arg("--session") }) };
-    const last = s.dispatches.at(-1);
-    if ((agent || child) && last?.stage === stage && !last.agent && !last.log) Object.assign(last, agent && { agent }, child);
+    const last = s.dispatches.findLast((d) => d.stage === stage);  // another ticket's may have come since
+    if ((agent || child) && last && !last.agent && !last.log) Object.assign(last, agent && { agent }, child);
     else {
       // A dispatch ends any wait on the human, which the minute cap doesn't count.
       if (s.waiting_since) { s.waited_ms = (s.waited_ms || 0) + Date.now() - Date.parse(s.waiting_since); delete s.waiting_since; }
@@ -430,14 +474,14 @@ switch (cmd) {
     if (!slug.length) die("triage.md names no branch");
     const want = prefixes[kind] + [...key, ...slug.slice(0, 5)].join("-");
     let sha; try { sha = git(ctx.MAIN, "rev-parse", "--verify", `refs/heads/${base}^{commit}`); } catch { die(`base branch '${base}' doesn't exist`); }
-    // A name taken here or on a remote gets the next free number; losing a race to another run moves on the same way.
+    // A name taken here or on a remote gets the run id appended; losing a race to another run moves on the same way.
     const taken = (name, refs = [`refs/heads/${name}`, `refs/remotes/*/${name}`]) => git(ctx.MAIN, "for-each-ref", "--format=x", ...refs) !== "";
-    for (let n = 1; !s.branch; n++) {
-      const name = n > 1 ? `${want}-${n}` : want;
-      if (taken(name)) continue;
+    for (const name of [want, `${want}-${ctx.id}`]) {
+      if (s.branch || taken(name)) continue;
       try { git(ctx.worktree, "switch", "-q", "-c", name, sha); s.branch = name; }
       catch (e) { if (!taken(name, [`refs/heads/${name}`])) die(`can't make ${name}: ${gitError(e)}`); }
     }
+    if (!s.branch) die(`can't make ${want}-${ctx.id}: the name is taken`);
     Object.assign(s, { base_branch: base, target_branch: base, base_sha: sha });
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} on ${s.branch} from ${base} at ${sha.slice(0, 7)}`);
@@ -484,13 +528,7 @@ switch (cmd) {
   case "next-ticket": {
     const [ctx, s] = load();
     if (!ticketsApproved(ctx, s)) die(`the tickets of ${ctx.id} aren't approved: /factory approve ${ctx.id} approved`);
-    const { open, next, done } = readTickets(ctx);
-    if (!open.length) console.log("DONE");
-    else if (next.length) for (const t of next) console.log(`NEXT ${t.id}`);
-    else for (const t of open) {
-      const waits = (t.blockedBy || []).filter((b) => !done.has(b));
-      console.log(`BLOCKED ${t.id}: ${t.status === "ready-for-agent" ? `waits on ${waits.join(", ")}` : t.status}`);
-    }
+    for (const line of frontierLines(ctx, s)) console.log(line);
     break;
   }
   case "notion": {
@@ -654,8 +692,9 @@ switch (cmd) {
       const v = spawnSync(process.execPath, [script("verify.mjs"), "--fast", "--run", ctx.id], { cwd, encoding: "utf8" });
       console.log(`${label}${v.stdout.split("\n").slice(0, 2).join("\n")}`);
     }
-    // The frontier, as next-ticket prints it: tickets done are already merged and stay done.
-    if (ticketsApproved(ctx, s)) process.stdout.write(spawnSync(process.execPath, [process.argv[1], "next-ticket", "--run", ctx.id], { encoding: "utf8" }).stdout);
+    // The frontier, as next-ticket prints it: tickets done are already merged and stay done. In this process, since a
+    // run-state child would wait on the run's lock this command holds.
+    if (ticketsApproved(ctx, s)) for (const line of frontierLines(ctx, s)) console.log(line);
     log(ctx.runDir, `run: ${ctx.id} reconciled${formerOwner ? `, taken over from session ${formerOwner}` : ""}`);
     break;
   }
