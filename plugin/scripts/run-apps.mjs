@@ -3,7 +3,7 @@
 // its own, with a database of its own when the recipe can make one, without touching a sibling worktree or the
 // developer's shell, and leaves the developer's device as it found it.
 // Takes --run <id>, or derives the run from the run worktree it runs in. Run in a ticket's worktree, it starts that
-// worktree's apps instead, recorded in the same apps.json.
+// worktree's apps instead, and keeps its apps.json, logs and captures in tickets/<NN>/ in the run dir (lib's out).
 //   - up starts each app in .factory/setup.json that has a `dev` command, under bash in its path, in a process group of
 //     its own. Its env is lib's runEnv, then the `default` profile's env for it, then the named profile's; a profile
 //     that sets the app to null leaves it stopped. Each app gets a port the OS picks, and {port:<app>} in a dev command,
@@ -12,30 +12,32 @@
 //     one prints lib's digest of it.
 //   - An app whose dev command and env take no {port:<app>} keeps its health URL's port; up refuses it while another
 //     process holds that port.
-//   - With the recipe's db.create and db.drop, the worktree's database is factory_<run>, given to them as {name}: up
-//     creates it once, under the per-project lock so creates run one at a time, and `down --drop` drops it, as the run's
-//     snapshot does before it removes the worktree. A `db` without the pair is one database every worktree's apps
-//     share, so they hold the per-project lock from up to down; so do apps that include one keeping its own port. up
-//     waits up to 10 minutes for the lock, and takes over one whose holder's processes are all gone.
+//   - With the recipe's db.create and db.drop, the worktree's database is factory_<run>, or factory_<run>_<NN> in a
+//     ticket's, given to them as {name}: up creates it once, under the per-project lock so creates run one at a time,
+//     and `down --drop` drops it, as a ticket's merge and the run's snapshot do before they remove a worktree. A `db`
+//     without the pair is one database every worktree's apps share, so they hold the per-project lock from up to down;
+//     so do apps that include one keeping its own port. up waits up to 10 minutes for the lock, and takes over one
+//     whose holder's processes are all gone.
 //   - A mobile app (type mobile) goes on the one device lib's device() picks from .factory/env.local, behind one lock in
 //     the OS's temp dir that every simulator and emulator on the machine shares, held from up to down and waited for up
-//     to 30 minutes; with no device recorded it's "skip". Its optional dev server starts like any app's. Once the other
-//     apps are up, up takes the lock and runs its `build` in its path, with FACTORY_PLATFORM ios or android (its dev
-//     server gets it too): the build's last line is the .app or .apk it made, its output saved to logs/<app>.build.log.
-//     up then boots the device only if it isn't running (simctl boot; emulator -no-window), and records its appearance
-//     and text size, and on Android its density and size, in apps.json before it changes anything. Android then gets wm
-//     size at the screen's size in dp and wm density 160, so its screencap is 1x, and adb reverse for every recorded
-//     port. up installs the app over what's there, streams the device's log for it to logs/<app>.device.log, and
-//     launches it by its launch_url, else its app_id: it's healthy once in the foreground, within 2 minutes.
+//     to 30 minutes, so one worktree at a time has the device; with no device recorded it's "skip". Its optional dev
+//     server starts like any app's. Once the other apps are up, up takes the lock and runs its `build` in its path, with
+//     FACTORY_PLATFORM ios or android (its dev server gets it too): the build's last line is the .app or .apk it made,
+//     its output saved to logs/<app>.build.log. up then boots the device only if it isn't running (simctl boot;
+//     emulator -no-window), and records its appearance and text size, and on Android its density and size, in apps.json
+//     before it changes anything. Android then gets wm size at the screen's size in dp and wm density 160, so its
+//     screencap is 1x, and adb reverse for every recorded port. up installs the app over what's there, streams the
+//     device's log for it to logs/<app>.device.log, and launches it by its launch_url, else its app_id: it's healthy
+//     once in the foreground, within 2 minutes.
 //   - down kills each app's process group, then whatever still listens on a port it recorded (listeners only: a browser
 //     connected to it is never killed), and releases the lock. It puts back every device setting up recorded and
 //     shuts down only a device up booted; a step that fails keeps the record and the device lock for the next down
 //     or the run's reconcile. A device lock whose holder died is taken over only once that holder's device is restored.
-//   - shot <name> writes captures/<name>.png in the run dir at 1x and prints its path: simctl io's image resampled by
-//     sips to the point width on iOS, screencap's as it comes at density 160 on Android.
-//   - apps.json in the run dir holds the profile, the database, each app's port, url, pid and ok (true, false or
-//     "skip"), and the device's id and settings, never another env value: it's snapshotted into the repo. status prints
-//     each app in it as up, down or skip.
+//   - shot <name> writes captures/<name>.png in out at 1x and prints its path: simctl io's image resampled by sips to
+//     the point width on iOS, screencap's as it comes at density 160 on Android.
+//   - apps.json in out holds the profile, the database, each app's port, url, pid and ok (true, false or "skip"), and
+//     the device's id and settings, never another env value: it's snapshotted into the repo. status prints each app in
+//     it as up, down or skip. Each worktree reads and writes only its own, so down stops only what its up started.
 // up exits 0 when every app it started is healthy, 1 when one isn't or the database or a lock failed it; down exits 1
 // when the drop failed or the device isn't restored; shot exits 1 without a device up; all exit 2 on bad usage.
 import fs from "node:fs";
@@ -53,7 +55,7 @@ const ctx = runContext();
 let recipe; try { recipe = JSON.parse(fs.readFileSync(path.join(ctx.tree, ".factory/setup.json"), "utf8")); } catch (e) {
   console.error(`run-apps: no recipe at ${path.join(ctx.tree, ".factory/setup.json")} (${e.message})`); process.exit(2);
 }
-const FILE = path.join(ctx.runDir, "apps.json"), logs = path.join(ctx.runDir, "logs"), LOCK = path.join(worktreesDir(ctx.MAIN), ".apps.lock");
+const FILE = path.join(ctx.out, "apps.json"), logs = path.join(ctx.out, "logs"), LOCK = path.join(worktreesDir(ctx.MAIN), ".apps.lock");
 // ponytail: the OS's temp dir is per user and per TMPDIR, so a session whose TMPDIR differs takes a lock of its own;
 // put it under the home dir if two such sessions ever share a device.
 const DEVICE_LOCK = path.join(os.tmpdir(), "factory-device.lock");
@@ -339,7 +341,7 @@ async function up(profile) {
   const holdLock = apps.length > 0 && ((recipe.db && !pair) || apps.some((a) => fixed.includes(a)));
   if (holdLock || (pair && !record.db)) await lock();
   if (pair && !record.db) {
-    const name = `factory_${ctx.id.replaceAll("-", "_")}`;
+    const name = `factory_${path.basename(ctx.tree).replaceAll("-", "_")}`;
     if (!db("create", name)) { unlock(); process.exit(1); }
     record.db = name;
   }
@@ -389,7 +391,7 @@ else if (cmd === "down") {
   if (!given) process.exit(1);
 }
 else if (cmd === "shot") {
-  const d = record.device, file = path.join(ctx.runDir, "captures", `${process.argv[3]}.png`);
+  const d = record.device, file = path.join(ctx.out, "captures", `${process.argv[3]}.png`);
   if (!d?.settings) { console.error("run-apps: no device is up: run-apps up first"); process.exit(1); }
   fs.mkdirSync(path.dirname(file), { recursive: true });
   try { PLATFORMS[d.platform].shot(d, file); } catch (e) { console.error(`run-apps: ${e.message}`); process.exit(1); }

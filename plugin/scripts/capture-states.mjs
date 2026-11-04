@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // capture-states.mjs <states.json> — pictures each UI state a ticket's plan names, for the UI lens. Takes --run <id>, or
-// derives the run from the worktree it runs in. The apps must be up already (run-apps up).
+// derives the run from the worktree it runs in. That worktree's apps must be up already (run-apps up there).
 //   - <states.json> is {states: [{name, url, setup?, actions?}]}, one per state in the plan's ## UI states, each name
-//     unique, lowercase words joined by `-`. {port:<app>} in a url is filled from the run's apps.json. A state is reached
-//     by its setup, then its actions in order:
+//     unique, lowercase words joined by `-`. {port:<app>} in a url is filled from the worktree's apps.json. A state is
+//     reached by its setup, then its actions in order:
 //       setup: block [url pattern] (aborted, for an error state), hold [url pattern] (never answered, for a loading
 //         state), localStorage {key: value} (stored, then the page reloads, for a returning visit);
 //       actions: {fill: [selector, text]}, {click: selector}, {hover}, {focus}, {press: key}, {waitFor: selector}, {wait: ms}.
@@ -11,11 +11,12 @@
 //     playwright or @playwright/test, each in a fresh context: at deviceScaleFactor 1, since every image an agent reads
 //     is 1x; with touch at 390 px, so (pointer: coarse) rules are pictured (design fix 23); with the clipboard granted,
 //     so a Copied state is real; and with animations settled before the shot (design fix 11).
-//   - Writes captures/<state>-<width>-<scheme>.png in the run dir; captures/states.json, each capture's file and
-//     overflow (its page scrolls sideways), or its error; and captures/axe.json, each capture's axe violations, or
-//     {"axe": "missing"} when the project has no @axe-core/playwright, which the lens never reads as a pass.
+//   - Writes captures/<state>-<width>-<scheme>.png in lib's out, the run dir in the run worktree; captures/states.json,
+//     each capture's file and overflow (its page scrolls sideways), or its error; and captures/axe.json, each capture's
+//     axe violations, or {"axe": "missing"} when the project has no @axe-core/playwright, which the lens never reads as
+//     a pass.
 //   - Its full output, each capture's line or error after the errors its page logged, goes to logs/capture-states.log in
-//     the run dir as it runs. A failure prints lib's digest of the failed captures.
+//     out as it runs. A failure prints lib's digest of the failed captures.
 // Exits 0 when every capture was taken, 1 when one wasn't, 2 on bad usage, a url whose app has no port in apps.json, or
 // no Playwright in the project.
 import fs from "node:fs";
@@ -36,7 +37,7 @@ if (!Array.isArray(states) || !states.length || !states.every(valid) || new Set(
   console.error(`capture-states: usage: capture-states.mjs <states.json> [--run <id>], the file {states: [{name, url, setup?, actions?}]}, each name unique, each action one of ${ACTIONS.join(", ")}`);
   process.exit(2);
 }
-const ctx = runContext(), apps = readJson(path.join(ctx.runDir, "apps.json"));
+const ctx = runContext(), apps = readJson(path.join(ctx.out, "apps.json"));
 const unfilled = states.find((s) => /\{port:[^}]+\}/.test(fill(s.url, apps)));
 if (unfilled) { console.error(`capture-states: no port for ${unfilled.url} in apps.json: bring the apps up first (run-apps up)`); process.exit(2); }
 // Playwright resolves from the worktree's root or one of its apps, as the project's own code would.
@@ -47,7 +48,7 @@ const pw = load(["playwright", "@playwright/test"]);
 if (!pw) { console.error(`capture-states: no playwright or @playwright/test in ${ctx.tree} or its apps`); process.exit(2); }
 const axe = load(["@axe-core/playwright"]), AxeBuilder = axe?.default ?? axe;
 
-const out = path.join(ctx.runDir, "captures"), LOG = path.join(ctx.runDir, "logs", "capture-states.log");
+const out = path.join(ctx.out, "captures"), LOG = path.join(ctx.out, "logs", "capture-states.log");
 for (const d of [out, path.dirname(LOG)]) fs.mkdirSync(d, { recursive: true });
 fs.writeFileSync(LOG, "");
 const log = (text) => fs.appendFileSync(LOG, text + "\n");
@@ -79,7 +80,7 @@ async function capture(st, width, height, scheme, file, logged) {
       else await page.waitForTimeout(a.wait);
     }
     await page.waitForTimeout(SETTLE);
-    await page.screenshot({ path: path.join(ctx.runDir, file), animations: "disabled" });
+    await page.screenshot({ path: path.join(ctx.out, file), animations: "disabled" });
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth > document.documentElement.clientWidth);
     if (AxeBuilder) {
       const { violations } = await new AxeBuilder({ page }).analyze();
@@ -98,7 +99,7 @@ try {
       captures.push({ ...at, file, overflow });
       log([...logged, `captured ${file}${overflow ? " (overflow)" : ""}`].join("\n"));
     } catch (e) {
-      fs.rmSync(path.join(ctx.runDir, file), { force: true });  // no picture, not even an older one, stands for this state
+      fs.rmSync(path.join(ctx.out, file), { force: true });  // no picture, not even an older one, stands for this state
       captures.push({ ...at, error: e.message.split("\n")[0] });
       failures.push([...logged, `FAILED ${file}: ${e.stack || e.message}`].join("\n"));
       log(failures.at(-1));

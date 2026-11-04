@@ -23,7 +23,8 @@
 //        ATTENTION  for the human: a red inherited or environment, BLOCKED: intent_gap or environment, a bad plan after
 //                   the amendment, NEEDS_CONTEXT after the researcher's answer, no evidence, or a setup that failed
 //   run-stage.mjs merge <NN> -> after MERGE: merges factory/<run>/NN into the run branch, runs verify --full at the new
-//      head, then removes the ticket's worktree and branch. MERGED (the ticket marked done) when the run head is green;
+//      head, then takes the ticket's apps and database down (run-apps down --drop there) and removes its worktree and
+//      branch. MERGED (the ticket marked done) when the run head is green;
 //      ATTENTION when it's red, or on a conflict, which is aborted and leaves everything as it was. Merges of one run
 //      wait on each other, and none goes into a run head whose evidence is red.
 //   run-stage.mjs verify <NN> -> after qa:NN is done: verify --full judges the ticket's worktree again, qa's pinned tests
@@ -110,9 +111,12 @@ if (cmd === "merge") {
   }
   const v = node("verify.mjs", ["--full", "--run", ctx.id], { cwd: ctx.MAIN }), sha = git(ctx.worktree, "rev-parse", "HEAD");
   console.log(v.stdout.split("\n")[0]);
-  // The branch is in the run branch now, which -d can't see from the main checkout. --force: the worktree's ignored files,
-  // such as installed dependencies, go with it.
-  try { git(ctx.MAIN, "worktree", "remove", "--force", wt); git(ctx.MAIN, "branch", "-q", "-D", branch); } catch (e) { console.log(`ticket worktree kept: ${gitError(e)}`); }
+  // The ticket's apps go down first, and its database with its worktree; a drop that fails keeps the worktree to retry
+  // from. The branch is in the run branch now, which -d can't see from the main checkout. --force: the worktree's
+  // ignored files, such as installed dependencies, go with it.
+  const apps = node("run-apps.mjs", ["down", "--drop", "--run", ctx.id], { cwd: wt });
+  if (apps.status) console.log(`ticket worktree kept: run-apps down failed\n${apps.stdout}${apps.stderr}`.trim());
+  else try { git(ctx.MAIN, "worktree", "remove", "--force", wt); git(ctx.MAIN, "branch", "-q", "-D", branch); } catch (e) { console.log(`ticket worktree kept: ${gitError(e)}`); }
   const ev = readJson(path.join(ctx.runDir, "evidence.json"));
   if (!ev?.green || ev.sha !== sha) say("ATTENTION", `verify --full is red at the run head ${sha.slice(0, 7)} after merging two green sides, red_cause ${ev?.red_cause}`);
   if (told(runState("ticket", n, "done")).status) say("ATTENTION", `merged at ${sha.slice(0, 7)} and green, but ticket ${n} couldn't be marked done`);

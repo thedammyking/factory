@@ -91,6 +91,49 @@ test("two worktrees' apps run at once, each on ports of its own, recorded in app
   assert.equal((await p.apps(a, "status")).stdout.trim(), "no apps up");
 });
 
+test("two tickets of one run have their apps up at once, each worktree with a database and a record of its own, and down in one leaves the other's as they were", async (t) => {
+  const p = stack(t, { ...WEB_API, db: { create: 'mkdir "$DBS/{name}"', drop: 'rmdir "$DBS/{name}"' } }, { files: { "web/.keep": "" } });
+  const dbs = path.join(p.dir, ".dbs");
+  fs.mkdirSync(dbs);
+  fs.appendFileSync(path.join(p.dir, ".factory/env.local"), `DBS=${dbs}\n`);
+  const s = p.start("Add a CSV export");
+  const [one, two] = ["01", "02"].map((n) => {
+    const wt = path.join(p.dir, ".factory/worktrees", `${s.id}-${n}`);
+    fs.mkdirSync(path.join(s.run_dir, "tickets"), { recursive: true });
+    fs.writeFileSync(path.join(s.run_dir, "tickets", `${n}-part.md`), `# ${n}: part\n\nStatus: in-progress\nBlocked by: none\n`);
+    p.git("worktree", "add", "-q", "-b", `factory/${s.id}/${n}`, wt);
+    return wt;
+  });
+  const apps = (wt, ...args) => script("run-apps.mjs", wt, [...args, "--run", s.id]);
+  t.after(async () => { for (const wt of [one, two]) await apps(wt, "down"); });
+  const urls = (r) => Object.fromEntries([...r.stdout.matchAll(/ (\w+)=(http\S+)/g)].map(([, name, url]) => [name, url]));
+  const ups = [await apps(one, "up"), await apps(two, "up")];  // the second while the first's apps run
+  for (const r of ups) assert.equal(r.status, 0, r.stdout + r.stderr);
+  const [ua, ub] = ups.map(urls);
+  assert.deepEqual(await Promise.all([ua.web, ua.api, ub.web, ub.api].map(answers)), [true, true, true, true], "a sibling ticket's up never stops a ticket's apps");
+  const recorded = (n) => JSON.parse(fs.readFileSync(path.join(s.run_dir, "tickets", n, "apps.json"), "utf8"));
+  const [ra, rb] = [recorded("01"), recorded("02")];
+  assert.deepEqual([ra.apps.web.url, rb.apps.web.url], [ua.web, ub.web], "each worktree's record is beside its ticket's plan");
+  assert.ok(!fs.existsSync(path.join(s.run_dir, "apps.json")), "and the run worktree's is untouched");
+  for (const [wt, u] of [[one, ua], [two, ub]]) assert.equal((await get(u.web)).cwd, path.join(wt, "web"));
+  assert.deepEqual([ra.db, rb.db], [`factory_${s.id.replaceAll("-", "_")}_01`, `factory_${s.id.replaceAll("-", "_")}_02`]);
+  assert.deepEqual(fs.readdirSync(dbs).sort(), [ra.db, rb.db]);
+
+  assert.equal((await apps(one, "down")).status, 0);
+  assert.deepEqual(await Promise.all([ua.web, ua.api, ub.web, ub.api].map(answers)), [false, false, true, true], "down stops only its own worktree's apps");
+  assert.deepEqual(recorded("02"), rb, "and leaves the sibling's record as it was");
+  assert.deepEqual((await apps(two, "status")).stdout.trim().split("\n"), [`web up ${ub.web}`, `api up ${ub.api}`]);
+
+  // A run that ends takes every ticket worktree's apps down with its own, and their databases with it.
+  const rs = (...args) => spawnSync(process.execPath, [path.join(SCRIPTS, "run-state.mjs"), ...args, "--run", s.id], { cwd: p.dir, encoding: "utf8" });
+  assert.equal(rs("abandon").status, 0);
+  const r = rs("snapshot");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.ok(!fs.existsSync(s.worktree));
+  assert.deepEqual(await Promise.all([ub.web, ub.api].map(answers)), [false, false]);
+  assert.deepEqual(fs.readdirSync(dbs), []);
+});
+
 test("fix 4: a profile's env goes over .factory/env.local's and `app: null` leaves an app stopped; down kills each app's process group, then frees only the ports it recorded, listeners only", async (t) => {
   const p = stack(t, {
     apps: [

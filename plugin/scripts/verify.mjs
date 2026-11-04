@@ -19,10 +19,10 @@
 //     its full output saved to logs/<app>-<check>.log in the run dir (.fast.log or .pinned.log); a failing one carries
 //     lib's digest of that output.
 //   - A check needing a name .factory/env.local doesn't hold is skipped, never run. An app without a test check fails it.
-//   - A check its app lists in needs_apps runs between run-apps up and down, with {port:<app>} and {db} filled in its
-//     command and env from apps.json. When up fails the check is skipped with up's output, since apps that won't come
-//     up are the environment's. --full runs run-apps down first, so a stack left up never holds a port an e2e suite's
-//     own servers need (design fix 15).
+//   - A check its app lists in needs_apps runs between run-apps up and down in the worktree it checks, with {port:<app>}
+//     and {db} filled in its command and env from that worktree's apps.json. When up fails the check is skipped with
+//     up's output, since apps that won't come up are the environment's. --full runs run-apps down first, so a stack left
+//     up never holds a port an e2e suite's own servers need (design fix 15).
 //   - The evidence is pinned to HEAD. It's dirty when the tree is unclean outside .factory/ (the recipe included) or HEAD
 //     moved, trusted when the recipe equals HEAD's, and green when every check passed and it's clean and trusted.
 //   - red_cause says why it isn't green: inherited when every failing check fails at the base commit too (rerun there in
@@ -40,7 +40,7 @@ if (!mode) { console.error("verify: usage: verify.mjs --fast | --full | --pinned
 const onlyTest = mode === "pinned" && path.resolve(arg("--pinned") ?? "");  // --pinned's file, else false
 if (onlyTest && !fs.statSync(onlyTest, { throwIfNoEntry: false })?.isFile()) { console.error(`verify: no pinned test at ${onlyTest}`); process.exit(2); }
 if (onlyTest) process.chdir(path.dirname(onlyTest));
-const ctx = runContext(), s = readJson(ctx.state), tree = ctx.tree, out = ctx.ticket ? path.join(ctx.runDir, "tickets", ctx.ticket) : ctx.runDir;
+const ctx = runContext(), s = readJson(ctx.state), tree = ctx.tree, out = ctx.out;
 const RECIPE = ".factory/setup.json", FAST = ["typecheck", "lint", "test"];
 let text, recipe; try { text = fs.readFileSync(path.join(tree, RECIPE), "utf8"); recipe = JSON.parse(text); } catch (e) {
   console.error(`verify: no recipe at ${path.join(tree, RECIPE)} (${e.message})`); process.exit(2);
@@ -92,7 +92,7 @@ function withApps(app, check, cmd, pinnedPath, extra = {}) {
       fs.writeFileSync(log, output);
       return { status: "skipped", ...NOT_RUN, log, digest: digest(output, log) };
     }
-    const recorded = readJson(path.join(ctx.runDir, "apps.json"));
+    const recorded = readJson(path.join(out, "apps.json"));
     const filled = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, typeof v === "string" ? fill(v, recorded) : v]));
     const url = recorded?.apps?.[app]?.url;
     if (pinnedPath) Object.assign(filled, { FACTORY_PINNED: pinnedPath }, url && { BASE_URL: new URL(url).origin }, extra);

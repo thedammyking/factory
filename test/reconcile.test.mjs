@@ -5,9 +5,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { project, script } from "./harness.mjs";
+import { project, script, sh, write, STUB_SERVER } from "./harness.mjs";
 import { fakeDevice, DEVICES } from "./device.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts/run-state.mjs");
@@ -131,6 +131,39 @@ test("the downtime of a run cut off mid-stage isn't counted against its minutes 
   const again = r.run(["dispatch", "triage"]);
   assert.equal(again.status, 0, again.stdout);
   assert.match(r.run(["spend"]).stdout, /^minutes 0\/90$/m);
+});
+
+test("reconcile salvages a ticket whose child died and takes its apps down, and leaves a ticket whose child still runs, its apps and its work alone", async (t) => {
+  const p = project({ recipe: { apps: [{ name: "api", path: ".", dev: "node server.mjs {port:api}", health: "http://localhost:{port:api}/", checks: { test: "true" } }] } });
+  write(p.dir, { "server.mjs": STUB_SERVER });
+  p.git("add", "."); p.git("commit", "-qm", "stub app");
+  const alive = path.join(p.dir, ".alive");  // every stub app lives by it
+  fs.writeFileSync(alive, ""); fs.writeFileSync(path.join(p.dir, ".factory/env.local"), `ALIVE=${alive}\n`);
+  t.after(() => fs.rmSync(alive, { force: true }));
+  const s = JSON.parse(rs(p.dir, ["init"], { input: "Add a CSV export\n" }).stdout), run = (args) => rs(p.dir, [...args, "--run", s.id]);
+  const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"]);  // ticket 01's implementer, still working
+  t.after(() => child.kill("SIGKILL"));
+  const gone = spawnSync(process.execPath, ["-e", ""]).pid;  // ticket 02's, dead
+  const url = {}, wt = (n) => path.join(p.dir, ".factory/worktrees", `${s.id}-${n}`);
+  for (const [n, pid] of [["01", child.pid], ["02", gone]]) {
+    write(s.run_dir, { [`tickets/${n}-part.md`]: `# ${n}: part\n\nStatus: in-progress\nBlocked by: none\n` });
+    p.git("worktree", "add", "-q", "-b", `factory/${s.id}/${n}`, wt(n));
+    const up = script("run-apps.mjs", wt(n), ["up", "--run", s.id]);
+    assert.equal(up.status, 0, up.stdout + up.stderr);
+    url[n] = up.stdout.match(/ api=(\S+)/)[1];
+    write(wt(n), { [`part-${n}.js`]: "half done\n" });
+    run(["dispatch", `implement:${n}`]);
+    run(["dispatch", `implement:${n}`, "--log", path.join(s.run_dir, "logs", `implement-${n}.1.jsonl`), "--pid", String(pid), "--session", `c-${n}`]);
+  }
+  const r = run(["reconcile"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, new RegExp(`^WORKING implement:01: its child, pid ${child.pid}, still runs$`, "m"));
+  assert.match(r.stdout, /^ticket 02 run-apps down$/m);
+  assert.deepEqual([await fetch(url["01"]).then(() => true, () => false), await fetch(url["02"]).then(() => true, () => false)], [true, false], "only the dead ticket's apps went down");
+  assert.match(r.stdout, /^salvaged \w{7} on \S+\/02: wip\(factory\): salvaged from round 0$/m);
+  assert.equal(sh(wt("01"), "git", ["status", "--porcelain"]), "?? part-01.js", "nothing is salvaged under a child that still runs");
+  assert.match(r.stdout, /^CONTINUE implement:02 from /m);
+  assert.doesNotMatch(r.stdout, /^(CONTINUE implement:01|ticket 01 )/m);
 });
 
 test("reconcile gives the developer's simulator back the look a crashed run's up recorded, and shuts down only what that up booted", (t) => {

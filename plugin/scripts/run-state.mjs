@@ -60,10 +60,13 @@
 //   run-state.mjs reconcile [--take-over]     -> what /factory resume runs, from disk alone. A run another session owns (the
 //                                                one init recorded) prints `OWNED …` with that session's last activity and
 //                                                exits 6 changing nothing, until --take-over makes this session its owner;
-//                                                a child still running prints `WORKING …` and exits 6 too. Otherwise: the
-//                                                downtime of a run cut off mid-stage is waiting, not run time; run-apps
-//                                                down; what each dead implementer left uncommitted in its ticket's
-//                                                worktree is committed as `wip(factory): salvaged from round N`; then
+//                                                a review fix's child still running prints `WORKING …` and exits 6 too.
+//                                                A ticket's child still running prints `WORKING …`, and that ticket, its
+//                                                worktree and its apps are left alone. Otherwise: the downtime of a run
+//                                                cut off mid-stage is waiting, not run time; run-apps down in the run
+//                                                worktree and each ticket's; what each dead implementer left
+//                                                uncommitted in its ticket's worktree is committed as
+//                                                `wip(factory): salvaged from round N`; then
 //                                                `done: …` (stages never run again), `CONTINUE <stage> …` per stage cut
 //                                                off mid-flight (none on a run stopped needs-human), verify --fast where
 //                                                they work (else on the run branch), and next-ticket's frontier
@@ -74,7 +77,8 @@
 //   run-state.mjs snapshot                    -> unless a run file holds a credential from the env files, commits the run
 //                                                dir to .factory/history/<id>/ on the base and its new run.log lines to
 //                                                .factory/log.md, then removes the worktree of a finished run (its
-//                                                apps brought down and its database dropped first); a stop
+//                                                apps and any left ticket worktree's brought down, and their databases
+//                                                dropped, first); a stop
 //                                                ends the run needs-human, prints `needs-human: <attention item>`, exits 1
 //   run-state.mjs abandon                     -> ends the run abandoned; its branch is kept, and the snapshot after it
 //                                                removes a clean worktree
@@ -170,6 +174,10 @@ const ticketProblems = (items) => items.flatMap((t) => [
   items.some((u) => u !== t && u.n === t.n) && `${t.id} shares its number`,
   ...(t.blockedBy || []).filter((b) => !(b < t.n && items.some((u) => u.n === b))).map((b) => `${t.id} waits on ${b}, which doesn't come before it`),
 ].filter(Boolean));
+// Each ticket's worktree that's still there, as [NN, path].
+const ticketTrees = (ctx) => readTickets(ctx).items.map((t) => [t.n, ticketWorktree(ctx.MAIN, ctx.id, t.n)]).filter(([, wt]) => fs.existsSync(wt));
+// run-apps down in one worktree, which stops only the apps that worktree's own record holds.
+const appsDown = (ctx, cwd, ...flags) => spawnSync(process.execPath, [path.join(path.dirname(process.argv[1]), "run-apps.mjs"), "down", ...flags, "--run", ctx.id], { cwd, encoding: "utf8" });
 function load() {
   const ctx = runContext();
   lock(`${ctx.runDir}.lock`);  // beside the run dir, so no snapshot copies it; held to exit, so no command spawns run-state
@@ -655,11 +663,12 @@ switch (cmd) {
     // A finished run has nothing left to resume. Without --force, git refuses a worktree holding uncommitted work.
     if (!FINISHED.includes(s.stage)) console.log(`worktree kept (${s.stage})`);
     else {
-      // Its apps go down first. Its own database goes with it, so a worktree git won't remove keeps it, and a drop
-      // that fails keeps the worktree to retry from.
+      // Its apps go down first, and those of a ticket's worktree the run left unmerged, which nothing can reach once
+      // the run dir is gone. Their own databases go with them, so a worktree git won't remove keeps them all, and a
+      // drop that fails keeps the worktree to retry from.
       const clean = !git(ctx.worktree, "status", "--porcelain");
-      const apps = spawnSync(process.execPath, [path.join(path.dirname(process.argv[1]), "run-apps.mjs"), "down", ...(clean ? ["--drop"] : []), "--run", ctx.id], { encoding: "utf8" });
-      if (apps.status) console.log(`worktree kept: run-apps down failed\n${apps.stdout}${apps.stderr}`.trim());
+      const apps = [...ticketTrees(ctx).map(([, wt]) => wt), ctx.worktree].map((cwd) => appsDown(ctx, cwd, ...(clean ? ["--drop"] : []))).find((r) => r.status);
+      if (apps) console.log(`worktree kept: run-apps down failed\n${apps.stdout}${apps.stderr}`.trim());
       else try { git(ctx.MAIN, "worktree", "remove", ctx.worktree); console.log("worktree removed"); }
       catch (e) { console.log(`worktree kept: ${gitError(e)}`); }
     }
@@ -682,11 +691,14 @@ switch (cmd) {
       process.exit(6);
     }
     const latest = [...new Map(s.dispatches.map((d) => [d.stage, d])).values()];  // each stage's latest dispatch
-    // A child still running is working, not stopped: nothing is touched under it.
+    // A child still running is working, not stopped: nothing is touched under it. A ticket's works in the ticket's own
+    // worktree, so the run is reconciled around that ticket; review-fix's works in the run worktree, so nothing is.
     // ponytail: a PID the OS has reused since reads as running; record the child's start time if that ever bites.
     const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
     const running = latest.filter((d) => !s.stages_done.includes(d.stage) && d.pid && alive(d.pid));
-    if (running.length) { console.log(running.map((d) => `WORKING ${d.stage}: its child, pid ${d.pid}, still runs`).join("\n")); process.exit(6); }
+    const working = running.map((d) => `WORKING ${d.stage}: its child, pid ${d.pid}, still runs`);
+    const numberOf = (d) => d.stage.split(":")[1], busy = new Set(running.map(numberOf));  // each working ticket's NN; undefined, review-fix
+    if (busy.has(undefined)) { console.log(working.join("\n")); process.exit(6); }
     const formerOwner = self && s.session !== self && s.session;
     if (formerOwner) (s.taken_over ||= []).push({ from: formerOwner, at: now() });
     if (self) s.session = self;
@@ -697,12 +709,16 @@ switch (cmd) {
     if (!WAITING.includes(s.stage)) s.waited_ms = (s.waited_ms || 0) + Math.max(0, Date.now() - Math.max(Date.parse(s.updated_at), ...s.dispatches.map((d) => mtime(logOf(s, d)))));
     save(ctx.state, s);
     if (formerOwner) console.log(`taken over from session ${formerOwner}`);
-    // Every stage not marked done, with no live process, stopped. A run stopped needs-human waits on the human's decision,
+    // Every stage not marked done, but a working ticket's, stopped. A run stopped needs-human waits on the human's decision,
     // which its attention item asks for; in any other, those stages were cut off mid-flight, and are continued.
-    const stopped = latest.filter((d) => !s.stages_done.includes(d.stage)), cutOff = s.stage === "needs-human" ? [] : stopped;
+    const stopped = latest.filter((d) => !s.stages_done.includes(d.stage) && !busy.has(numberOf(d))), cutOff = s.stage === "needs-human" ? [] : stopped;
     const ticketOf = (d) => { const n = d.stage.match(/^implement:(\d{2})$/)?.[1], wt = n && ticketWorktree(ctx.MAIN, ctx.id, n); return wt && fs.existsSync(wt) ? { n, wt } : null; };
-    const apps = spawnSync(process.execPath, [script("run-apps.mjs"), "down", "--run", ctx.id], { encoding: "utf8" });
-    console.log(apps.status ? `run-apps down failed\n${apps.stdout}${apps.stderr}`.trim() : "run-apps down");
+    for (const line of working) console.log(line);
+    // Each worktree's own apps go down, but a working ticket's.
+    for (const [cwd, label] of [[ctx.worktree, ""], ...ticketTrees(ctx).filter(([n]) => !busy.has(n)).map(([n, wt]) => [wt, `ticket ${n} `])]) {
+      const apps = appsDown(ctx, cwd);
+      console.log(label + (apps.status ? `run-apps down failed\n${apps.stdout}${apps.stderr}`.trim() : "run-apps down"));
+    }
     // What a dead implementer left uncommitted is committed where it worked, so it is seen rather than lost or silently
     // kept; never .factory/, where a recipe it changed would turn trusted. N is the fix round the attempt was for, as
     // `round` counted it: 0 for the first attempt. --no-verify: a commit hook mustn't refuse half-done work.

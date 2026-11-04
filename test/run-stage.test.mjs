@@ -59,7 +59,7 @@ function ticketReady(t, { recipe = RECIPE, config = {}, files = {} } = {}) {
   play([]);
   const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, FAKE_CLAUDE: fake, CLAUDE_CONFIG_DIR: tmp("factory-config-") };
   delete env.CLAUDE_CODE_SESSION_ID;
-  const node = (script, args, input = "") => spawnSync(process.execPath, [path.join(SCRIPTS, script), ...args], { cwd: p.dir, input, env, encoding: "utf8", timeout: 120_000 });
+  const node = (script, args, input = "", { cwd = p.dir } = {}) => spawnSync(process.execPath, [path.join(SCRIPTS, script), ...args], { cwd, input, env, encoding: "utf8", timeout: 120_000 });
   const s = JSON.parse(node("run-state.mjs", ["init"], "Add a CSV export\n").stdout);
   const run = (...args) => { const r = node("run-state.mjs", [...args, "--run", s.id]); assert.equal(r.status, 0, `${args.join(" ")}: ${r.stderr}${r.stdout}`); return r; };
   fs.writeFileSync(path.join(s.run_dir, "triage.md"), "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch: "feature/csv-export" }) + "\n```\n");
@@ -322,11 +322,12 @@ const PINNED_PASS = 'import { test } from "node:test";\nimport assert from "node
 const NO_CSV = 'import { test } from "node:test";\nimport assert from "node:assert/strict";\nimport fs from "node:fs";\n'
   + 'test("[old] SC-004: the reports offer no CSV", () => assert.ok(!fs.existsSync("csv.js")));\n';
 
-test("with an app to walk, a green DONE ticket goes to qa before it merges, and verify then judges the ticket's head again with qa's pinned tests", (t) => {
-  const recipe = { ...RECIPE, apps: [{ ...RECIPE.apps[0], dev: "PORT={port:app} node server.mjs", health: "http://localhost:{port:app}/" }], pinned: ["e2e"] };
+test("with an app to walk, a green DONE ticket goes to qa before it merges, verify then judges the ticket's head again with qa's pinned tests, and the merge takes the ticket's apps down and its database with its worktree", (t) => {
+  const recipe = { ...RECIPE, apps: [{ ...RECIPE.apps[0], dev: "PORT={port:app} node server.mjs", health: "http://localhost:{port:app}/" }], pinned: ["e2e"],
+    db: { create: 'mkdir "$DBS/{name}"', drop: 'rmdir "$DBS/{name}"' } };
   const r = ticketReady(t, { recipe, files: { "server.mjs": STUB_SERVER } });
-  const alive = path.join(r.p.dir, ".alive");  // the stub app lives by it
-  fs.writeFileSync(alive, ""); fs.writeFileSync(path.join(r.p.dir, ".factory/env.local"), `ALIVE=${alive}\n`);
+  const alive = path.join(r.p.dir, ".alive"), dbs = path.join(r.p.dir, ".dbs");  // the stub app lives by alive
+  fs.writeFileSync(alive, ""); fs.mkdirSync(dbs); fs.writeFileSync(path.join(r.p.dir, ".factory/env.local"), `ALIVE=${alive}\nDBS=${dbs}\n`);
   t.after(() => fs.rmSync(alive, { force: true }));
   r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }]);
   assert.match(lastLine(r.stage("implement", "01")), /^QA 01: DONE, and verify --full is green at \w{7}, so qa walks ticket 01's criteria$/);
@@ -336,8 +337,15 @@ test("with an app to walk, a green DONE ticket goes to qa before it merges, and 
   assert.equal(lastLine(r.stage("verify", "01")), `MERGE 01: DONE, and verify --full is green at ${git(r.wt, "rev-parse", "HEAD").slice(0, 7)}`);
   const pins = (file) => JSON.parse(fs.readFileSync(file, "utf8")).checks.filter((c) => c.pinned).map((c) => [c.check, c.status]);
   assert.deepEqual(pins(path.join(r.tickets, "evidence.json")), [[pinned, "pass"]], "qa's committed test is a pinned check");
+  const db = (name) => `factory_${name.replaceAll("-", "_")}`;
+  assert.deepEqual(fs.readdirSync(dbs), [db(`${r.s.id}-01`)], "the ticket's worktree has a database of its own");
+  const up = r.node("run-apps.mjs", ["up", "--run", r.s.id], "", { cwd: r.wt });  // a walk cut off with the apps up, say
+  assert.equal(up.status, 0, up.stdout + up.stderr);
+  const { pid } = JSON.parse(fs.readFileSync(path.join(r.tickets, "apps.json"), "utf8")).apps.app;
   assert.match(lastLine(r.stage("merge", "01")), /^MERGED 01:/);
   assert.deepEqual(pins(path.join(r.s.run_dir, "evidence.json")), [[pinned, "pass"]], "rerun at the run head");
+  assert.throws(() => process.kill(-pid, 0), { code: "ESRCH" }, "the ticket's apps went down with its worktree");
+  assert.deepEqual(fs.readdirSync(dbs), [db(r.s.id)], "and its database, the run worktree's kept");
 });
 
 test("a red only in pinned tests goes to qa at no round's cost: a test qa rules fail is named in the fix round with verify --pinned, and one it supersedes lets the ticket merge", (t) => {
@@ -382,8 +390,9 @@ test("reconcile commits what a cut-off implementer left uncommitted as a wip com
   r.play([{ files: { "csv.js": "export const csv = 1;\n", "lib/rows.js": "export const rows = [];\n" }, print: [SPOKE], hang: true }]);
   const kill = await background(t, r);
   const working = r.node("run-state.mjs", ["reconcile", "--run", r.s.id]);
-  assert.equal(working.status, 6);
+  assert.equal(working.status, 0, working.stderr);
   assert.match(working.stdout, /^WORKING implement:01: its child, pid \d+, still runs$/m);
+  assert.doesNotMatch(working.stdout, /^CONTINUE implement:01 /m, "a ticket whose child still runs isn't continued");
   assert.equal(git(r.wt, "rev-list", "--count", "HEAD"), "2", "nothing is salvaged under a child that still runs");
   await kill();
   fs.writeFileSync(path.join(r.wt, ".factory", "notes.md"), "not product\n");

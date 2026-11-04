@@ -83,7 +83,8 @@ export function lock(file) {
 }
 
 // The run named by --run, else the one whose worktree holds cwd. Exits 2 when neither names a run with a state.json.
-// From a ticket's worktree, ticket is its NN and tree that worktree; otherwise ticket is null and tree the run worktree.
+// From a ticket's worktree, ticket is its NN, tree that worktree and out tickets/<NN>/ in the run dir; otherwise ticket
+// is null, tree the run worktree and out the run dir. out holds what is the worktree's own: its apps, evidence and logs.
 export function runContext() {
   const MAIN = mainRoot();
   let id = arg("--run"), ticket = null;
@@ -103,7 +104,7 @@ export function runContext() {
     console.error(ended ? `run ${id} has ended ${ended.stage}: its record is .factory/history/${id}/ on ${ended.base_branch}` : `no run ${id}`);
     process.exit(2);
   }
-  return { MAIN, id, ...paths, ticket, tree: ticket ? top : paths.worktree };
+  return { MAIN, id, ...paths, ticket, tree: ticket ? top : paths.worktree, out: ticket ? path.join(paths.runDir, "tickets", ticket) : paths.runDir };
 }
 
 // An env file's NAME=value lines as [name, value, raw]: an optional `export`, the value unquoted or else cut at a ` #`
@@ -142,7 +143,7 @@ export function digest(output, log) {
   return [...hits.filter((i) => i < from).map((i) => lines[i]), ...lines.slice(from), `full output: ${log}`].join("\n");
 }
 
-// {port:<app>} and {db} in a command, URL or env value, filled from the apps.json run-apps writes in a run dir. A
+// {port:<app>} and {db} in a command, URL or env value, filled from the apps.json run-apps writes in a worktree's out. A
 // placeholder it can't fill stays as written.
 export const fill = (text, apps) =>
   text.replace(/\{port:([^}]+)\}|\{db\}/g, (m, app) => String((app ? apps?.apps?.[app]?.port : apps?.db) ?? m));
