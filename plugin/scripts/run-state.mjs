@@ -29,7 +29,9 @@
 //   run-state.mjs set <key> <value>           -> sets a top-level key (JSON when it parses); `route` must be a route and
 //                                                `stage` an outcome (dispatch sets the working stages, abandon its own);
 //                                                a run with an override ends needs-human when set delivered, and the time
-//                                                a run waits needs-human or failed isn't counted against its minutes
+//                                                a run waits needs-human, failed or suspended (a usage-limit stop) isn't
+//                                                counted against its minutes; set failed when the last stage's agent
+//                                                stopped at the usage limit, it ends the run suspended instead
 //   run-state.mjs dispatch <stage> [--agent <id> | --log <path> --pid <pid> --session <id>] -> before the agent starts:
 //                                                measures spend and checks the caps, printing `WARN 70% …` once per cap, or
 //                                                `BUDGET <cap> <used>/<limit>` and the spend by stage and exiting 4 without
@@ -43,7 +45,18 @@
 //   run-state.mjs round implement:<NN>        -> before a fix round of ticket NN: `OK implement:NN round <n>/<cap>`, or
 //                                                `ESCALATE …` and exit 5 once caps.implement_rounds (3) are spent, or at
 //                                                once when its evidence shows the same failure as the round before. An
-//                                                attempt that made no commits on the ticket's branch costs no round
+//                                                attempt that made no commits on the ticket's branch costs no round, and a
+//                                                round counted since the last attempt isn't counted again
+//   run-state.mjs reconcile [--take-over]     -> what /factory resume runs, from disk alone. A run another session owns (the
+//                                                one init recorded) prints `OWNED …` with that session's last activity and
+//                                                exits 6 changing nothing, until --take-over makes this session its owner;
+//                                                a child still running prints `WORKING …` and exits 6 too. Otherwise: the
+//                                                downtime of a run cut off mid-stage is waiting, not run time; run-apps
+//                                                down; what each dead implementer left uncommitted in its ticket's
+//                                                worktree is committed as `wip(factory): salvaged from round N`; then
+//                                                `done: …` (stages never run again), `CONTINUE <stage> …` per stage cut
+//                                                off mid-flight (none on a run stopped needs-human), verify --fast where
+//                                                they work (else on the run branch), and next-ticket's frontier
 //   run-state.mjs done <stage>                -> marks a stage done
 //   run-state.mjs spend                       -> measures spend (it takes no number) and prints each cap and each stage's spend
 //   run-state.mjs override <dispatches|minutes|tokens|post_pr> "<reason>" -> a human lifts one cap for the rest of the run,
@@ -62,12 +75,12 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch } from "./lib.mjs";
+import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
-const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted"];
+const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted", "suspended"];
 const FINISHED = ["delivered", "abandoned", "answered", "charted"];
-const WAITING = ["needs-human", "failed"];  // outcomes that wait on a resume
+const WAITING = ["needs-human", "failed", "suspended"];  // outcomes that wait on a resume; suspended: a usage-limit stop
 const OUTPUT = {  // the file each stage writes in the run dir
   triage: "triage.md", answer: "answer.md", research: "research.md", spec: "spec.md", "builder-check": "builder-check.md",
   tickets: "tickets",  // a folder
@@ -185,7 +198,7 @@ function measure(ctx, s) {
   const projects = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "projects");
   const folders = fs.existsSync(projects) ? fs.readdirSync(projects).map((d) => path.join(projects, d)) : [];
   const folder = (id) => id && folders.find((d) => fs.existsSync(path.join(d, `${id}.jsonl`)) || fs.existsSync(path.join(d, id)));
-  const sessions = [...new Set([s.session, ...s.dispatches.map((d) => d.orchestrator_session)])].filter(Boolean);
+  const sessions = [...new Set([s.session, ...(s.taken_over || []).map((t) => t.from), ...s.dispatches.map((d) => d.orchestrator_session)])].filter(Boolean);
   const subagent = (d, id = d.orchestrator_session || s.session) => d.agent && folder(id) && path.join(folder(id), id, "subagents", `agent-${d.agent}.jsonl`);
   const by_stage = {}, children = new Map();
   const add = (stage, m, estimate) => {
@@ -213,10 +226,21 @@ function measure(ctx, s) {
   const pr = s.spend?.tokens_at_pr ?? (fs.existsSync(path.join(ctx.runDir, "pr.json")) ? tokens : undefined);
   s.spend = { tokens, ...(pr !== undefined && { tokens_at_pr: pr }), by_stage, ...(!read && { unread: true }) };
 }
+// A session's transcript, <config dir>/projects/<folder>/<session>.jsonl, or undefined when there is none here.
+function transcript(id) {
+  const projects = path.join(process.env.CLAUDE_CONFIG_DIR || path.join(os.homedir(), ".claude"), "projects");
+  try { return fs.readdirSync(projects).map((d) => path.join(projects, d, `${id}.jsonl`)).find((f) => fs.existsSync(f)); } catch {}
+}
+// What a dispatch's agent left: a child's stream-json log, else a subagent's transcript beside its session's.
+function logOf(s, d) {
+  const id = d.orchestrator_session || s.session, t = d.agent && transcript(id);
+  return d.log || (t && path.join(path.dirname(t), id, "subagents", `agent-${d.agent}.jsonl`));
+}
 // The run's caps as [name, used, limit], from config.json's caps over the defaults. They scale with the ticket count (the
 // planner's tickets/NN-slug.md files) once it is known (design fix 7). Minutes are those since init, less the time spent
-// waiting on the human (needs-human or failed, until the next dispatch). Once pr.json exists, tokens spent after it go to
-// their own post_pr allowance, which the tokens cap never pays for (design fix 13).
+// waiting on the human (needs-human, failed or suspended, until the next dispatch) and the downtime reconcile finds.
+// Once pr.json exists, tokens spent after it go to their own post_pr allowance, which the tokens cap never pays for
+// (design fix 13).
 const CAPS = { dispatches_per_run: 30, minutes_per_run: 90, minutes_per_ticket: 45, tokens_overhead: 700_000,
   tokens_per_ticket: 700_000, tokens_per_run: 1_500_000, tokens_post_pr: 400_000, implement_rounds: 3 };
 const limits = (ctx) => ({ ...CAPS, ...readJson(path.join(ctx.MAIN, ".factory", "config.json"))?.caps });
@@ -289,6 +313,9 @@ switch (cmd) {
     // A run that needed a cap lifted never ends delivered, so it never merges on its own (design fix 12).
     const lifted = key === "stage" && value === "delivered" ? Object.keys(s.overrides || {}) : [];
     if (lifted.length) { value = "needs-human"; console.log(`a human overrode ${lifted.join(", ")}: the run ends needs-human`); }
+    // A stage whose agent stopped at the usage limit wrote nothing for the want of usage, not for a fault of the factory.
+    const stalled = key === "stage" && value === "failed" && s.dispatches.at(-1);
+    if (stalled && atUsageLimit(logOf(s, stalled))) { value = "suspended"; console.log(`${stalled.stage} stopped at the usage limit: the run is suspended, not failed`); }
     if (key === "stage" && WAITING.includes(value)) s.waiting_since ??= now();
     s[key] = value;
     save(ctx.state, s);
@@ -352,6 +379,9 @@ switch (cmd) {
     if (!last) die(`${loop} hasn't been dispatched`);
     const cap = limits(ctx).implement_rounds;
     const r = s.rounds?.[loop] || { n: 0 }, escalate = (why) => { log(ctx.runDir, `escalation: ${loop} ${why}`); console.log(`ESCALATE ${loop}: ${why}`); process.exit(5); };
+    // A round counted since the last attempt is the next attempt's: a resume that asks again (after a stop between this
+    // and the attempt) doesn't pay for it twice.
+    if (r.n > (last.round || 0)) { console.log(`OK ${loop} round ${r.n}/${cap}`); break; }
     // An attempt counts as a round only when it produced commits: one that crashed or made nothing costs nothing.
     // ponytail: such attempts are free and unlimited, bounded only by the run's dispatch, minute and token caps; count
     // them in a row if a stuck child ever burns a run's budget that way.
@@ -556,6 +586,79 @@ switch (cmd) {
     }
     break;
   }
+  case "reconcile": {
+    // The resume protocol (#11, design's "Budgets, failure and recovery"), from disk alone, never an agent's memory.
+    const [ctx, s] = load();
+    if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+    if (s.route === "answer") die("an answer run isn't resumed: ask again with /factory <the question>");
+    const script = (name) => path.join(path.dirname(process.argv[1]), name), self = process.env.CLAUDE_CODE_SESSION_ID || null;
+    // The owner, the session init recorded, may still be driving the run: the human decides whether it's gone.
+    if (s.session && s.session !== self && !argv.includes("--take-over")) {
+      const t = transcript(s.session), last = s.dispatches.at(-1), line = readText(path.join(ctx.runDir, "run.log")).trim().split("\n").at(-1);
+      console.log([`OWNED ${ctx.id}: session ${s.session} owns it, and this is ${self ? `session ${self}` : "no known session"}`,
+        `  the owner's last activity: ${t ? `${fs.statSync(t).mtime.toISOString()}, its transcript's last write (${t})` : "unknown, with no transcript of it here"}`,
+        `  the run's last update: ${s.updated_at}${last ? `, its last dispatch ${last.stage} at ${last.at}` : ""}`,
+        ...(line ? [`  its last log line: ${line.slice(2)}`] : []),
+        `Take it over only if that session is gone: node "${process.argv[1]}" reconcile --take-over --run ${ctx.id}`].join("\n"));
+      process.exit(6);
+    }
+    const latest = [...new Map(s.dispatches.map((d) => [d.stage, d])).values()];  // each stage's latest dispatch
+    // A child still running is working, not stopped: nothing is touched under it.
+    // ponytail: a PID the OS has reused since reads as running; record the child's start time if that ever bites.
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
+    const running = latest.filter((d) => !s.stages_done.includes(d.stage) && d.pid && alive(d.pid));
+    if (running.length) { console.log(running.map((d) => `WORKING ${d.stage}: its child, pid ${d.pid}, still runs`).join("\n")); process.exit(6); }
+    const formerOwner = self && s.session !== self && s.session;
+    if (formerOwner) (s.taken_over ||= []).push({ from: formerOwner, at: now() });
+    if (self) s.session = self;
+    // A run cut off mid-stage has waited since its last sign of life, which the minute cap doesn't count.
+    // ponytail: the orchestrator's own work after its last write (a grill, say) counts as downtime; read its transcript's
+    // last line if a run ever needs those minutes counted.
+    const mtime = (f) => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } };
+    if (!WAITING.includes(s.stage)) s.waited_ms = (s.waited_ms || 0) + Math.max(0, Date.now() - Math.max(Date.parse(s.updated_at), ...s.dispatches.map((d) => mtime(logOf(s, d)))));
+    save(ctx.state, s);
+    if (formerOwner) console.log(`taken over from session ${formerOwner}`);
+    // Every stage not marked done, with no live process, stopped. A run stopped needs-human waits on the human's decision,
+    // which its attention item asks for; in any other, those stages were cut off mid-flight, and are continued.
+    const stopped = latest.filter((d) => !s.stages_done.includes(d.stage)), cutOff = s.stage === "needs-human" ? [] : stopped;
+    const ticketOf = (d) => { const n = d.stage.match(/^implement:(\d{2})$/)?.[1], wt = n && ticketWorktree(ctx.MAIN, ctx.id, n); return wt && fs.existsSync(wt) ? { n, wt } : null; };
+    const apps = spawnSync(process.execPath, [script("run-apps.mjs"), "down", "--run", ctx.id], { encoding: "utf8" });
+    console.log(apps.status ? `run-apps down failed\n${apps.stdout}${apps.stderr}`.trim() : "run-apps down");
+    // What a dead implementer left uncommitted is committed where it worked, so it is seen rather than lost or silently
+    // kept; never .factory/, where a recipe it changed would turn trusted. N is the fix round the attempt was for, as
+    // `round` counted it: 0 for the first attempt. --no-verify: a commit hook mustn't refuse half-done work.
+    for (const d of stopped) {
+      const t = ticketOf(d);
+      if (!t || !git(t.wt, "status", "--porcelain", "--", ".", ":(exclude).factory")) continue;
+      const message = `wip(factory): salvaged from round ${d.round || 0}`;
+      try { git(t.wt, "add", "-A", "--", ".", ":(exclude).factory"); git(t.wt, "commit", "-q", "--no-verify", "-m", message); }
+      catch (e) { die(`can't salvage ${ticketBranch(ctx.id, t.n)}: ${gitError(e)}`); }
+      const sha = git(t.wt, "rev-parse", "--short", "HEAD");
+      log(ctx.runDir, `run: ${ctx.id} ${d.stage} ${message} at ${sha}`);
+      console.log(`salvaged ${sha} on ${ticketBranch(ctx.id, t.n)}: ${message}`);
+    }
+    const done = latest.filter((d) => s.stages_done.includes(d.stage)).map((d) => d.stage);
+    if (done.length) console.log(`done: ${done.join(" ")}`);
+    // run-stage resumes an implementer's child session when it left output, else starts a fresh child pointed at what
+    // the attempt left; a subagent that left output is resumed by its agent id. A review never is, so a half-formed
+    // verdict can't anchor the next one, and nor is a stage whose output a failed run judged incomplete.
+    const how = (d, log = logOf(s, d)) => /^review/.test(d.stage) ? "fresh, a cut-off review is re-run fresh, never resumed"
+      : /^implement:/.test(d.stage) ? `its child ${atUsageLimit(log) ? "stopped at the usage limit" : "was cut off"}`
+      : s.stage === "failed" ? "fresh, its output was judged incomplete"
+      : events(log).some((e) => e.type === "assistant") ? `resume agent ${d.agent}${atUsageLimit(log) ? ", stopped at the usage limit" : ""}` : "fresh";
+    for (const d of cutOff) console.log(`CONTINUE ${d.stage} from ${d.sha.slice(0, 7)}: ${how(d)}`);
+    // Known state, not the last agent's claim: the fast checks where the continued implementers work, else on the run
+    // branch, which a run gets at its lane.
+    const trees = cutOff.map(ticketOf).filter(Boolean).map((t) => [t.wt, `ticket ${t.n} `]);
+    for (const [cwd, label] of trees.length ? trees : s.branch && s.stage !== "needs-human" ? [[ctx.worktree, ""]] : []) {
+      const v = spawnSync(process.execPath, [script("verify.mjs"), "--fast", "--run", ctx.id], { cwd, encoding: "utf8" });
+      console.log(`${label}${v.stdout.split("\n").slice(0, 2).join("\n")}`);
+    }
+    // The frontier, as next-ticket prints it: tickets done are already merged and stay done.
+    if (ticketsApproved(ctx, s)) process.stdout.write(spawnSync(process.execPath, [process.argv[1], "next-ticket", "--run", ctx.id], { encoding: "utf8" }).stdout);
+    log(ctx.runDir, `run: ${ctx.id} reconciled${formerOwner ? `, taken over from session ${formerOwner}` : ""}`);
+    break;
+  }
   case "status": {
     const MAIN = mainRoot(), dir = worktreesDir(MAIN);
     const runs = (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
@@ -588,5 +691,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | approve | notion | ticket | next-ticket | get | set | dispatch | round | done | spend | override | snapshot | abandon | status");
+  default: die("usage: run-state.mjs init | lane | approve | notion | ticket | next-ticket | get | set | dispatch | round | done | spend | override | snapshot | reconcile | abandon | status");
 }

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { project, sh, write, STUB_SERVER } from "./harness.mjs";
 
@@ -18,7 +18,8 @@ const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), pr
 // next step of steps.json: it writes `files` into its cwd and commits them by name when the step has `commit`, writes
 // `write` (absolute paths, such as implementation.md) as they are, prints a stream-json init and result line for its
 // session (--session-id or --resume), the result listing each Bash command in `denied` as a permission denial, and exits
-// `exit`.
+// `exit`. Between the two it prints each of `print` as a line of that session; a step with `hang` then marks `hanging` in
+// its dir and waits until it's killed, printing no result.
 const FAKE = `#!${process.execPath}
 const fs = require("node:fs"), path = require("node:path"), { execFileSync } = require("node:child_process");
 const dir = process.env.FAKE_CLAUDE, argv = process.argv.slice(2), stdin = fs.readFileSync(0, "utf8");
@@ -30,6 +31,8 @@ for (const [f, text] of Object.entries(step.files || {})) { fs.mkdirSync(path.di
 if (step.commit) { execFileSync("git", ["add", "--", ...Object.keys(step.files)]); execFileSync("git", ["commit", "-qm", step.commit]); }
 for (const [f, text] of Object.entries(step.write || {})) fs.writeFileSync(f, text);
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: session }));
+for (const e of step.print || []) console.log(JSON.stringify({ session_id: session, ...e }));
+if (step.hang) { fs.writeFileSync(path.join(dir, "hanging"), ""); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); }
 const permission_denials = (step.denied || []).map((command) => ({ tool_name: "Bash", tool_input: { command } }));
 console.log(JSON.stringify({ type: "result", subtype: "success", session_id: session, permission_denials, modelUsage: { [at("--model")]: { inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0 } } }));
 process.exitCode = step.exit || 0;
@@ -80,7 +83,7 @@ function ticketReady(t, { recipe = RECIPE, config = {}, files = {} } = {}) {
   const stage = (...args) => node("run-stage.mjs", [...args, "--run", s.id]);
   const state = () => JSON.parse(run("get").stdout);
   const wt = path.join(p.dir, ".factory/worktrees", `${s.id}-01`), tickets = path.join(s.run_dir, "tickets", "01");
-  return { p, s, run, stage, state, calls, play, wt, tickets, impl: path.join(tickets, "implementation.md"), branch: `factory/${s.id}/01`, node };
+  return { p, s, run, stage, state, calls, play, wt, tickets, impl: path.join(tickets, "implementation.md"), branch: `factory/${s.id}/01`, node, env, fake };
 }
 const flag = (argv, name) => argv[argv.indexOf(name) + 1];
 const lastLine = (r) => { assert.equal(r.status, 0, r.stderr + r.stdout); return r.stdout.trim().split("\n").at(-1); };
@@ -355,4 +358,123 @@ test("a red only in pinned tests goes to qa at no round's cost: a test qa rules 
     r.run("dispatch", "qa:01");
     assert.deepEqual(["qa.json", "qa.round1.json"].map((f) => fs.existsSync(path.join(r.tickets, f))), [false, true], "qa's next dispatch moves its last qa.json aside");
   }
+});
+
+// run-stage implement started in the background as the orchestrator starts it; resolves once the fake child has played
+// its step and hangs, with a function that kills both (one process group) the way a session that dies takes its
+// background tasks with it.
+async function background(t, r) {
+  fs.rmSync(path.join(r.fake, "hanging"), { force: true });
+  const bg = spawn(process.execPath, [path.join(SCRIPTS, "run-stage.mjs"), "implement", "01", "--run", r.s.id], { cwd: r.p.dir, env: r.env, detached: true, stdio: "ignore" });
+  const gone = new Promise((resolve) => bg.on("exit", resolve));
+  t.after(() => { try { process.kill(-bg.pid, "SIGKILL"); } catch {} });
+  for (const end = Date.now() + 60_000; !fs.existsSync(path.join(r.fake, "hanging")); await new Promise((ok) => setTimeout(ok, 50))) {
+    assert.ok(Date.now() < end, "the child never got going");
+  }
+  return () => { process.kill(-bg.pid, "SIGKILL"); return gone; };
+}
+const crash = async (t, r) => (await background(t, r))();
+// one assistant message, as a child that has started working prints it
+const SPOKE = { type: "assistant", parent_tool_use_id: null, message: { id: "msg-1", role: "assistant", content: [{ type: "text", text: "Writing the export." }] } };
+
+test("reconcile commits what a cut-off implementer left uncommitted as a wip commit on the ticket's branch, never .factory/, and verify --fast checks it there", async (t) => {
+  const r = ticketReady(t);
+  r.play([{ files: { "csv.js": "export const csv = 1;\n", "lib/rows.js": "export const rows = [];\n" }, print: [SPOKE], hang: true }]);
+  const kill = await background(t, r);
+  const working = r.node("run-state.mjs", ["reconcile", "--run", r.s.id]);
+  assert.equal(working.status, 6);
+  assert.match(working.stdout, /^WORKING implement:01: its child, pid \d+, still runs$/m);
+  assert.equal(git(r.wt, "rev-list", "--count", "HEAD"), "2", "nothing is salvaged under a child that still runs");
+  await kill();
+  fs.writeFileSync(path.join(r.wt, ".factory", "notes.md"), "not product\n");
+  const out = r.run("reconcile").stdout;
+  const sha = git(r.wt, "rev-parse", "HEAD");
+  assert.equal(git(r.wt, "log", "-1", "--format=%s"), "wip(factory): salvaged from round 0", "the first attempt is round 0, before any fix round");
+  assert.deepEqual(git(r.wt, "show", "--name-only", "--format=", "HEAD").split("\n"), ["csv.js", "lib/rows.js"]);
+  assert.equal(git(r.wt, "status", "--porcelain"), "?? .factory/notes.md", ".factory/ is never salvaged");
+  assert.match(out, new RegExp(`^salvaged ${sha.slice(0, 7)} on ${r.branch}: wip\\(factory\\): salvaged from round 0$`, "m"));
+  assert.match(out, /^run-apps down$/m);
+  assert.match(out, /^CONTINUE implement:01 from \w{7}: its child was cut off$/m);
+  const fast = JSON.parse(fs.readFileSync(path.join(r.tickets, "evidence-fast.json"), "utf8"));
+  assert.deepEqual([fast.sha, fast.green], [sha, true], "the salvaged tree's own fast checks");
+  assert.match(out, /^ticket 01 verify fast: green=true /m);
+  assert.match(out, /^NEXT 01-csv-export$/m, "then the ticket frontier");
+  assert.match(fs.readFileSync(path.join(r.s.run_dir, "run.log"), "utf8"), /run: \S+ implement:01 wip\(factory\): salvaged from round 0 at \w{7}\n/);
+});
+
+test("what a dead implementer left is salvaged even in a run that stopped needs-human, whose attention item decides what comes next", async (t) => {
+  const r = ticketReady(t);
+  r.play([{ files: { "csv.js": "export const csv = 1;\n" }, print: [SPOKE], hang: true }]);
+  await crash(t, r);
+  r.run("set", "stage", "needs-human");  // another ticket's stop, say, while this one's child still ran
+  const out = r.run("reconcile").stdout;
+  assert.match(out, /^salvaged \w{7} on \S+: wip\(factory\): salvaged from round 0$/m);
+  assert.equal(git(r.wt, "status", "--porcelain"), "");
+  assert.doesNotMatch(out, /^CONTINUE/m);
+});
+
+test("a cut-off attempt is continued in its own round, resuming the child's session it left output in, so an attempt that made nothing costs no round", async (t) => {
+  const r = ticketReady(t);
+  r.play([broken(r, "alpha"), { print: [SPOKE], hang: true }, broken(r, "beta")]);
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  assert.equal(lastLine(round(r)), "OK implement:01 round 1/3");
+  await crash(t, r);  // round 1's attempt, cut off before it made anything
+  assert.doesNotMatch(r.run("reconcile").stdout, /^salvaged/m, "it left nothing uncommitted");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  const [first, second, third] = r.calls(), session = flag(first.argv, "--session-id");
+  assert.deepEqual([flag(second.argv, "--resume"), flag(third.argv, "--resume")], [session, session]);
+  assert.deepEqual(r.state().dispatches.filter((d) => d.stage === "implement:01").map((d) => d.round), [undefined, 1, 1], "the continued attempt is still round 1's");
+  assert.equal(lastLine(round(r)), "OK implement:01 round 2/3", "the cut-off attempt cost no round");
+  assert.equal(lastLine(round(r)), "OK implement:01 round 2/3", "and a round asked for again before its attempt, as a resume after a stop there does, is counted once");
+  assert.equal(r.state().rounds["implement:01"].n, 2);
+});
+
+test("a child cut off before it left a session to resume is started afresh, pointed at the git log since its dispatch and at its report", async (t) => {
+  const r = ticketReady(t);
+  r.play([{ write: { [r.impl]: "# Implementation 01\n" }, hang: true }, { ...CSV, write: { [r.impl]: report("DONE") } }]);
+  await crash(t, r);
+  r.run("reconcile");
+  const sha = r.state().dispatches.find((d) => d.stage === "implement:01").sha;
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
+  const [first, second] = r.calls();
+  assert.ok(!second.argv.includes("--resume"), "the first session has no conversation to resume");
+  assert.notEqual(flag(second.argv, "--session-id"), flag(first.argv, "--session-id"));
+  assert.match(second.stdin, /^run_dir: /, "a fresh child gets the plan's lines");
+  assert.ok(second.stdin.includes(`A previous attempt at this ticket was cut off before it left a session to resume. \`git log --oneline ${sha}..HEAD\` lists what it committed, `
+    + `and ${path.join(r.tickets, "implementation.round1.md")} what it reported.`), second.stdin);
+});
+
+// What Claude Code prints when a 429 ends a child's turn, as probed (docs/platform-facts.md, fact 13).
+const LIMIT = { type: "assistant", parent_tool_use_id: null, error: "rate_limit", is_api_error_message: true, api_error_status: 429,
+  message: { id: "msg-2", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later." }] } };
+
+test("a child that stops at the usage limit is SUSPENDED, never a round: nothing is judged, the run waits suspended, and resumed it carries on in its session", (t) => {
+  const r = ticketReady(t);
+  r.play([{ ...CSV, print: [SPOKE, LIMIT] }, { write: { [r.impl]: report("DONE") } }]);
+  const suspended = "SUSPENDED 01: the child stopped at the usage limit, which costs no round";
+  assert.equal(lastLine(r.stage("implement", "01")), suspended);
+  assert.ok(!fs.existsSync(path.join(r.tickets, "evidence.json")), "nothing was verified");
+  assert.ok(!r.state().stages_done.includes("implement:01"));
+  r.run("set", "stage", "suspended");
+  assert.match(r.run("status").stdout, new RegExp(`^${r.s.id}\\s+suspended\\s`, "m"));
+  assert.match(r.run("reconcile").stdout, /^CONTINUE implement:01 from \w{7}: its child stopped at the usage limit$/m);
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
+  const [first, second] = r.calls();
+  assert.equal(flag(second.argv, "--resume"), flag(first.argv, "--session-id"));
+  assert.ok(second.stdin.startsWith("Carry on with the plan where you left off."), second.stdin);
+  assert.equal(r.state().rounds, undefined, "no round was counted");
+});
+
+test("a resume that finds a ticket's implement stage done continues nothing, and run-stage verify judges the ticket again without starting a child", (t) => {
+  const r = green(t);
+  const before = r.state().dispatches.length;
+  const out = r.run("reconcile").stdout;
+  assert.match(out, /^done: research spec builder-check tickets plan:01 implement:01$/m);
+  assert.doesNotMatch(out, /^CONTINUE/m);
+  const fast = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence-fast.json"), "utf8"));
+  assert.equal(fast.sha, git(r.s.worktree, "rev-parse", "HEAD"), "with nothing cut off, the run branch's fast checks");
+  assert.match(out, /^verify fast: green=false .* app\/test=fail/m, "where the ticket isn't merged yet");
+  assert.match(out, /^NEXT 01-csv-export$/m);
+  assert.match(lastLine(r.stage("verify", "01")), /^MERGE 01: DONE, and verify --full is green at \w{7}$/);
+  assert.deepEqual([r.calls().length, r.state().dispatches.length], [1, before]);
 });

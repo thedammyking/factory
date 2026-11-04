@@ -154,3 +154,13 @@ export function runDiff(ctx) {
   }
   return { base, files, added };
 }
+
+// A child's stream-json log or a transcript as its JSON lines, [] when it can't be read; a line that isn't JSON is skipped.
+export function events(log) {
+  let text; try { text = fs.readFileSync(log, "utf8"); } catch { return []; }
+  return text.split("\n").flatMap((l) => { try { return [JSON.parse(l)]; } catch { return []; } });
+}
+// Whether a child or an agent stopped at the usage limit: the last message of its own thread, in a child's stream-json
+// log or an agent's transcript, is the one Claude Code writes when a 429 ends a turn, with `error: "rate_limit"`
+// (docs/platform-facts.md, fact 13).
+export const atUsageLimit = (log) => events(log).filter((e) => e.type === "assistant" && !e.parent_tool_use_id).at(-1)?.error === "rate_limit";

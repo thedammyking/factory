@@ -165,14 +165,15 @@ Run `<id>`, stage `<stage>`.
 
 ## Ending a run
 
-Every `run-state set stage <outcome>` and every `run-state abandon` is followed at once by `run-state snapshot --run <id>`, before anything is printed. The snapshot checks the run's files for credentials from the env files, commits them to `.factory/history/<id>/` on the base branch, and removes the worktree of a run that has finished. If it exits 1, it has committed nothing, ended the run `needs-human` and printed `needs-human: <path>`: print the attention item at that path too.
+Every `run-state set stage <outcome>` and every `run-state abandon` is followed at once by `run-state snapshot --run <id>`, before anything is printed. The snapshot checks the run's files for credentials from the env files, commits them to `.factory/history/<id>/` on the base branch, and removes the worktree of a run that has finished. If it exits 1, it has committed nothing, ended the run `needs-human` and printed `needs-human: <path>`: print the attention item at that path too. When `set stage failed` says the stage stopped at the usage limit, the run is `suspended`: say so, with `/factory resume <id>` for once the limit resets.
 
 ## Resume
 
-`/factory resume [run]` continues a run that stopped for the human.
+`/factory resume [run]` continues a run that stopped for the human, at the usage limit (`suspended`), or because its session died. Only the human resumes a run: nothing schedules a wake-up.
 
 1. Find the run (see above) and read its state with `run-state get --run <id>`. If it says the run has ended, or its stage is `delivered`, `abandoned`, `answered` or `charted`, say so and stop: an ended run can't be resumed, and a follow-up is a new `/factory` request in the human's own words.
-2. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names (for `implement:<NN>`, of `references/implement.md`; for `qa:<NN>`, of `references/qa.md`). The dispatch refuses again while a cap is still crossed. If it is `attention-plan-<NN>.md`, put its questions to the human and go on as step 10 of **build** does with their answers. Otherwise, print the run's attention item: there is nothing more to resume in this version.
+2. Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/resume.md` and follow it: it reconciles the run from disk and continues what was cut off, and comes back to step 3 when the run waits on an attention item.
+3. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names (for `implement:<NN>`, of `references/implement.md`; for `qa:<NN>`, of `references/qa.md`). The dispatch refuses again while a cap is still crossed. If it is `attention-plan-<NN>.md`, put its questions to the human and go on as step 10 of **build** does with their answers. Otherwise, print the run's attention item: there is nothing more to resume in this version.
 
 ## Abandon
 

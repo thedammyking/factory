@@ -9,8 +9,11 @@
 //      MCP server and the run dir added; its PID, session id and stream-json log (logs/ in the run dir) are recorded on
 //      the dispatch. Below the last round that `run-state round implement:NN` counted, it resumes the ticket's last
 //      child session with what its last attempt left to fix; at the last round (caps.implement_rounds, 3) it starts a
-//      fresh child on models.implement_escalated, told that a prior implementer tried twice. When the child exits,
-//      verify --full judges the ticket's worktree (unless the child stopped BLOCKED or NEEDS_CONTEXT), and:
+//      fresh child on models.implement_escalated, told that a prior implementer tried twice. A session whose child was
+//      cut off before it printed a message or a result can't be resumed, so a fresh child is pointed at the git log
+//      since that attempt's dispatch and at its report. When the child exits, verify --full judges the ticket's
+//      worktree (unless the child stopped BLOCKED or NEEDS_CONTEXT, or at the usage limit), and:
+//        SUSPENDED  the child stopped at the usage limit, which costs no round: nothing is judged until it carries on
 //        MERGE      DONE with no concern, and the evidence green at the ticket's HEAD, after qa's walk
 //        QA         for qa:NN, which costs no round: DONE and green, but qa hasn't walked the ticket since this attempt
 //                   (when the recipe has an app with a dev command), or a red only in pinned tests it hasn't ruled on
@@ -23,13 +26,13 @@
 //      head, then removes the ticket's worktree and branch. MERGED (the ticket marked done) when the run head is green;
 //      ATTENTION when it's red, or on a conflict, which is aborted and leaves everything as it was.
 //   run-stage.mjs verify <NN> -> after qa:NN is done: verify --full judges the ticket's worktree again, qa's pinned tests
-//      included, and the verdict is as implement's.
+//      included, and the verdict is as implement's. A resume that finds implement:NN done runs it too.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch } from "./lib.mjs";
+import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit } from "./lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
@@ -60,6 +63,7 @@ function report() {
 // What the ticket's files say comes next, as [word, why]. A plan is amended and a question researched once per ticket.
 function verdict(s) {
   const { status, cause, concerns } = report(), first = s.dispatches.findIndex((d) => d.stage === stage);
+  if (atUsageLimit(s.dispatches.findLast((d) => d.stage === stage)?.log)) return ["SUSPENDED", "the child stopped at the usage limit, which costs no round"];
   if (status === "BLOCKED" && cause === "bad_plan") return s.dispatches.some((d, i) => i > first && d.stage === `plan:${n}`)
     ? ["ATTENTION", "BLOCKED: bad_plan again, after the planner's one amendment"] : ["AMEND", "BLOCKED: bad_plan, so the ticket's commits are reset and the planner amends the plan"];
   if (status === "BLOCKED") return ["ATTENTION", cause === "intent_gap" ? "BLOCKED: intent_gap, the spec leaves open what to build" : `BLOCKED: ${cause || "no cause given"}, see implementation.md`];
@@ -116,7 +120,12 @@ const attempts = before.dispatches.filter((d) => d.stage === stage).length;
 // last child session, told what the last attempt left, read before the dispatch moves its report aside as
 // implementation.round<attempts>.md.
 const planned = before.dispatches.findLastIndex((d) => d.stage === `plan:${n}`);
-const last = before.dispatches.slice(planned + 1).filter((d) => d.stage === stage && d.session).at(-1);
+// A session can be resumed once one of its logs holds an assistant message or a result: a child cut off before either
+// left no conversation to resume, and a fresh child is pointed at what that attempt left instead.
+const spoke = (d) => events(d.log).some((e) => ["assistant", "result"].includes(e.type));
+const resumable = (session) => before.dispatches.some((d) => d.session === session && spoke(d));
+const sincePlan = before.dispatches.slice(planned + 1).filter((d) => d.stage === stage), lastTry = sincePlan.at(-1);
+const last = sincePlan.filter((d) => d.session && resumable(d.session)).at(-1);  // the latest attempt whose session resumes
 const escalated = !!last && atLast && (last.round || 0) < round, fresh = !last || escalated;
 const [was] = attempts ? verdict(before) : [], { status: wasStatus } = report();
 const ev = readJson(EVIDENCE), moved = fs.existsSync(IMPL) && path.join(dir, `implementation.round${attempts}.md`);
@@ -162,6 +171,8 @@ function message() {
     + `contradicts goes under concerns:, untouched, for qa to rule on. \`node ${path.join(HERE, "verify.mjs")} --pinned <path>\` runs one with the apps up.` : "";
   if (escalated) return `A prior implementer has worked on this ticket and tried ${tries} to fix it; you own it now. Its commits stay on this branch. `
     + `Read the plan, then its last report${moved ? ` (${moved})` : ""} and the last evidence (${EVIDENCE}), and carry on from the code as it is.${pinNote}`;
+  if (fresh && lastTry) return `A previous attempt at this ticket was cut off before it left a session to resume. \`git log --oneline ${lastTry.sha}..HEAD\` lists what it committed`
+    + `${moved ? `, and ${moved} what it reported` : ""}. Read the plan, then carry on from the code as it is.`;
   if (fresh) return "Implement the plan.";
   if (was === "ROUND" && red) return `verify --full is red at ${ev.sha.slice(0, 7)}, red_cause ${ev.red_cause}: ${EVIDENCE} has each failing check's digest and log. Fix what it shows.${pinNote}${again}`;
   if (was === "ROUND" && !wasStatus) return `Your last turn ended before implementation.md had its status line. Carry on with the plan.${again}`;
@@ -191,6 +202,7 @@ await exited;
 // child ran out of turns before writing its own denied: list.
 const denials = fs.readFileSync(log, "utf8").split("\n").flatMap((l) => { try { const e = JSON.parse(l); return e.type === "result" ? e.permission_denials || [] : []; } catch { return []; } });
 if (denials.length) fs.appendFileSync(IMPL, `\nDenied, as the child's result records it:\n${denials.map((x) => `- \`${x.tool_name}: ${x.tool_input?.command ?? x.tool_input?.file_path ?? JSON.stringify(x.tool_input)}\``).join("\n")}\n`);
+if (atUsageLimit(log)) say(...verdict(state()));  // SUSPENDED, unverified and not done
 const { status } = report();
 if (!["BLOCKED", "NEEDS_CONTEXT"].includes(status)) console.log(node("verify.mjs", ["--full", "--run", ctx.id], { cwd: wt }).stdout.split("\n")[0]);
 if (status) told(runState("done", stage));
