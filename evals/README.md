@@ -95,3 +95,7 @@ On the same version and date:
 The second run, with those fixes, cost $2.39. Twelve cases scored 1 in every run, `implementer-red-pinned` and `qa-wrong-value` among them. `retro-repeated-failure` missed `proposes-lesson` in 1 of 3 runs, after 3 of 3 in the first run, and that run's workspace wasn't kept. Fifteen more runs with `--keep-temp` all passed, each lesson line naming cents, `Math.round` or `applyRate`, so the miss, 1 in 21 runs, wasn't reproduced and its cause isn't known. The next release run that misses it should keep its workspaces.
 
 The third run, with `--keep-temp`, cost $2.32, and all thirteen cases scored 1 in every run. It is the committed `evals/results/0.1.0/aggregate-result.json`.
+
+### The 0.2.0 release run
+
+One run, with `--keep-temp`, on Claude Code 2.1.318, cost $2.45. All fourteen cases scored 1 in every run, the new `researcher-fact` among them, and `retro-repeated-failure` passed 3 of 3 again. `compare.mjs` marked one case: `implementer-red-pinned` cost $0.076 a run against 0.1.0's $0.062, 23% more. The implementer's prompt grew in that release (files only through Write and Edit, and carrying on past a denied command) and its allowlist with it, so the rise was judged expected. It is the committed `evals/results/0.2.0/aggregate-result.json`.
