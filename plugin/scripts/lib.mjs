@@ -106,3 +106,21 @@ export function digest(output, log) {
 // placeholder it can't fill stays as written.
 export const fill = (text, apps) =>
   text.replace(/\{port:([^}]+)\}|\{db\}/g, (m, app) => String((app ? apps?.apps?.[app]?.port : apps?.db) ?? m));
+
+// The shared frontier reader, over a folder of NN-slug.md items (a run's tickets). Each has a `Status:` line and a
+// `Blocked by:` line (`none`, or the number of each item it waits on), either one bold or not; blockedBy is null without one.
+// next is what can be taken now: the in-progress items, then each ready-for-agent item whose blockers are all done.
+// open is every item not done.
+export const STATUS_LINE = /^(\**Status:\**[ \t]*)(.*)$/m;
+export function frontier(dir) {
+  const items = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => /^\d{2}-.+\.md$/.test(f)).sort().map((f) => {
+    const text = fs.readFileSync(path.join(dir, f), "utf8"), blocked = text.match(/^\**Blocked by:\**[ \t]*(.*)$/m);
+    return { id: f.slice(0, -3), n: f.slice(0, 2), file: path.join(dir, f), text,
+      status: text.match(STATUS_LINE)?.[2].trim(), blockedBy: blocked && (blocked[1].match(/\d+/g) || []).map((d) => d.padStart(2, "0")) };
+  });
+  const done = new Set(items.filter((t) => t.status === "done").map((t) => t.n));
+  const open = items.filter((t) => t.status !== "done");
+  const next = [...open.filter((t) => t.status === "in-progress"),
+    ...open.filter((t) => t.status === "ready-for-agent" && (t.blockedBy || []).every((b) => done.has(b)))];
+  return { items, open, next, done };
+}

@@ -95,7 +95,7 @@ This route isn't built in this version. Write `attention-route.md`, saying triag
 
 ### build
 
-The request gets a lane branch, research, a grill, a spec and a builder check, then waits at the spec gate: nothing is built from a spec the human hasn't approved.
+The request gets a lane branch, research, a grill, a spec and a builder check, then waits at the spec gate: nothing is built from a spec the human hasn't approved. The approved spec is cut into tickets, which wait at the ticket gate, and each ticket is planned just before it is built.
 
 A stage below is dispatched the way triage is: `run-state dispatch <stage>`, the named agent in the background with its model from `.factory/config.json` when set, the agent's id recorded with `--agent`, a one-line `<what it does> <id>.`, and the end of your turn. Its prompt is triage's three lines, with the `base_sha` the lane printed, plus any line the stage names. When its notification arrives, ignore its text and read the stage's file. A stage whose file is missing or lacks what the step names is incomplete, a factory error: write `attention-<stage>.md` (options: `/factory <the request>` to start again in a new run, `/factory abandon <id>`), run `run-state set stage failed --run <id>`, print it and stop.
 
@@ -117,14 +117,21 @@ A stage below is dispatched the way triage is: `run-state dispatch <stage>`, the
 
    Put only the theirs to the human, in one message, most important first, each with its default as the recommended answer (unattended: from `grill-answers.md`, else the default). Append every question to `grill.md` under `### Session <today's date> (builder check)`, or `(builder check; unattended: answered from grill-answers.md)`: `→ A: <answer> (from <file>)`, `→ A: <default> (the factory's call)`, or the human's answer. Run `run-state done builder-check --run <id>`. Unless `spec.md` itself answered every question, go to **Spec** once so the spec carries the answers. The builder check never runs twice.
 6. **Spec gate.** Write `attention-spec-gate.md`. Its headline asks to approve the spec; What happened gives the spec's title, its counts of requirements and criteria, and the factory's calls; Evidence lists `spec.md`, `grill.md`, `builder-check.md` and `research.md`; the options are `/factory approve <id> approved` (the spec is final), `/factory approve <id> revise` (say what changes; the spec is rewritten and comes back here) and `/factory approve <id> abandon`. Run `run-state set stage needs-human --run <id>`, print `spec.md` and then the attention item, and end your turn. Only the human's `/factory approve` decides: never run `run-state approve` on your own reading of their reply.
+7. **Tickets.** Stage `tickets`, agent `factory:planner`, model `models.plan`, line `mode: tickets`: `Cutting <id> into tickets.` It writes `<run_dir>/tickets/NN-<slug>.md` from `01-`. Then `run-state done tickets --run <id>`.
+8. **Ticket gate.** As the spec gate, with `attention-ticket-gate.md`: it asks to approve how the spec is cut and what blocks what, gives the ticket count, lists `tickets/` and `spec.md`, and its revise cuts the tickets again. Print each ticket's title and `Blocked by:` lines before it.
+9. **Next ticket.** `run-state next-ticket --run <id>`. Take the first `NEXT <NN-slug>` line: `run-state ticket <NN> in-progress --run <id>`, then plan it. On `DONE` or `BLOCKED` lines, this version stops: write `attention-tickets.md` quoting them (options: `/factory abandon <id>`), run `run-state set stage needs-human --run <id>`, print it and stop.
+10. **Plan.** Stage `plan:<NN>`, agent `factory:planner`, model `models.plan`, lines `mode: plan` and `ticket: <NN-slug>`: `Planning ticket <NN> of <id>.` Read the `status:` line of `<run_dir>/tickets/<NN>/plan.md`. On `ready`, `run-state done plan:<NN> --run <id>` and implement it. On `open_questions`, write `attention-plan-<NN>.md` listing them (options: `/factory resume <id>` to answer, `/factory abandon <id>`), run `run-state set stage needs-human --run <id>`, ask them in one message and end your turn. Append the answers to `grill.md` under `### Session <today's date> (ticket <NN>)` as `- Q: … → A: …` lines in the human's words, then plan the ticket again.
+11. **Implement.** Not built in this version: write `attention-implement.md` (the plan is ready; evidence `tickets/<NN>/plan.md`; options: `/factory abandon <id>`), run `run-state set stage needs-human --run <id>`, print it and stop.
 
 ## Approve
 
-`/factory approve [run] <decision>`, at the spec gate. Find the run (see above). With no decision, or one that isn't `approved`, `revise` or `abandon`, print the options of its `attention-spec-gate.md` and stop.
+`/factory approve [run] <decision>`, at the spec gate or the ticket gate. Find the run (see above). It is at the ticket gate when its last dispatch in `run-state get` is `tickets`, else at the spec gate. With no decision, or one that isn't `approved`, `revise` or `abandon`, print the options of that gate's attention item and stop. At the spec gate:
 
-- `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop; otherwise do the **Notion push** first. Tickets aren't built in this version: write `attention-tickets.md` (the spec is approved, and this version stops before tickets; options: `/factory abandon <id>`), run `run-state set stage needs-human --run <id>`, print it and stop.
+- `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop; otherwise do the **Notion push** first. Then go to step 7 of **build**.
 - `revise`: `run-state approve spec revise --run <id>`; if it refuses, print why and stop. Ask in plain chat what should change, append the answer to `grill.md` under `### Session <today's date> (revise)` as `- Q: What should change? → A: <their words>`, then go to step 4 of **build**.
 - `abandon`: the decision is the human's answer, so don't ask again. Run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.
+
+At the ticket gate the same decisions run `run-state approve tickets <decision> --run <id>`: `approved` goes on to step 9 of **build** (a refusal is printed, and only a revise fixes it), and `revise` records the change as above under `### Session <today's date> (tickets revise)`, then goes to step 7.
 
 ## Notion push
 
@@ -165,7 +172,7 @@ Every `run-state set stage <outcome>` and every `run-state abandon` is followed 
 `/factory resume [run]` continues a run that stopped for the human.
 
 1. Find the run (see above) and read its state with `run-state get --run <id>`. If it says the run has ended, or its stage is `delivered`, `abandoned`, `answered` or `charted`, say so and stop: an ended run can't be resumed, and a follow-up is a new `/factory` request in the human's own words.
-2. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names. The dispatch refuses again while a cap is still crossed. Otherwise, print the run's attention item: there is nothing more to resume in this version.
+2. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names. The dispatch refuses again while a cap is still crossed. If it is `attention-plan-<NN>.md`, put its questions to the human and go on as step 10 of **build** does with their answers. Otherwise, print the run's attention item: there is nothing more to resume in this version.
 
 ## Abandon
 
