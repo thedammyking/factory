@@ -51,6 +51,12 @@
 //                                                once when its evidence shows the same failure as the round before. An
 //                                                attempt that made no commits on the ticket's branch costs no round, and a
 //                                                round counted since the last attempt isn't counted again
+//   run-state.mjs round review                -> before a review fix round: `OK review round <n>/<cap>`, or `ESCALATE …`
+//                                                and exit 5 once caps.review_rounds (2) are spent. An attempt that made no
+//                                                commits on the run branch costs no round
+//   run-state.mjs archive-review <lens>       -> moves review-<lens>.md (code, ui or security) aside as
+//                                                review-<lens>.round<N>.md, N one past the highest round there, so every
+//                                                round is kept for synthesize; dispatching review-<lens> does it first
 //   run-state.mjs reconcile [--take-over]     -> what /factory resume runs, from disk alone. A run another session owns (the
 //                                                one init recorded) prints `OWNED …` with that session's last activity and
 //                                                exits 6 changing nothing, until --take-over makes this session its owner;
@@ -88,6 +94,7 @@ const WAITING = ["needs-human", "failed", "suspended"];  // outcomes that wait o
 const OUTPUT = {  // the file each stage writes in the run dir
   triage: "triage.md", answer: "answer.md", research: "research.md", spec: "spec.md", "builder-check": "builder-check.md",
   tickets: "tickets",  // a folder
+  "review-fix": "review-fix.md",  // the implementer's report on a review fix round
 };
 // the file a stage of one ticket, <stage>:<NN>, writes in tickets/<NN>/: the planner's plan, the implementer's report,
 // the researcher's answer to the implementer and qa's walk
@@ -95,6 +102,7 @@ const TICKET_OUTPUT = { plan: "plan.md", implement: "implementation.md", context
 const BEFORE_SPEC_GATE = ["triage", "research", "spec", "builder-check"];  // a build run's only stages before its spec is approved
 const TICKET_STATUSES = ["ready-for-agent", "in-progress", "done", "blocked"];
 const CREDENTIAL = /KEY|SECRET|TOKEN|PASS|PWD|PRIVATE|CREDENTIAL|AUTH|DSN/i;  // an env name whose value the snapshot withholds
+const LENSES = ["code", "ui", "security"];  // each writes review-<lens>.md, dispatched as stage review-<lens>
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
@@ -166,6 +174,15 @@ function load() {
   const ctx = runContext();
   lock(`${ctx.runDir}.lock`);  // beside the run dir, so no snapshot copies it; held to exit, so no command spawns run-state
   return [ctx, readJson(ctx.state)];
+}
+// Moves a lens's file aside as the round after the highest one there, never over one, since synthesize reads every
+// round (design fix 16). Returns what it did.
+function archiveReview(ctx, lens) {
+  const file = `review-${lens}.md`;
+  if (!fs.existsSync(path.join(ctx.runDir, file))) return `no ${file} to archive`;
+  const n = 1 + Math.max(0, ...fs.readdirSync(ctx.runDir).map((f) => Number(f.match(new RegExp(`^review-${lens}\\.round(\\d+)\\.md$`))?.[1] || 0)));
+  fs.renameSync(path.join(ctx.runDir, file), path.join(ctx.runDir, `review-${lens}.round${n}.md`));
+  return `archived ${file} as review-${lens}.round${n}.md`;
 }
 // The strings in one env assignment that must never be committed or posted, [] when it holds none: the value of a
 // credential-like name, and the password in a scheme://user:password@host value, each only at 8 characters or more.
@@ -286,7 +303,7 @@ function logOf(s, d) {
 // Once pr.json exists, tokens spent after it go to their own post_pr allowance, which the tokens cap never pays for
 // (design fix 13).
 const CAPS = { dispatches_per_run: 30, minutes_per_run: 90, minutes_per_ticket: 45, tokens_overhead: 700_000,
-  tokens_per_ticket: 700_000, tokens_per_run: 1_500_000, tokens_post_pr: 400_000, implement_rounds: 3 };
+  tokens_per_ticket: 700_000, tokens_per_run: 1_500_000, tokens_post_pr: 400_000, implement_rounds: 3, review_rounds: 2 };
 const limits = (ctx) => ({ ...CAPS, ...readJson(path.join(ctx.MAIN, ".factory", "config.json"))?.caps });
 function caps(ctx, s) {
   const c = limits(ctx);
@@ -402,6 +419,7 @@ switch (cmd) {
         const round = s.dispatches.filter((d) => d.stage === stage).length;
         fs.renameSync(out, out.replace(/(\.md|\.json)?$/, `.round${round}$1`));  // tickets/ moves aside whole
       }
+      if (LENSES.includes(stage.match(/^review-(\w+)$/)?.[1])) archiveReview(ctx, stage.slice(7));
       // orchestrator_session: the session dispatching, beside whose transcript a subagent's is written
       // fix: the fix round this attempt is for, as `round` counted it
       const session = process.env.CLAUDE_CODE_SESSION_ID, wt = n && ticketWorktree(ctx.MAIN, ctx.id, n), fix = s.rounds?.[stage]?.n;
@@ -416,7 +434,23 @@ switch (cmd) {
   }
   case "round": {
     const [loop] = args, n = loop?.match(/^implement:(\d{2})$/)?.[1];
-    if (!n) die("round implement:<NN>");
+    if (loop === "review") {
+      // A review fix round is counted before it starts, under the stage it's for, review-fix, the first review not being
+      // one. A round counted since the last attempt is the next attempt's, and an attempt that made no commits on the run
+      // branch cost nothing, so neither is counted again.
+      const [ctx, s] = load();
+      if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+      const cap = limits(ctx).review_rounds, r = s.rounds?.["review-fix"]?.n || 0, last = s.dispatches.findLast((d) => d.stage === "review-fix");
+      if (r > (last?.round || 0)) { console.log(`OK review round ${r}/${cap}`); break; }
+      if (last && git(ctx.worktree, "rev-list", "--count", `${last.sha}..HEAD`) === "0") { console.log(`OK review round ${r}/${cap}: the last attempt made no commits, so it cost no round`); break; }
+      if (r >= cap) { log(ctx.runDir, `escalation: review rounds ${r}/${cap}`); console.log(`ESCALATE review: rounds ${r}/${cap}`); process.exit(5); }
+      s.rounds = { ...s.rounds, "review-fix": { n: r + 1, cap } };
+      save(ctx.state, s);
+      log(ctx.runDir, `run: ${ctx.id} review round ${r + 1}/${cap}`);
+      console.log(`OK review round ${r + 1}/${cap}`);
+      break;
+    }
+    if (!n) die("round implement:<NN> | review");
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
     const last = s.dispatches.findLast((d) => d.stage === loop);
@@ -445,6 +479,13 @@ switch (cmd) {
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} ${loop} round ${r.n + 1}/${cap}`);
     console.log(`OK ${loop} round ${r.n + 1}/${cap}`);
+    break;
+  }
+  case "archive-review": {
+    const [lens] = args;
+    if (!LENSES.includes(lens)) die(`archive-review <${LENSES.join(" | ")}>`);
+    const [ctx] = load();
+    console.log(archiveReview(ctx, lens));
     break;
   }
   case "done": {
@@ -730,5 +771,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | approve | notion | ticket | next-ticket | get | set | dispatch | round | done | spend | override | snapshot | reconcile | abandon | status");
+  default: die("usage: run-state.mjs init | lane | approve | notion | ticket | next-ticket | get | set | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
 }
