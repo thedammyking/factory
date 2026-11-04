@@ -48,7 +48,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock } from "./lib.mjs";
+import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed } from "./lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
@@ -115,7 +115,7 @@ if (cmd === "merge") {
   // Nothing merges into a red run head, so a red after a merge is always one between two green sides.
   const runEv = readJson(path.join(ctx.runDir, "evidence.json")), tip = git(ctx.worktree, "rev-parse", "HEAD");
   if (runEv?.sha === tip && !runEv.green) say("ATTENTION", `the run head is red at ${tip.slice(0, 7)}, so ${branch} isn't merged into it`);
-  try { git(ctx.worktree, "merge", "-q", "--no-edit", branch); } catch (e) {
+  try { git(ctx.worktree, "merge", "-q", "--no-edit", "-m", attributed(`Merge branch '${branch}' into ${s.branch}`, "commit", s), branch); } catch (e) {
     const files = git(ctx.worktree, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
     try { git(ctx.worktree, "merge", "--abort"); } catch {}
     say("ATTENTION", `merging ${branch} into ${s.branch} conflicts${files.length ? ` in ${files.join(", ")}` : `: ${gitError(e)}`}, so the merge was aborted`);

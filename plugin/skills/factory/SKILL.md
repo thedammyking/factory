@@ -35,7 +35,8 @@ When a command names no run, run `run-state status`. If exactly one run is liste
    ```
 
    It prints the run's state as JSON. Keep `id`, `run_dir`, `worktree` and `base_sha` from it.
-2. Go to **Triage**.
+2. Record the attribution lines your instructions give commits and PR bodies, word for word: `run-state set attribution '{"commit":"<lines>","pr":"<lines>"}' --run <id>`, `""` for any you have none of. The scripts end the factory's commits and PRs with them.
+3. Go to **Triage**.
 
 ## Triage
 
@@ -157,7 +158,7 @@ When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_RO
 
 1. Find the run (see above) and read its state with `run-state get --run <id>`. If it says the run has ended, or its stage is `delivered`, `abandoned`, `answered` or `charted`, say so and stop: an ended run can't be resumed, and a follow-up is a new `/factory` request in the human's own words.
 2. Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/resume.md` and follow it: it reconciles the run from disk and continues what was cut off, and comes back to step 3 when the run waits on an attention item.
-3. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names (for `implement:<NN>`, of `references/implement.md`; for `qa:<NN>`, of `references/qa.md`; for `ci-fix`, of `references/ci.md`). The dispatch refuses again while a cap is still crossed. If it is `attention-plan-<NN>.md`, put its questions to the human and go on as step 10 of **build** does with their answers. If `<run_dir>/pr.json` exists, the human may have reviewed the PR: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/comments.md` and follow it. If it is `attention-pr.md` with no PR, go to step 1 of `references/pr.md`. Otherwise, print the run's attention item: there is nothing more to resume in this version.
+3. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names (for `implement:<NN>`, of `references/implement.md`; for `qa:<NN>`, of `references/qa.md`; for `ci-fix`, of `references/ci.md`). The dispatch refuses again while a cap is still crossed. If that item quotes `ESCALATE <loop>: rounds …`, go back to the loop's `round` (`ROUND` in `references/implement.md`, step 5 of `references/review.md`, step 2 of `references/ci.md`), which escalates again unless the human lifted the cap. If it is `attention-plan-<NN>.md`, put its questions to the human and go on as step 10 of **build** does with their answers. If `<run_dir>/pr.json` exists, the human may have reviewed the PR: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/comments.md` and follow it. If it is `attention-pr.md` with no PR, go to step 1 of `references/pr.md`. Otherwise, print the run's attention item: there is nothing more to resume in this version.
 
 ## Abandon
 

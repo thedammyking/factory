@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // pr-render.mjs [--merged <sha>] — renders the run's PR from its files, for no tokens (design fix 10). Takes --run <id>, or
 // derives the run from the run worktree it runs in.
-//   pr.md        the title and body: the spec's title and goal (a oneshot's acceptance check and triage's rationale),
+//   pr.md        the title and body: the spec's title, after the request issue's key as the branch has it (ENG-123:
+//                <title>, #12: <title>), and goal (a oneshot's acceptance check and triage's rationale),
 //                each criterion's full text with qa's result (a oneshot's one criterion its acceptance check), the
 //                evidence table, Needs a decision (open asks and P0s, and the facts a needs-human decision failed), the
 //                findings, the security capabilities, each implementer's assumptions and assessment verbatim, up to six
@@ -43,7 +44,8 @@ const triage = (() => { try { return JSON.parse([...read("triage.md").matchAll(/
 const oneshot = s.route === "oneshot";
 const criteria = oneshot ? [{ id: "acceptance", text: String(triage.acceptance_check ?? "").replace(/\s+/g, " ").trim() }]
   : [...body.matchAll(/^- \*\*(SC-\d{3})\*\*(?: \([^)]*\))?:[ \t]*(.+)$/gm)].map(([, id, text]) => ({ id, text: text.trim() }));
-const title = (oneshot ? criteria[0].text : body.match(/^# (.+)$/m)?.[1].trim()) || ctx.id;
+const named = (oneshot ? criteria[0].text : body.match(/^# (.+)$/m)?.[1].trim()) || ctx.id, key = s.request_issue?.key;
+const title = key && !named.includes(key) ? `${key}: ${named}` : named;  // a key the spec already wrote isn't added twice
 const goal = oneshot ? read("triage.md").split(/^```json/m)[0].trim() : section("Goal");
 const tickets = fs.existsSync(path.join(dir, "tickets")) ? fs.readdirSync(path.join(dir, "tickets")).filter((f) => /^\d{2}-.+\.md$/.test(f)).sort().map((f) => f.slice(0, -3)) : [];
 const walks = tickets.map((t) => json(`tickets/${t.slice(0, 2)}/qa.json`)).filter(Boolean);

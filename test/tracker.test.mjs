@@ -217,6 +217,22 @@ test("the PR body gains the request issue's closing reference, and a plain run's
   assert.doesNotMatch(body(plain, ps), /^(Closes|Fixes) /m);
 });
 
+test("the PR is titled with the request issue's key first, as its branch is named, and a plain run's with none", () => {
+  const title = (t, s) => {
+    routed(t, s);
+    write(s.run_dir, { "spec.md": "# Export reports as CSV\n" });
+    const r = script("pr-render.mjs", t.p.dir, ["--run", s.id], { env: t.env });
+    assert.equal(r.status, 0, r.stderr);
+    return read(s.run_dir, "pr.md").split("\n")[0];
+  };
+  const g = setup();
+  assert.equal(title(g, started(g, "#12")), "# #12: Export reports as CSV");
+  const l = setup({ tracker: "linear" });
+  assert.equal(title(l, linearRun(l)), "# ENG-123: Export reports as CSV");
+  const plain = setup();
+  assert.equal(title(plain, started(plain, "Export reports as CSV")), "# Export reports as CSV");
+});
+
 const HOLD = `# Answer two questions so the run can go on
 
 Run \`r\`, stage \`triage\`.

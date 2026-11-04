@@ -156,6 +156,8 @@ test("a review fix round gives the implementer only the open P0 and P1 fixes, re
   const spent = r.node("run-state.mjs", ["round", "review", "--run", r.s.id]);
   assert.equal(spent.status, 5);
   assert.equal(spent.stdout.trim(), "ESCALATE review: rounds 2/2");
+  r.run("override", "review_rounds", "one more round is worth it");
+  assert.equal(r.run("round", "review").stdout.trim(), "OK review round 3/2 (lifted)");
 });
 
 test("a fix round that turns verify red goes round again, and one that makes no commits stops for the human", (t) => {

@@ -57,8 +57,11 @@
 //                                                plans' code map shares a file with a started one's; else `DONE`,
 //                                                else `BLOCKED <NN-slug>: <why>` per open ticket
 //   run-state.mjs get                         -> prints state.json
-//   run-state.mjs set <key> <value>           -> sets a top-level key (JSON when it parses); `route` must be a route and
-//                                                `stage` an outcome (dispatch sets the working stages, abandon its own);
+//   run-state.mjs set <key> <value>           -> sets a top-level key (JSON when it parses); `route` must be a route,
+//                                                `stage` an outcome (dispatch sets the working stages, abandon its own)
+//                                                and `attribution` {commit, pr}, recorded right after init: the
+//                                                session's attribution lines ("" for none) that lib ends each factory
+//                                                commit and PR body with;
 //                                                a run with an override ends needs-human when set delivered, and the time
 //                                                a run waits needs-human, failed or suspended (a usage-limit stop) isn't
 //                                                counted against its minutes; set failed when the last stage's agent
@@ -75,13 +78,14 @@
 //                                                its id to that dispatch, or --log, --pid and --session a child's
 //                                                stream-json log, PID and session id
 //   run-state.mjs round implement:<NN>        -> before a fix round of ticket NN: `OK implement:NN round <n>/<cap>`, or
-//                                                `ESCALATE …` and exit 5 once caps.implement_rounds (3) are spent, or at
-//                                                once when its evidence shows the same failure as the round before. An
-//                                                attempt that made no commits on the ticket's branch costs no round, and a
-//                                                round counted since the last attempt isn't counted again
+//                                                `ESCALATE …` and exit 5 once caps.implement_rounds (3) are spent and
+//                                                not lifted (past a lifted cap, `OK … (lifted)`), or at once when its
+//                                                evidence shows the same failure as the round before. An attempt that
+//                                                made no commits on the ticket's branch costs no round, and a round
+//                                                counted since the last attempt isn't counted again
 //   run-state.mjs round review                -> before a review fix round: `OK review round <n>/<cap>`, or `ESCALATE …`
-//                                                and exit 5 once caps.review_rounds (2) are spent. An attempt that made no
-//                                                commits on the run branch costs no round
+//                                                and exit 5 once caps.review_rounds (2) are spent and not lifted. An
+//                                                attempt that made no commits on the run branch costs no round
 //   run-state.mjs round ci                    -> the same before a CI fix round, ci-fix, under caps.ci_rounds (1)
 //                                                (design fix 14)
 //   run-state.mjs archive-review <lens>       -> moves review-<lens>.md (code, ui or security) aside as
@@ -102,8 +106,10 @@
 //                                                they work (else on the run branch), and next-ticket's frontier
 //   run-state.mjs done <stage>                -> marks a stage done
 //   run-state.mjs spend                       -> measures spend (it takes no number) and prints each cap and each stage's spend
-//   run-state.mjs override <dispatches|minutes|tokens|post_pr> "<reason>" -> a human lifts one cap for the rest of the run,
-//                                                recorded with who and why; the orchestrator never calls it on its own
+//   run-state.mjs override <dispatches|minutes|tokens|post_pr|implement_rounds|review_rounds|ci_rounds> "<reason>" -> a
+//                                                human lifts one cap for the rest of the run (a round cap for every one
+//                                                of its loops), recorded with who and why; the orchestrator never calls
+//                                                it on its own
 //   run-state.mjs snapshot                    -> unless a run file holds a credential from the env files, commits the run
 //                                                dir to .factory/history/<id>/ on the base and its new run.log lines to
 //                                                .factory/log.md, then removes the worktree of a finished run (its
@@ -121,7 +127,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock, githubRepo, ghApi } from "./lib.mjs";
+import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, attributed, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock, githubRepo, ghApi } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
 const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted", "suspended"];
@@ -363,7 +369,7 @@ function caps(ctx, s) {
     ...(pr === undefined ? [] : [["post_pr", s.spend.tokens - pr, c.tokens_post_pr]]),
   ];
 }
-const LIFTS = ["dispatches", "minutes", "tokens", "post_pr"];  // the caps override lifts
+const LIFTS = ["dispatches", "minutes", "tokens", "post_pr", "implement_rounds", "review_rounds", "ci_rounds"];  // the caps override lifts
 const UNREAD = "only the minute and dispatch caps apply";
 // The run's request issue, read once, as { issue, title, body }, or null for a plain request. On github a request that is
 // exactly #12 or the issue's URL on origin's repo is read here through gh api, never its comments. On linear or other the
@@ -524,6 +530,9 @@ switch (cmd) {
     if (key === "stage" && (!OUTCOMES.includes(value) || value === "abandoned")) {
       die(`set stage takes an outcome: ${OUTCOMES.filter((o) => o !== "abandoned").join(" | ")} (abandon and dispatch set the others)`);
     }
+    if (key === "attribution" && !["commit", "pr"].every((k) => typeof value?.[k] === "string")) {
+      die(`set attribution '{"commit":"<lines>","pr":"<lines>"}': the session's own, word for word, "" for none`);
+    }
     const [ctx, s] = load();
     // A run that needed a cap lifted never ends delivered, so it never merges on its own (design fix 12).
     const lifted = key === "stage" && value === "delivered" ? Object.keys(s.overrides || {}) : [];
@@ -597,11 +606,12 @@ switch (cmd) {
       const cap = limits(ctx)[`${loop}_rounds`], r = s.rounds?.[fix]?.n || 0, last = s.dispatches.findLast((d) => d.stage === fix);
       if (r > (last?.round || 0)) { console.log(`OK ${loop} round ${r}/${cap}`); break; }
       if (last && git(ctx.worktree, "rev-list", "--count", `${last.sha}..HEAD`) === "0") { console.log(`OK ${loop} round ${r}/${cap}: the last attempt made no commits, so it cost no round`); break; }
-      if (r >= cap) { log(ctx.runDir, `escalation: ${loop} rounds ${r}/${cap}`); console.log(`ESCALATE ${loop}: rounds ${r}/${cap}`); process.exit(5); }
+      const spent = r >= cap;  // only a human's override lets a round past the cap (design fix 12)
+      if (spent && !s.overrides?.[`${loop}_rounds`]) { log(ctx.runDir, `escalation: ${loop} rounds ${r}/${cap}`); console.log(`ESCALATE ${loop}: rounds ${r}/${cap}`); process.exit(5); }
       s.rounds = { ...s.rounds, [fix]: { n: r + 1, cap } };
       save(ctx.state, s);
       log(ctx.runDir, `run: ${ctx.id} ${loop} round ${r + 1}/${cap}`);
-      console.log(`OK ${loop} round ${r + 1}/${cap}`);
+      console.log(`OK ${loop} round ${r + 1}/${cap}${spent ? " (lifted)" : ""}`);
       break;
     }
     if (!n) die("round implement:<NN> | review | ci");
@@ -628,11 +638,12 @@ switch (cmd) {
     const signature = ev && !ev.green && ev.sha === head ? crypto.createHash("sha256").update(JSON.stringify(ev.checks.filter((c) => c.status !== "pass")
       .map((c) => [c.app, c.check, c.status, String(c.digest).replace(/^full output: .*$/m, "").replace(/\d+/g, "#")]))).digest("hex") : null;
     if (signature && signature === r.signature) escalate(`the same failure as round ${r.n}`);
-    if (r.n >= cap) escalate(`rounds ${r.n}/${cap}`);
-    s.rounds = { ...s.rounds, [loop]: { n: r.n + 1, cap, signature } };  // cap: run-stage starts the last round fresh
+    const spent = r.n >= cap;  // only a human's override lets a round past the cap (design fix 12)
+    if (spent && !s.overrides?.implement_rounds) escalate(`rounds ${r.n}/${cap}`);
+    s.rounds = { ...s.rounds, [loop]: { n: r.n + 1, cap, signature } };  // cap: run-stage starts the last round, and any past it, fresh
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} ${loop} round ${r.n + 1}/${cap}`);
-    console.log(`OK ${loop} round ${r.n + 1}/${cap}`);
+    console.log(`OK ${loop} round ${r.n + 1}/${cap}${spent ? " (lifted)" : ""}`);
     break;
   }
   case "archive-review": {
@@ -921,7 +932,7 @@ switch (cmd) {
       if (fresh.length) fs.appendFileSync(logMd, (cur && !cur.endsWith("\n") ? "\n" : "") + fresh.join("\n") + "\n");
       return [dst, logMd];
     };
-    let sha; try { sha = commitToBase(ctx.MAIN, s.base_branch, `factory(run): ${ctx.id} snapshot (${s.stage})`, apply); } catch (e) {
+    let sha; try { sha = commitToBase(ctx.MAIN, s.base_branch, attributed(`factory(run): ${ctx.id} snapshot (${s.stage})`, "commit", s), apply); } catch (e) {
       stop(ctx, s, "snapshot", {
         headline: `The run's files couldn't be committed to ${s.base_branch}`,
         happened: `The run was ending ${s.stage}. Its snapshot to \`.factory/history/${ctx.id}/\` committed nothing: ${e.message}.`,
@@ -996,7 +1007,7 @@ switch (cmd) {
       const t = ticketOf(d);
       if (!t || !git(t.wt, "status", "--porcelain", "--", ".", ":(exclude).factory")) continue;
       const message = `wip(factory): salvaged from round ${d.round || 0}`;
-      try { git(t.wt, "add", "-A", "--", ".", ":(exclude).factory"); git(t.wt, "commit", "-q", "--no-verify", "-m", message); }
+      try { git(t.wt, "add", "-A", "--", ".", ":(exclude).factory"); git(t.wt, "commit", "-q", "--no-verify", "-m", attributed(message, "commit", s)); }
       catch (e) { die(`can't salvage ${ticketBranch(ctx.id, t.n)}: ${gitError(e)}`); }
       const sha = git(t.wt, "rev-parse", "--short", "HEAD");
       log(ctx.runDir, `run: ${ctx.id} ${d.stage} ${message} at ${sha}`);

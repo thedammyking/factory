@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, liveBase, pause, ghApi, shellQuote as q, attentionItem } from "./lib.mjs";
+import { readJson, git, gitError, runContext, liveBase, pause, ghApi, shellQuote as q, attentionItem, attributed } from "./lib.mjs";
 
 const mode = process.argv[2];
 const die = (msg) => { console.error(`sync-base: ${msg}`); process.exit(2); };
@@ -71,7 +71,7 @@ if (mode === "before-review" ? s.base_sha !== tip : !contains(head, tip)) {
       [`git -C ${q(wt)} pull --ff-only origin ${q(pr.head)}`, "takes GitHub's merge once it has landed"]);
     done = `merged ${base} at ${tip.slice(0, 7)} through update-branch on PR #${pr.number}: run verify --full again`;
   } else {
-    try { git(wt, "merge", "-q", "--no-edit", base); } catch (e) {
+    try { git(wt, "merge", "-q", "--no-edit", "-m", attributed(`Merge branch '${s.base_branch}' into ${s.branch}`, "commit", s), base); } catch (e) {
       stop(`Merging ${s.base_branch} in conflicts`, `Merging ${at} into the run branch conflicts in ${aborted("merge", e)}, so the merge was aborted and the branch is as it was.`, mergeYourself);
     }
     done = `merged ${base} at ${tip.slice(0, 7)}: run verify --full again`;

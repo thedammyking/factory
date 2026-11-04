@@ -529,6 +529,29 @@ test("fix 12: override records who lifted which cap and why, later checks honour
   assert.equal(stateOf(p, s, c.env).stage, "needs-human");
 });
 
+test("the attribution lines: a factory commit ends with the commit lines the session recorded, an export wins, and with neither it goes without them and says so once", () => {
+  const p = project();
+  const s = init(p);
+  const env = { ...ENV };
+  delete env.FACTORY_COMMIT_TRAILER; delete env.FACTORY_PR_TRAILER;
+  const run = (args, e = env) => rs(p.dir, [...args, "--run", s.id], "", e);
+  const snapshot = (stage, e) => { run(["set", "stage", stage]); const r = run(["snapshot"], e); assert.equal(r.status, 0, r.stderr); return r; };
+  const message = () => p.git("log", "-1", "--format=%B", "main");
+  const none = snapshot("needs-human");
+  assert.equal(message(), `factory(run): ${s.id} snapshot (needs-human)`, "none recorded: the commit goes without");
+  assert.equal(none.stderr.match(/no attribution recorded/g)?.length, 1, none.stderr);
+  assert.equal(run(["set", "attribution", "Co-Authored-By: A <a@a>"]).status, 2, "a pair, as JSON");
+  assert.equal(run(["set", "attribution", '{"commit":"Co-Authored-By: A <a@a>"}']).status, 2, "both lines");
+  assert.equal(run(["set", "attribution", JSON.stringify({ commit: "Co-Authored-By: A <a@a>\nReviewed-by: B", pr: "Made with A" })]).status, 0);
+  assert.equal(snapshot("failed").stderr, "");
+  assert.equal(message(), `factory(run): ${s.id} snapshot (failed)\n\nCo-Authored-By: A <a@a>\nReviewed-by: B`, "from state");
+  snapshot("needs-human", { ...env, FACTORY_COMMIT_TRAILER: "Co-Authored-By: C <c@c>" });
+  assert.equal(message(), `factory(run): ${s.id} snapshot (needs-human)\n\nCo-Authored-By: C <c@c>`, "an export wins");
+  run(["set", "attribution", '{"commit":"","pr":""}']);
+  assert.equal(snapshot("failed").stderr, "", "an empty pair is a session that wants none");
+  assert.equal(message(), `factory(run): ${s.id} snapshot (failed)`);
+});
+
 test("when the parser reads nothing it warns once, in the session and in status, and the run goes on under the minute and dispatch caps", () => {
   const p = project({ config: { caps: { tokens_per_run: 1 } } });
   const c = claude();

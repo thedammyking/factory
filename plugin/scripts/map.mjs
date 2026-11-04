@@ -18,7 +18,7 @@
 //                                             another session committed since the text was read is refused, never
 //                                             lost: a ticket's Status (claim and resolve change it, write only to
 //                                             out-of-scope) and map.md's pointers in `## Decisions so far`
-import { mainRoot, readJson, arg, git, frontier, commitToBase, STATUS_LINE } from "./lib.mjs";
+import { mainRoot, readJson, arg, git, frontier, commitToBase, attributed, STATUS_LINE } from "./lib.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -53,8 +53,9 @@ function ticketIn(wt, f) {
   return { ...parse(f, fs.readFileSync(file, "utf8")), file, path: `${dir}/tickets/${f}` };
 }
 // One commit onto the base, `apply` re-run on a moved tip; a throw from it (a lost race) ends the command committing nothing.
+// It acts on no run, so only an exported FACTORY_COMMIT_TRAILER attributes it.
 function commit(what, apply) {
-  try { return commitToBase(MAIN, base, `factory(map): ${slug} ${what}`, apply); } catch (e) { die(e.message); }
+  try { return commitToBase(MAIN, base, attributed(`factory(map): ${slug} ${what}`, "commit", null), apply); } catch (e) { die(e.message); }
 }
 
 if (config.tracker !== "local" && !(cmd === "write" && RESEARCH.test(target))) die(`${cmd} is for the local tracker, and this one is ${config.tracker}: its map lives there`);

@@ -248,6 +248,27 @@ test("fix rounds 1 and 2 resume the child's session with the evidence's path, ro
   assert.match(fs.readFileSync(path.join(r.s.run_dir, "run.log"), "utf8"), /escalation: implement:01 rounds 3\/3\n/);
 });
 
+test("override implement_rounds lifts the round cap for the rest of the run, recorded, and the run then ends needs-human; a tokens override lifts no round cap", (t) => {
+  const r = ticketReady(t, { config: { caps: { implement_rounds: 1 } } });
+  r.play(["alpha", "beta", "gamma"].map((w) => broken(r, w)));
+  r.stage("implement", "01");
+  assert.equal(lastLine(round(r)), "OK implement:01 round 1/1");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  assert.equal(round(r).stdout.trim(), "ESCALATE implement:01: rounds 1/1");
+  r.run("override", "tokens", "the build ran long");
+  const still = round(r);
+  assert.equal(still.status, 5, "a tokens override lifts no round cap");
+  r.run("override", "implement_rounds", "one more try is worth it");
+  assert.equal(lastLine(round(r)), "OK implement:01 round 2/1 (lifted)");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  assert.equal(lastLine(round(r)), "OK implement:01 round 3/1 (lifted)", "for the rest of the run, as every override is");
+  const lifted = r.state().overrides.implement_rounds;
+  assert.deepEqual([lifted.by, lifted.reason], ["t", "one more try is worth it"], "who (the git user) and why");
+  assert.match(fs.readFileSync(path.join(r.s.run_dir, "run.log"), "utf8"), /override implement_rounds by t: one more try is worth it/);
+  assert.match(r.run("set", "stage", "delivered").stdout, /overrode tokens, implement_rounds/);
+  assert.equal(r.state().stage, "needs-human");
+});
+
 test("an attempt that made no commits costs no round, and the same failure twice escalates early", (t) => {
   const r = ticketReady(t);
   r.play([broken(r, "alpha"), { write: { [r.impl]: report("DONE") } }, { ...broken(r, "alpha"), files: { ...broken(r, "alpha").files, "notes.txt": "again\n" } }]);

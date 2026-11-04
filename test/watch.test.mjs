@@ -226,11 +226,15 @@ test("red smoke: a pinned test failing after sign-in opens a revert PR on revert
   assert.deepEqual(lines(w.p.git("show", "main:.factory/log.md")).map((l) => l.replace(/^- \S+ /, "")), [`post-merge: ${w.s.id} ${w.sha.slice(0, 7)} on main: ci=green deploy=success smoke=fail revert=#9`]);
 });
 
-test("red CI: a workflow run failing at the merged SHA opens the revert PR at once, with no probe or smoke", (t) => {
-  const w = merged(t), r = w.watch({ ci: [[w.wf("failure")]] });
+test("red CI: a workflow run failing at the merged SHA opens the revert PR at once, with no probe or smoke; the revert ends with the session's lines", (t) => {
+  const w = merged(t);
+  w.rs("set", "attribution", JSON.stringify({ commit: "Co-Authored-By: A <a@a>", pr: "Made with A" }));
+  const r = w.watch({ ci: [[w.wf("failure")]] });
   assert.equal(r.status, 1, r.stderr + r.stdout);
   assert.match(r.stdout, / on main: ci=red deploy=none smoke=skipped \(CI is red\) revert=#9$/m);
-  reverted(w, "CI is red at");
+  const { open, field } = reverted(w, "CI is red at");
+  assert.match(sh(w.bare, "git", ["log", "-1", "--format=%B", `revert/${w.s.id}-${w.sha.slice(0, 7)}`]), /^This reverts commit [\s\S]*\n\nCo-Authored-By: A <a@a>$/m);
+  assert.match(field(open, "body"), /\S\n\nMade with A$/);
   assert.deepEqual(w.d.seen(), [], "nothing reached the deployment");
   assert.ok(!w.calls().some((c) => c[1].includes("deployments")), "nor was it read");
 });

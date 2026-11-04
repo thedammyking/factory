@@ -34,6 +34,20 @@ export function runPaths(main, id) {
   return { worktree, runDir, state: path.join(runDir, "state.json") };
 }
 
+// `text`, a commit message ("commit") or a PR body ("pr"), ending in the session's attribution lines: FACTORY_COMMIT_TRAILER
+// or FACTORY_PR_TRAILER when exported, else those the orchestrator recorded in `state` right after init (Bash calls share
+// no env), "" being none. With neither, a run's text goes without them, which stderr says once a process: a snapshot or a
+// revert never fails for want of a trailer.
+let unattributed = false;
+export function attributed(text, kind, state) {
+  const lines = process.env[`FACTORY_${kind.toUpperCase()}_TRAILER`] ?? state?.attribution?.[kind];
+  if (lines === undefined && state && !unattributed) {
+    unattributed = true;
+    console.error(`no attribution recorded, so the run's commits and PRs go without: run-state set attribution '{"commit":"…","pr":"…"}' records the session's`);
+  }
+  return lines ? `${text.trimEnd()}\n\n${lines.trim()}` : text;
+}
+
 // Commits onto `base` without checking it out: apply(wt) writes into a temp worktree detached at the base tip and returns
 // the paths to stage. The base then moves by a fast-forward in the checkout that holds it, else by a compare-and-swap.
 // If the move fails (the base moved meanwhile, or the checkout holding it refused), it applies again on the new tip, 3

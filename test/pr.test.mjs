@@ -599,6 +599,19 @@ test("a hotfix lane under git flow also opens the back-merge PR into develop, on
   assert.equal(posts(r, "POST repos/o/r/pulls$").length, 2, "opened once");
 });
 
+test("the PR and a hotfix's back-merge PR end with the PR lines the session recorded", () => {
+  const r = ready();
+  write(r.p.dir, { ".factory/config.json": JSON.stringify({ merge: "trial", branching: { model: "git-flow", main: "main", develop: "develop" } }) });
+  fs.rmSync(path.join(r.s.run_dir, "pr.json"));
+  r.rs("set", "attribution", JSON.stringify({ commit: "Co-Authored-By: A <a@a>", pr: "Made with [A](https://a.example)" }));
+  render(r);
+  const res = open(r);
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  const made = posts(r, "POST repos/o/r/pulls$");
+  assert.equal(made.length, 2);
+  for (const c of made) assert.match(flag(c, "-f").find((f) => f.startsWith("body=")), /\S\n\nMade with \[A\]\(https:\/\/a\.example\)$/);
+});
+
 test("pr-open stops, quoting GitHub, when it refuses the PR, and needs a GitHub origin", () => {
   const r = ready();
   fs.rmSync(path.join(r.s.run_dir, "pr.json"));

@@ -17,7 +17,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, mainRoot, commitToBase } from "./lib.mjs";
+import { readJson, arg, mainRoot, commitToBase, attributed } from "./lib.mjs";
 
 const die = (msg, code = 2) => { console.error(`retro-apply: ${msg}`); process.exit(code); };
 const file = process.argv[2], accept = arg("--accept");
@@ -82,6 +82,6 @@ const apply = (wt) => {
   }
   return [...changed];
 };
-let sha;
-try { sha = commitToBase(MAIN, base, `factory(retro): ${proposals.map((p) => p.title).join("; ")}`, apply); } catch (e) { die(e.message, 1); }
+let sha;  // no run, so only an exported FACTORY_COMMIT_TRAILER attributes it
+try { sha = commitToBase(MAIN, base, attributed(`factory(retro): ${proposals.map((p) => p.title).join("; ")}`, "commit", null), apply); } catch (e) { die(e.message, 1); }
 console.log([...lines, `RETRO ${sha ? sha.slice(0, 7) : "unchanged"} on ${base}`].join("\n"));

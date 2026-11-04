@@ -24,7 +24,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, gitError, runContext, worktreesDir, liveBase, pause, ghApi, digest, attentionItem, watchEnv, smokeHeaders, loginWall } from "./lib.mjs";
+import { readJson, arg, git, gitError, runContext, worktreesDir, liveBase, pause, ghApi, digest, attentionItem, watchEnv, smokeHeaders, loginWall, attributed } from "./lib.mjs";
 
 const die = (msg) => { console.error(`post-merge: ${msg}`); process.exit(2); };
 const WINDOW = Number(arg("--window", 3600)), EVERY = Number(arg("--every", 20));
@@ -159,6 +159,7 @@ function revert() {
       git(ctx.MAIN, "worktree", "add", "-q", "--detach", wt, liveBase(ctx.worktree, target));
       mainline = git(wt, "rev-list", "--parents", "-n", "1", sha).split(" ").length > 2;
       g("revert", "--no-edit", ...(mainline ? ["-m", "1"] : []), sha);
+      g("commit", "-q", "--amend", "-m", attributed(g("log", "-1", "--format=%B"), "commit", s));  // git's message, attributed
       g("push", "-q", "origin", `HEAD:refs/heads/${branch}`);
     } catch (e) { return { failed: `git: ${gitError(e)}` }; }
   } finally { try { git(ctx.MAIN, "worktree", "remove", "--force", wt); } catch {} }
@@ -168,7 +169,7 @@ function revert() {
     + `This is a \`git revert\` of \`${short}\`. The factory never merges it: merge it to undo #${pr.number}, or close it when the red is a flake `
     + `or already fixed forward. While it's open, \`merge: auto\` acts as trial. Run \`${ctx.id}\`.`;
   const made = ghApi("-X", "POST", `repos/${repo}/pulls`, "-f", `title=Revert PR #${pr.number}: ${ciRed ? `CI is red at ${short}` : "the smoke failed"}`,
-    "-f", `head=${branch}`, "-f", `base=${target}`, "-f", `body=${body}`);
+    "-f", `head=${branch}`, "-f", `base=${target}`, "-f", `body=${attributed(body, "pr", s)}`);
   if (!made.ok) return { branch, failed: `GitHub refused the PR: ${made.message}` };
   const labels = ghApi("-X", "POST", `repos/${repo}/issues/${made.json.number}/labels`, "-f", "labels[]=factory", "-f", "labels[]=needs-human");
   return { branch, number: made.json.number, url: made.json.html_url, ...(!labels.ok && { unlabelled: labels.message }) };

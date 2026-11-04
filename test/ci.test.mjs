@@ -240,6 +240,8 @@ test("fix 14: ours gets one CI fix round: round ci counts it, an implementer chi
   const spent = script("run-state.mjs", r.p.dir, ["round", "ci", "--run", r.s.id], { env: r.env });
   assert.equal(spent.status, 5);
   assert.equal(spent.stdout.trim(), "ESCALATE ci: rounds 1/1");
+  r.rs("override", "ci_rounds", "one more round is worth it");
+  assert.equal(r.rs("round", "ci").stdout.trim(), "OK ci round 2/1 (lifted)");
 });
 
 test("a CI fix round cut off is continued fresh, through its step, never as an agent to message", (t) => {
