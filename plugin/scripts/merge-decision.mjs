@@ -6,6 +6,7 @@
 //     (design fix 2): the base's own commits are never the run's.
 //   - A run file a fact reads that's missing, or was written at another head, never lets it hold: unknown is no pass.
 //   - The mode is config.merge, trial unless it says auto. Nothing here merges.
+//   - A oneshot's one criterion is triage's acceptance check, and oneshot_scope holds it to one product file.
 // Prints `DECISION <merge|needs-human> (<mode>) at <sha>`, then each failing fact.
 import fs from "node:fs";
 import path from "node:path";
@@ -46,13 +47,15 @@ fact("evidence_green_at_head", ev?.sha === head && ev.green === true, ev
 const ci = json("ci.json");
 fact("ci_green_at_head", ci?.sha === head && ["green", "flake"].includes(ci.cause), ci ? `CI ${ci.cause} at ${short(ci.sha)} (HEAD ${short(head)})` : "no ci.json: CI wasn't read", [at("ci.json")]);
 
-// Every criterion of the spec passes in each ticket's qa walk that names it.
-const criteria = [...read("spec.md").matchAll(/^- \*\*(SC-\d{3})\*\*/gm)].map((m) => m[1]);
+// Every criterion of the spec passes in each ticket's qa walk that names it. A oneshot has no spec: its one criterion is
+// triage's acceptance check, which qa walks as `acceptance` (#24).
+const oneshot = s.route === "oneshot";
+const criteria = oneshot ? ["acceptance"] : [...read("spec.md").matchAll(/^- \*\*(SC-\d{3})\*\*/gm)].map((m) => m[1]);
 const walks = tickets.map((n) => `tickets/${n}/qa.json`), results = walks.flatMap((f) => json(f)?.criteria || []);
 const unproven = criteria.map((id) => [id, results.filter((c) => c.id === id).map((c) => c.status)])
   .filter(([, st]) => !st.length || st.some((x) => x !== "pass")).map(([id, st]) => `${id}=${st.join("/") || "not walked"}`);
 fact("criteria_pass", criteria.length && !unproven.length, criteria.length ? unproven.join(", ") || `${criteria.length} criteria pass` : "spec.md has no SC-### criterion",
-  [at("spec.md"), ...walks.map(at)]);
+  [at(oneshot ? "triage.md" : "spec.md"), ...walks.map(at)]);
 
 const review = json("findings.json"), open = (review?.findings || []).filter((f) => f.status === "open");
 const blocking = open.filter((f) => f.action === "ask" || (["P0", "P1"].includes(f.severity) && f.action === "fix"));
@@ -135,6 +138,14 @@ fact("no_new_dependency", security && !deps.length, security ? deps.map((d) => `
 const dirs = [].concat(recipe.pinned ?? []).map((d) => String(d).replace(/\/+$/, ""));
 const edited = dirs.length ? diff(dirs).filter(([st]) => st !== "A") : [];
 fact("no_pinned_test_changed", !edited.length, edited.map(([st, f]) => `${f} ${st === "D" ? "deleted" : "modified"}`).join(", ") || `none in ${dirs.join(", ") || "no pinned directory"}`, [diffAt]);
+// #24: a oneshot changes one product file, a constant and not a config key; tests (classify-diff's) and the pinned
+// directories don't count.
+// ponytail: touches.json lists 20 test paths at most, so a 21st counts as product and the run goes to a human; read the
+// touch rules here if a oneshot ever changes more tests than that.
+const tests = touches?.touches.tests?.paths || [];
+const product = changed.map(([, f]) => f).filter((f) => !tests.includes(f) && !dirs.some((d) => f.startsWith(`${d}/`)));
+fact("oneshot_scope", !oneshot || (touches && product.length <= 1), !oneshot ? `a ${s.route} run` : !touches ? stale("touches.json")
+  : `${product.length} product file${product.length === 1 ? "" : "s"} on a oneshot${product.length ? `: ${product.join(", ")}` : ""}`, [at("touches.json"), diffAt]);
 const branching = config.branching || {};
 fact("not_git_flow_main", !(branching.model === "git-flow" && s.target_branch === (branching.main || "main")),
   `${branching.model || "trunk"}, targeting ${s.target_branch}`, [path.join(ctx.MAIN, ".factory", "config.json")]);

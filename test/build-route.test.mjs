@@ -101,7 +101,7 @@ test("only a build or oneshot run takes a lane, once; hold and answer make no br
   }
   assert.equal(p.git("for-each-ref", "--format=%(refname)", "refs/heads"), "refs/heads/main");
   const s = init(p);
-  triaged(p, s, {}, "oneshot");
+  triaged(p, s, { acceptance_check: "`/reports`, Export, a CSV downloads." }, "oneshot");
   assert.equal(lane(p, s).status, 0);
   const again = lane(p, s);
   assert.equal(again.status, 0, "a second call, after a resume, is a no-op");

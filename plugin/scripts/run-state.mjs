@@ -9,7 +9,13 @@
 //                                                branch at its base's tip (prefix and base from triage's type and the
 //                                                branching model, then the request issue's key, then triage's slug, and
 //                                                the run id only when that name is taken) and records branch,
-//                                                base_branch, target_branch and base_sha
+//                                                base_branch, target_branch and base_sha. A oneshot's lane also writes its
+//                                                one ticket, tickets/01-<slug>.md, covering triage's acceptance_check, approved
+//                                                as written, so the run is one ticket everywhere else
+//   run-state.mjs reroute                     -> a oneshot whose plan lists more than one product file, before it's
+//                                                implemented: its plan is done and the route becomes build, which goes on
+//                                                at research on the same branch, and the oneshot's tickets/ is kept as
+//                                                oneshot/, so the caps scale with the build's tickets once they're cut
 //   run-state.mjs approve spec approved|revise -> the human's decision at the spec gate; approved covers spec.md as it is,
 //                                                and until then a build run dispatches nothing past the builder check
 //   run-state.mjs notion [pushed <url> | failed "<why>"] -> an approved spec's Notion copy, which the orchestrator pushes
@@ -523,6 +529,8 @@ switch (cmd) {
     const key = words(s.request_issue?.key), slug = words(String(triage.branch ?? "").split("/").pop());
     if (key.length && key.every((w, i) => slug[i] === w)) slug.splice(0, key.length);  // a key triage already wrote
     if (!slug.length) die("triage.md names no branch");
+    const check = String(triage.acceptance_check ?? "").replace(/\s+/g, " ").trim();
+    if (s.route === "oneshot" && !check) die("triage.md has no acceptance_check, a oneshot's one criterion");
     const want = prefixes[kind] + [...key, ...slug.slice(0, 5)].join("-");
     let sha; try { sha = git(ctx.MAIN, "rev-parse", "--verify", `refs/heads/${base}^{commit}`); } catch { die(`base branch '${base}' doesn't exist`); }
     // A name taken here or on a remote gets the run id appended; losing a race to another run moves on the same way.
@@ -534,9 +542,34 @@ switch (cmd) {
     }
     if (!s.branch) die(`can't make ${want}-${ctx.id}: the name is taken`);
     Object.assign(s, { base_branch: base, target_branch: base, base_sha: sha });
+    if (s.route === "oneshot") {
+      // The run is one ticket everywhere else (#24), cut here from triage.md and approved as written: there is no gate.
+      const name = slug.slice(0, 5), dir = path.join(ctx.runDir, "tickets");
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, `01-${name.join("-")}.md`), `# 01: ${name.join(" ")}\n\nStatus: ready-for-agent\nBlocked by: none\n\n`
+        + `The run's one ticket on the oneshot route: \`triage.md\` is its ticket and its spec.\n\n## Covers\n- [ ] acceptance: ${check}\n`);
+      s.approvals = { ...s.approvals, tickets: { sha256: ticketsHash(ctx), at: now() } };
+    }
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} on ${s.branch} from ${base} at ${sha.slice(0, 7)}`);
     console.log(`on ${s.branch} from ${base} at ${sha}`);
+    break;
+  }
+  case "reroute": {
+    // A oneshot whose plan lists more than one product file goes to build at research (#24), before anything is built.
+    const [ctx, s] = load();
+    if (s.route !== "oneshot") die(`only a oneshot reroutes; ${ctx.id} routes ${s.route}`);
+    if (s.dispatches.some((d) => d.stage.startsWith("implement:"))) die(`${ctx.id} has started implementing: a oneshot reroutes from its plan`);
+    // Its ticket and plan are kept aside, where neither the frontier nor the caps' ticket count nor the planner sees them.
+    const tickets = path.join(ctx.runDir, "tickets");
+    if (fs.existsSync(tickets)) fs.renameSync(tickets, path.join(ctx.runDir, "oneshot"));
+    s.route = "build";
+    delete s.approvals?.tickets;
+    // Its plan is done, in this one write, so a resume never continues it on the build route, whose gates refuse it.
+    s.stages_done = [...new Set([...s.stages_done, ...s.dispatches.map((d) => d.stage).filter((d) => d.startsWith("plan:"))])];
+    save(ctx.state, s);
+    log(ctx.runDir, `run: ${ctx.id} rerouted from oneshot to build`);
+    console.log(`rerouted ${ctx.id} to build: research comes next, on ${s.branch}`);
     break;
   }
   case "approve": {
@@ -802,5 +835,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | approve | notion | ticket | next-ticket | get | set | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
+  default: die("usage: run-state.mjs init | lane | reroute | approve | notion | ticket | next-ticket | get | set | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
 }

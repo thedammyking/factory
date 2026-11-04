@@ -1,12 +1,13 @@
 #!/usr/bin/env node
 // pr-render.mjs [--merged <sha>] — renders the run's PR from its files, for no tokens (design fix 10). Takes --run <id>, or
 // derives the run from the run worktree it runs in.
-//   pr.md        the title and body: the spec's goal, each criterion's full text with qa's result, the evidence table,
-//                Needs a decision (open asks and P0s, and the facts a needs-human decision failed), the findings, the
-//                security capabilities, each implementer's assumptions and assessment verbatim, up to six captures, the
-//                pinned tests qa superseded or repaired, the spec's Anti-goals, the Spec line (the Notion page in its
-//                frontmatter, else where the snapshot puts it) and Verify in 2 minutes: the local commands, then a step
-//                per criterion opening its route, a bare path and never the path half of a URL (design fix 26).
+//   pr.md        the title and body: the spec's goal, each criterion's full text with qa's result (a oneshot's one
+//                criterion its acceptance check), the evidence table, Needs a decision (open asks and P0s, and the
+//                facts a needs-human decision failed), the findings, the security capabilities, each implementer's
+//                assumptions and assessment verbatim, up to six captures, the pinned tests qa superseded or repaired,
+//                the spec's Anti-goals, the Spec line (the Notion page in its frontmatter, else where the snapshot puts
+//                it, or a oneshot's triage.md) and Verify in 2 minutes: the local commands, then a step per criterion
+//                opening its route, a bare path and never the path half of a URL (design fix 26).
 //   comment.md   the decision comment, when there is one: "Merged at <sha>" with --merged, "Would merge (trial)" for a
 //                merge decision, the attention item for a needs-human one (written as attention-merge.md too), and the
 //                newest attention item of a run stopped needs-human or failed with no decision. Removed when there's
@@ -31,7 +32,12 @@ const list = (items) => items.length ? items.join("\n") : "- none";
 const spec = read("spec.md"), fm = spec.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "", body = spec.replace(/^---\n[\s\S]*?\n---\n/, "");
 const section = (h) => body.match(new RegExp(`^## ${h}[ \\t]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, "m"))?.[1].trim() ?? "";
 const title = body.match(/^# (.+)$/m)?.[1].trim() ?? ctx.id;
-const criteria = [...body.matchAll(/^- \*\*(SC-\d{3})\*\*(?: \([^)]*\))?:[ \t]*(.+)$/gm)].map(([, id, text]) => ({ id, text: text.trim() }));
+// A oneshot has no spec: its one criterion is triage's acceptance check, which qa walks as `acceptance` (#24).
+// ponytail: merge-decision's triage.md parse, copied; share it from lib once the parallel edits have landed.
+const triage = (() => { try { return JSON.parse([...read("triage.md").matchAll(/```json\s*\n([\s\S]*?)\n```/g)].at(-1)[1]); } catch { return {}; } })();
+const oneshot = s.route === "oneshot";
+const criteria = oneshot ? [{ id: "acceptance", text: String(triage.acceptance_check ?? "").replace(/\s+/g, " ").trim() }]
+  : [...body.matchAll(/^- \*\*(SC-\d{3})\*\*(?: \([^)]*\))?:[ \t]*(.+)$/gm)].map(([, id, text]) => ({ id, text: text.trim() }));
 const tickets = fs.existsSync(path.join(dir, "tickets")) ? fs.readdirSync(path.join(dir, "tickets")).filter((f) => /^\d{2}-.+\.md$/.test(f)).sort().map((f) => f.slice(0, -3)) : [];
 const walks = tickets.map((t) => json(`tickets/${t.slice(0, 2)}/qa.json`)).filter(Boolean);
 const result = (id) => [...new Set(walks.flatMap((w) => w.criteria || []).filter((c) => c.id === id).map((c) => c.reason ? `${c.status} (${c.reason})` : c.status))].join(" / ") || "not walked";
@@ -97,7 +103,7 @@ ${list(rulings)}
 ## Anti-goals
 ${section("Anti-goals") || "- none in the spec"}
 
-Spec: ${notion ?? `\`${history}/spec.md\``}
+Spec: ${notion ?? `\`${history}/${oneshot ? "triage" : "spec"}.md\``}
 
 ## Verify in 2 minutes
 Locally:

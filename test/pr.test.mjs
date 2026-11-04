@@ -261,6 +261,58 @@ test("more files than merge_limits.max_files, a cap override or the dispatch cap
   assert.deepEqual(failing(c.decide()), ["under_dispatch_cap"]);
 });
 
+// A oneshot (#59) has no spec: triage's acceptance check is its one criterion, walked by qa as `acceptance`. oneshot(r)
+// pins the run's files, then makes it one, with touches.json from classify-diff over the touch rules setup copies.
+const RULES = fs.readFileSync(new URL("../plugin/templates/touch-rules.json", import.meta.url), "utf8");
+const CHECK = "`/signup`, submit a new email and a password, the page shows \"Welcome\".";
+const oneshot = (r, { type = "bug" } = {}) => {
+  r.pin();
+  r.rs("set", "route", "oneshot");
+  fs.rmSync(path.join(r.s.run_dir, "spec.md"));
+  write(r.s.run_dir, { "triage.md": "```json\n" + JSON.stringify({ type, size: "s", route: "oneshot", acceptance_check: CHECK }) + "\n```\n" });
+  r.put("tickets/01/qa.json", { criteria: [{ id: "acceptance", status: "pass" }] });
+  const c = script("classify-diff.mjs", r.p.dir, ["--run", r.s.id], { env: ENV });
+  assert.equal(c.status, 0, c.stderr);
+};
+
+test("oneshot_scope: a oneshot whose diff changes more than one product file is needs-human; its tests and the pinned directories don't count", () => {
+  const r = ready({ recipe: { ...RECIPE, pinned: ["pinned"] }, base: { ".factory/touch-rules.json": RULES } });
+  r.s.commit({ "src/signup.test.js": "test\n", "pinned/factory.fixture.ts": "export {};\n" }, "a test and qa's fixture"); oneshot(r);
+  let d = r.decide();
+  assert.equal(d.decision, "merge", d.reasons.join("; "));
+  assert.equal(d.facts.find((f) => f.name === "oneshot_scope").detail, "1 product file on a oneshot: src/signup.js");
+  r.s.commit({ "src/form.js": "export const form = 1;\n" }, "a second file"); oneshot(r);
+  d = r.decide();
+  assert.deepEqual(failing(d), ["oneshot_scope"]);
+  assert.equal(d.reasons[0], "oneshot_scope: 2 product files on a oneshot: src/form.js, src/signup.js");
+  r.pin(); r.rs("set", "route", "build");
+  assert.equal(r.decide().decision, "merge", "a build run isn't held to one file");
+});
+
+test("a oneshot's one criterion is its acceptance check, so a docs oneshot, which qa doesn't walk, is needs-human through criteria_pass alone", () => {
+  const r = ready({ base: { ".factory/touch-rules.json": RULES } });
+  oneshot(r);
+  let d = r.decide();
+  assert.equal(d.decision, "merge", d.reasons.join("; "));
+  assert.equal(d.facts.find((f) => f.name === "criteria_pass").detail, "1 criteria pass");
+  oneshot(r, { type: "docs" });
+  fs.rmSync(path.join(r.s.run_dir, "tickets/01/qa.json"));
+  d = r.decide();
+  assert.deepEqual(failing(d), ["criteria_pass"]);
+  assert.equal(d.reasons[0], "criteria_pass: acceptance=not walked");
+  assert.ok(d.facts.find((f) => f.name === "criteria_pass").evidence.includes(path.join(r.s.run_dir, "triage.md")));
+});
+
+test("on a oneshot, the criteria table and Verify in 2 minutes are rendered from the acceptance check", () => {
+  const r = ready({ base: { ".factory/touch-rules.json": RULES } });
+  oneshot(r);
+  const { pr } = render(r);
+  assert.ok(section(pr, "Success criteria").includes(`| acceptance | ${CHECK} | pass |`), section(pr, "Success criteria"));
+  assert.match(section(pr, "Verify in 2 minutes"), new RegExp(`^1\\. acceptance: open \`/signup\`; ${CHECK.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}$`, "m"));
+  assert.doesNotMatch(pr, /SC-00/);
+  assert.match(pr, new RegExp(`^Spec: \`\\.factory/history/${r.s.id}/triage\\.md\`$`, "m"), "its triage stands in for the spec");
+});
+
 test("migrations need a maintenance run and `run-state approve migrations`, which records who approved", () => {
   const r = ready();
   r.put("touches.json", { touches: r.touches(["migrations"]) });

@@ -91,7 +91,9 @@ The request is a question, or needs no change. No lane branch is made, and the r
 
 ### oneshot
 
-This route isn't built in this version. Write `attention-route.md`, saying triage chose the `oneshot` route and that this version stops after triage, with the options `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, print the attention item and stop.
+The request changes one product file: no research, grill, spec or tickets, and no gate. Everywhere else the run is one ticket, whose one criterion is triage's acceptance check and for which `triage.md` stands in as ticket and spec.
+
+Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/build.md` and do its step 1: a oneshot's lane also writes its one ticket, `tickets/01-<slug>.md`. Then go to step 9 of **build**, which plans, implements, walks, reviews and opens the PR for that ticket as for any other. `run-stage` skips `qa` for a `docs`, `refactor` or `maintenance` type, as for a recipe with no app to walk, and the merge decision is then needs-human. A plan whose status is `reroute` lists more than one product file: step 10 sends the run on the **build** route, at research.
 
 ### build
 

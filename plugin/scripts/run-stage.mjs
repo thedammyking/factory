@@ -16,7 +16,8 @@
 //        SUSPENDED  the child stopped at the usage limit, which costs no round: nothing is judged until it carries on
 //        MERGE      DONE with no concern, and the evidence green at the ticket's HEAD, after qa's walk
 //        QA         for qa:NN, which costs no round: DONE and green, but qa hasn't walked the ticket since this attempt
-//                   (when the recipe has an app with a dev command), or a red only in pinned tests it hasn't ruled on
+//                   (when the recipe has an app with a dev command), or a red only in pinned tests it hasn't ruled on;
+//                   never on a docs, refactor or maintenance oneshot
 //        ROUND      a red introduced or incomplete, a report with no status line (INCOMPLETE), or a concern to fix
 //        AMEND      BLOCKED: bad_plan: the ticket's commits are reset away, and the planner amends the plan, once
 //        RESEARCH   NEEDS_CONTEXT: one researcher dispatch answers its question in tickets/NN/context.md
@@ -64,6 +65,11 @@ const state = () => readJson(ctx.state);
 const say = (word, why) => { console.log(`${word} ${n}: ${why}`); process.exit(0); };
 const die = (msg) => { console.error(`run-stage: ${msg}`); process.exit(2); };
 const head = () => fs.existsSync(wt) ? git(wt, "rev-parse", "HEAD") : null;
+// A docs, refactor or maintenance oneshot has no qa: the recipe's checks are its only proof, and the merge decision
+// needs-human (#24).
+// ponytail: merge-decision's triage.md parse, copied; share it from lib once the parallel edits have landed.
+const triage = (() => { try { return JSON.parse([...fs.readFileSync(path.join(ctx.runDir, "triage.md"), "utf8").matchAll(/```json\s*\n([\s\S]*?)\n```/g)].at(-1)[1]); } catch { return {}; } })();
+const noQa = (s) => s.route === "oneshot" && ["docs", "refactor", "maintenance"].includes(triage.type);
 
 // The implementer's report: its last status line (null when it has none, an INCOMPLETE attempt), cause and concerns.
 function report() {
@@ -84,8 +90,9 @@ function verdict(s) {
     ? ["ATTENTION", "NEEDS_CONTEXT again, after its one researcher dispatch"] : ["RESEARCH", `NEEDS_CONTEXT, so one researcher dispatch answers its question in ${path.join(dir, "context.md")}`];
   const ev = readJson(EVIDENCE), sha = head();
   if (!ev || ev.sha !== sha) return ["ATTENTION", `verify --full left no evidence at the ticket's HEAD ${sha?.slice(0, 7)}`];
-  // qa:NN finished since the latest attempt: it walked the ticket and ruled on the pinned tests that attempt left red
-  const walked = s.dispatches.findLastIndex((d) => d.stage === `qa:${n}`) > s.dispatches.findLastIndex((d) => d.stage === stage) && s.stages_done.includes(`qa:${n}`);
+  // qa:NN finished since the latest attempt: it walked the ticket and ruled on the pinned tests that attempt left red.
+  // Without qa, a red pinned test is a fix round's.
+  const walked = noQa(s) || s.dispatches.findLastIndex((d) => d.stage === `qa:${n}`) > s.dispatches.findLastIndex((d) => d.stage === stage) && s.stages_done.includes(`qa:${n}`);
   if (!ev.green && ev.pinned_only && ev.red_cause === "introduced" && !walked) return ["QA", `verify --full is red only in pinned tests at ${sha.slice(0, 7)}: `
     + `${ev.checks.filter((c) => c.status !== "pass").map((c) => c.check).join(", ")}, so qa rules on them`];
   if (!ev.green) return [["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --full is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`];

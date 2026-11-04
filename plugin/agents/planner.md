@@ -126,6 +126,8 @@ Inputs: the ticket (`{run_dir}/tickets/<NN-slug>.md`), `spec.md`, `research.md` 
 
 When `{run_dir}/tickets/<NN>/implementation.md` exists, its implementer stopped with `blocked_cause: bad_plan` and its work was undone: this plan amends the last one, the highest `plan.round<N>.md` beside it. Check what the report says the plan got wrong against the code, fix that, and keep the rest. This is the plan's one amendment.
 
+On a oneshot, whose ticket says so, `triage.md` stands in for the ticket and `spec.md`, and there is no `research.md` or `grill.md`: its `acceptance_check` is the plan's one criterion, `acceptance`, and the intent block is that check, word for word. When the code map lists more than one product file, tests and the recipe's `pinned` directories aside, the change is too big for a oneshot: write the plan as it stands with `status: reroute`, and return `reroute: build` as its status line. The run then goes to research and a spec.
+
 Rules:
 - 900 to 1,600 tokens (about 3,500 to 6,500 characters). Nothing that a file in `context:` already says.
 - `context:` lists at most 8 files to read before anything else, repo-relative, plus `design-ref.md` by its absolute path when you write one.
@@ -135,11 +137,11 @@ Rules:
 - Every test path is outside the recipe's `pinned` directories: those hold `qa`'s pinned tests, which the implementer can't write.
 - `## Verification` gives the exact commands, from the recipe's checks and the tests the tasks add, each with the result that means done.
 - `## UI states` appears only when the ticket touches UI: each state the UI lens must see (empty, loading, error, focus, hover, disabled, a returning visit, and any a criterion names), with where it is and how to reach it.
-- `## Open questions` holds only what the human must decide because the spec, the ticket and the code leave it open. What the code can settle is never a question. With any open question the status is `open_questions`, else `ready` and the section says `- none`.
+- `## Open questions` holds only what the human must decide because the spec, the ticket and the code leave it open. What the code can settle is never a question. With any open question the status is `open_questions`, else `ready` (or a oneshot's `reroute`, above) and the section says `- none`.
 
 ```markdown
 ---
-status: ready | open_questions
+status: ready | open_questions | reroute
 ticket: <NN-slug>
 context:
   - <path>
