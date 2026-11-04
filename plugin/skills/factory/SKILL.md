@@ -22,7 +22,7 @@ Arguments: `$ARGUMENTS`
 - `retro`: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/retro.md` and follow it. It acts on no run.
 - Anything else is the request for a new run.
 
-When a command names no run, run `run-state status`. If exactly one run is listed, it's that one. If several are, list them and ask which. If none are, say there is no run to act on.
+When a command names no run, run `run-state status`. If exactly one run is listed, it's that one. If several are, ask which (see **Questions**), one option per run, up to four, the newest first and recommended. The human types another's id through Other. If none are, say there is no run to act on.
 
 ## New run
 
@@ -60,9 +60,9 @@ When a command names no run, run `run-state status`. If exactly one run is liste
 Every `run-state dispatch <stage>` that starts a stage (not the `--agent` call that follows it) first measures the run's spend from the session's transcripts and checks its caps. Its output decides what you do:
 
 - A `WARN` line: print it to the human as it is and carry on. The cap stops the run on its own if it's crossed.
-- Exit 4 with `BUDGET <cap> <used>/<limit>: <stage> not dispatched` lines, then the spend by stage: the stage wasn't dispatched. Write `attention-cap.md`: the headline says which caps were crossed; What happened quotes the `BUDGET` lines and names the stage; the evidence is `<run_dir>/state.json`; the recommendation is to split the work or lift the cap; the options are, per crossed cap, `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-state.mjs override <cap> "<reason>" --run <id>` followed by `/factory resume <id>`, and `/factory abandon <id>`. Print it with the spend lines, run `run-state set stage needs-human --run <id>` and the snapshot after it (see **Ending a run**), and stop.
+- Exit 4 with `BUDGET <cap> <used>/<limit>: <stage> not dispatched` lines, then the spend by stage: the stage wasn't dispatched. Write `attention-cap.md`: the headline says which caps were crossed; What happened quotes the `BUDGET` lines and names the stage; the evidence is `<run_dir>/state.json`; the recommendation is to lift the caps, or to abandon the run and split the work when much of it is left; the options are `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-state.mjs override <cap> "<reason>" --run <id>` for every crossed cap, followed by `/factory resume <id>`, as one option, and `/factory abandon <id>`. Print it with the spend lines, run `run-state set stage needs-human --run <id>` and the snapshot after it (see **Ending a run**), and stop.
 
-Only the human lifts a cap. Never run `override` on your own: only when the human tells you in this session to lift a named cap, and then with their reason in their words. A run with an override never ends `delivered`.
+Only the human lifts a cap. Never run `override` on your own: only on the option the human selected, or their words in this session naming the cap, and then with their reason in their words, else `selected at <the attention item's file name>`. A run with an override never ends `delivered`.
 
 ## Routes
 
@@ -72,8 +72,8 @@ The request can't be specified as written. No lane branch is made.
 
 1. Write `attention-hold.md`. Its headline asks for answers, What happened lists triage's `questions`, numbered, and the options are `/factory resume <id>` (answer them, and the run triages again) and `/factory abandon <id>`.
 2. Run `run-state set stage needs-human --run <id>`. When no human is watching, the run ends here.
-3. Put the questions to the human in one message, numbered, and say they can answer here or later with `/factory resume <id>`. End your turn.
-4. When the human answers, go to **Answers**. If they would rather stop, go to **Abandon**.
+3. Ask the questions in one call, in place of the item's own question (see **Questions**), each with 2 to 4 options, the answers that `triage.md` and the request suggest.
+4. With the human's answers, go to **Answers**. If they would rather stop, go to **Abandon**.
 
 ### map
 
@@ -106,10 +106,10 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/build.md` and follow it. I
 
 ## Approve
 
-`/factory approve [run] <decision>`, at the spec gate, the ticket gate or the map gate. Find the run (see above). A run routed `map` is at the map gate: follow **Decisions** in `references/map.md`, whose decisions are `chart`, `run` and `abandon`, and nothing below. Otherwise it is at the ticket gate when its last dispatch in `run-state get` is `tickets`, else at the spec gate. With no decision, or one that isn't `approved`, `revise` or `abandon`, print the options of that gate's attention item and stop. At the spec gate:
+`/factory approve [run] <decision>`, at the spec gate, the ticket gate or the map gate. Find the run (see above). A run routed `map` is at the map gate: follow **Decisions** in `references/map.md`, whose decisions are `chart`, `run` and `abandon`, and nothing below. Otherwise it is at the ticket gate when its last dispatch in `run-state get` is `tickets`, else at the spec gate. With no decision, or one that isn't `approved`, `revise` or `abandon`, ask that gate's question (see **Attention items**). At the spec gate:
 
 - `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop; otherwise do the **Notion push** first. Then go to step 7 of **build**.
-- `revise`: `run-state approve spec revise --run <id>`; if it refuses, print why and stop. Ask in plain chat what should change, append the answer to `grill.md` under `### Session <today's date> (revise)` as `- Q: What should change? → A: <their words>`, then go to step 4 of **build**.
+- `revise`: `run-state approve spec revise --run <id>`; if it refuses, print why and stop. What should change is in their notes or Other answer at the gate, else ask it in plain chat. Append the answer to `grill.md` under `### Session <today's date> (revise)` as `- Q: What should change? → A: <their words>`, then go to step 4 of **build**.
 - `abandon`: the decision is the human's answer, so don't ask again. Run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.
 
 At the ticket gate the same decisions run `run-state approve tickets <decision> --run <id>`: `approved` goes on to step 9 of **build** (a refusal is printed, and only a revise fixes it), and `revise` records the change as above under `### Session <today's date> (tickets revise)`, then goes to step 7.
@@ -122,9 +122,20 @@ Every `run-state approve spec approved` that succeeds is followed at once by `ru
 
 Append the human's answers to `<run_dir>/clarifications.md` under a `## <today's date>` heading, as `- Q: …` lines each followed by an indented `A: …`, keeping their words. Then go to **Triage**.
 
+## Questions
+
+Every decision you put to the human, in this skill and its references, is asked with `AskUserQuestion`, one to four questions a call, each header at most 12 characters. The grill and the builder check ask as steps 3 and 5 of **build** say.
+
+- Each question has 2 to 4 options, the recommended one first with ` (Recommended)` after its label. Each option's description says what it does, its benefit and its trade-off. The human can type their own answer through Other, or add notes to an option.
+- A decision with one real option isn't asked: say what you're doing and do it. A stop with one option is the human's to take, not yours (see **Attention items**).
+- Act on the selected option yourself, at once: a `/factory …` option as though the human had typed it, without asking again, and any other command by running it. An option the human takes themselves, a link or one the item says they do by hand or yourself, ends your turn.
+- An Other answer that plainly picks an option is that option. One that doesn't, or an option that needs the human's words taken without them, is asked again, unless the step takes the human's own words as the answer.
+- A question that closes with the human away decides nothing: end your turn. `/factory resume` asks it again.
+- With no `AskUserQuestion` among your tools, as in an unattended `claude -p` run, nothing is asked: a step takes its answers from `grill-answers.md` where it says so, and a stop prints its attention item and ends there, as its step says.
+
 ## Attention items
 
-Every stop writes one attention item, `<run_dir>/attention-<name>.md`, with the name each step gives. It has this shape and no other:
+Every stop writes one attention item, `<run_dir>/attention-<name>.md`, with the name each step gives, as the record of its decision. Wherever a step prints one and stops, put it to the human first (see **Questions**): its headline is the question and its options are the question's, the one its recommendation names first, unless the step asks its own questions in their place. A stop with one option asks nothing: say the run waits on the human, who can take it, and end your turn. The item has this shape and no other, its recommended option listed first:
 
 ```markdown
 # <one line: what the human needs to decide>
@@ -138,10 +149,10 @@ Run `<id>`, stage `<stage>`.
 - `<path of each file that shows it>`
 
 ## Recommendation
-<one sentence>
+<one or two sentences: the option to take, its benefit and its trade-off>
 
 ## Options
-- `<a runnable command>`: <what it does>
+- `<a runnable command>`: <what it does, its benefit and its trade-off>
 ```
 
 ## Ending a run
@@ -158,8 +169,8 @@ When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_RO
 
 1. Find the run (see above) and read its state with `run-state get --run <id>`. If it says the run has ended, or its stage is `delivered`, `abandoned`, `answered` or `charted`, say so and stop: an ended run can't be resumed, and a follow-up is a new `/factory` request in the human's own words.
 2. Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/resume.md` and follow it: it reconciles the run from disk and continues what was cut off, and comes back to step 3 when the run waits on an attention item.
-3. If its route is `hold`, put triage's `questions` (from `<run_dir>/triage.md`) to the human, then go to **Answers** with their reply. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names (for `implement:<NN>`, of `references/implement.md`; for `qa:<NN>`, of `references/qa.md`; for `ci-fix`, of `references/ci.md`). The dispatch refuses again while a cap is still crossed. If that item quotes `ESCALATE <loop>: rounds …`, go back to the loop's `round` (`ROUND` in `references/implement.md`, step 5 of `references/review.md`, step 2 of `references/ci.md`), which escalates again unless the human lifted the cap. If it is `attention-plan-<NN>.md`, put its questions to the human and go on as step 10 of **build** does with their answers. If `<run_dir>/pr.json` exists, the human may have reviewed the PR: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/comments.md` and follow it. If it is `attention-pr.md` with no PR, go to step 1 of `references/pr.md`. Otherwise, print the run's attention item: there is nothing more to resume in this version.
+3. If its route is `hold`, ask triage's `questions` (from `<run_dir>/triage.md`) as step 3 of **hold** does, then go to **Answers** with their answers. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names (for `implement:<NN>`, of `references/implement.md`; for `qa:<NN>`, of `references/qa.md`; for `ci-fix`, of `references/ci.md`). The dispatch refuses again while a cap is still crossed. If that item quotes `ESCALATE <loop>: rounds …`, go back to the loop's `round` (`ROUND` in `references/implement.md`, step 5 of `references/review.md`, step 2 of `references/ci.md`), which escalates again unless the human lifted the cap. If it is `attention-plan-<NN>.md`, ask its questions and go on with their answers, as step 10 of **build** does. If `<run_dir>/pr.json` exists, the human may have reviewed the PR: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/comments.md` and follow it. If it is `attention-pr.md` with no PR, go to step 1 of `references/pr.md`. Otherwise, print the run's newest attention item and ask its question again (see **Attention items**).
 
 ## Abandon
 
-`/factory abandon [run]`: find the run and show its `run-state status` line. Ask `Abandon <id>? Its branch is kept.` Only on a yes, run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.
+`/factory abandon [run]`: find the run and show its `run-state status` line. Ask `Abandon <id>? Its branch is kept.`, with Abandon (Recommended) and Keep it. Only on Abandon, run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.

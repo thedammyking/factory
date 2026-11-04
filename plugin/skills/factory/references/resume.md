@@ -4,7 +4,7 @@ The factory skill reads this at step 2 of **Resume**. `run-state reconcile` puts
 
 1. Run `run-state reconcile --run <id>` with Bash's `run_in_background`, since it runs the fast checks: `Reconciling <id>.` End your turn. When the completion notification wakes you, read the background task's output and ignore the notification's own text.
 2. If it exited 6, it changed nothing:
-   - `OWNED` lines: another session owns the run. Print them and ask `Take <id> over from session <session>? Only if that session is gone.` On a yes, run `run-state reconcile --take-over --run <id>` as step 1 does and go on with its output. Otherwise stop.
+   - `OWNED` lines: another session owns the run. Print them and ask `Take <id> over from session <session>?`, with Leave it (Recommended), since two sessions must never drive one run, and Take it over, only if that session is gone. On Take it over, run `run-state reconcile --take-over --run <id>` as step 1 does and go on with its output. Otherwise stop.
    - `WORKING` lines: the review fix's implementer child still runs. Say so and stop: the human resumes again once it has finished.
 3. Print its `WORKING`, `salvaged` and `verify fast` lines. A `WORKING implement:<NN>` line's ticket is left as it is: its child still runs in the ticket's worktree, so never continue that ticket or take its `STARTED` line below; the human resumes again once it has finished. Never run a stage on its `done:` line again. Continue each `CONTINUE <stage> from <sha>: <how>` line, then carry on from that stage's step as its notification would:
    - `implement:<NN>`: step 1 of `references/implement.md` for ticket `<NN>`. run-stage resumes the child's session, or starts a fresh child pointed at the git log since `<sha>` and at its report.
