@@ -6,7 +6,8 @@
 //                facts a needs-human decision failed), the findings, the security capabilities, each implementer's
 //                assumptions and assessment verbatim, up to six captures, the pinned tests qa superseded or repaired,
 //                the spec's Anti-goals, the Spec line (the Notion page in its frontmatter, else where the snapshot puts
-//                it, or a oneshot's triage.md) and Verify in 2 minutes: the local commands, then a step per criterion
+//                it, or a oneshot's triage.md), the request issue's closing reference (Closes #12, Fixes ENG-123) for
+//                the tracker's own GitHub link, and Verify in 2 minutes: the local commands, then a step per criterion
 //                opening its route, a bare path and never the path half of a URL (design fix 26).
 //   comment.md   the decision comment, when there is one: "Merged at <sha>" with --merged, "Would merge (trial)" for a
 //                merge decision, the attention item for a needs-human one (written as attention-merge.md too), and the
@@ -104,7 +105,7 @@ ${list(rulings)}
 ${section("Anti-goals") || "- none in the spec"}
 
 Spec: ${notion ?? `\`${history}/${oneshot ? "triage" : "spec"}.md\``}
-
+${s.request_issue?.closing ? `\n${s.request_issue.closing}\n` : ""}
 ## Verify in 2 minutes
 Locally:
 

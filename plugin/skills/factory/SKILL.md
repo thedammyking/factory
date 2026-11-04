@@ -25,7 +25,7 @@ When a command names no run, run `run-state status`. If exactly one run is liste
 
 ## New run
 
-1. Start the run. Pass the request exactly as given, on stdin through a quoted heredoc, so no shell parses it. If a line of the request is exactly `FACTORY_REQUEST`, pick another delimiter that no line of it matches.
+1. Start the run. When `tracker` in `.factory/config.json` isn't `local`, see **Request issue** first: a request that is an issue's reference starts from that issue. Otherwise pass the request exactly as given, on stdin through a quoted heredoc, so no shell parses it. If a line of the request is exactly `FACTORY_REQUEST`, pick another delimiter that no line of it matches.
 
    ```bash
    node ${CLAUDE_PLUGIN_ROOT}/scripts/run-state.mjs init <<'FACTORY_REQUEST'
@@ -144,7 +144,11 @@ Run `<id>`, stage `<stage>`.
 
 ## Ending a run
 
-Every `run-state set stage <outcome>` and every `run-state abandon` is followed at once by `run-state snapshot --run <id>`, before anything is printed. The snapshot checks the run's files for credentials from the env files, commits them to `.factory/history/<id>/` on the base branch, and removes the worktree of a run that has finished. If it exits 1, it has committed nothing, ended the run `needs-human` and printed `needs-human: <path>`: print the attention item at that path too. When `set stage failed` says the stage stopped at the usage limit, the run is `suspended`: say so, with `/factory resume <id>` for once the limit resets.
+Every `run-state set stage <outcome>` and every `run-state abandon` is followed at once by `run-state snapshot --run <id>`, before anything is printed. The snapshot checks the run's files for credentials from the env files, commits them to `.factory/history/<id>/` on the base branch, and removes the worktree of a run that has finished. If it exits 1, it has committed nothing, ended the run `needs-human` and printed `needs-human: <path>`: print the attention item at that path too. When `set stage failed` says the stage stopped at the usage limit, the run is `suspended`: say so, with `/factory resume <id>` for once the limit resets. When the snapshot exits 0 on a run with a request issue, the closing steps of **Request issue** follow at once.
+
+## Request issue
+
+When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/tracker.md` and follow it: its **Start** for a new run's request, its **Claim** after every `run-state lane` that exits 0 and on every resume, and its **Closing** after the snapshot that ends a run. Whenever one of them is due, read that file first if it isn't already in this session.
 
 ## Resume
 

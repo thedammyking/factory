@@ -19,7 +19,8 @@
 //                                              With semgrep on, it proves the project rules too, as `semgrep`.
 //   setup-factory.mjs set <field> [<value>]  -> sets one field of the proposal to the value, or to stdin without one;
 //                                              null drops the field. notion_parent takes a Notion page's URL and keeps its
-//                                              ID, setting docs notion, or null for docs repo
+//                                              ID, setting docs notion, or null for docs repo. tracker_doc takes the other
+//                                              tracker's run operations, which apply writes into .factory/tracker.md
 //   setup-factory.mjs apply [--tracker <t>] [--dry-run] -> --dry-run prints the proposal: every detected value with its
 //                                              source, guesses marked, and each file's diff. Without it, refuses a command
 //                                              that wasn't proven, then writes .factory/, the .gitignore entries and the
@@ -68,7 +69,10 @@ const AUTH = [
 // config.security name -> the binary that makes it installed; audit is the package manager's and always on
 const SCANNERS = [["gitleaks", "gitleaks"], ["audit", null], ["osv", "osv-scanner"], ["semgrep", "semgrep"]];
 const PREFIXES = { feature: "feature/", bugfix: "bugfix/", hotfix: "hotfix/" };
-const TRACKERS = ["github", "linear", "local"];
+const TRACKERS = ["github", "linear", "local", "other"];
+// other's tracker doc: the run operations the human described, under the heading a run follows
+const TRACKER_DOC = (ops) => "# Tracker\n\nThis project's own tracker, as described at setup. A run started from one of its issues follows **Run operations**, "
+  + "as the factory skill's `references/tracker.md` says; an operation not described here is skipped.\n\n## Run operations\n\n" + ops.trim() + "\n";
 const PLAYWRIGHT = ["@playwright/test", "@axe-core/playwright"];
 const ADD = { npm: ["install", "-D"], pnpm: ["add", "-D"], yarn: ["add", "-D"], bun: ["add", "-d"] };
 const EXEC = { npm: ["npx"], pnpm: ["pnpm", "exec"], yarn: ["yarn"], bun: ["bunx"] };
@@ -426,6 +430,7 @@ function plan(P, tracker) {
     [".factory/log.md", now(".factory/log.md") ?? "# Log\n"],
     [".factory/lessons.md", now(".factory/lessons.md") ?? "# Lessons\n"],
     ...(semgrepOn(P) ? [[SEMGREP, now(SEMGREP) ?? template("semgrep/starter.yaml")]] : []),
+    ...(tracker === "other" ? [[".factory/tracker.md", P.tracker_doc ? TRACKER_DOC(P.tracker_doc) : now(".factory/tracker.md")]] : []),
     [".gitignore", missing.length ? `${ignore}${ignore && !ignore.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n` : ignore],
     ["CLAUDE.md", !claude ? block : marked.test(claude) ? claude.replace(marked, () => block) : `${claude}${claude.endsWith("\n") ? "" : "\n"}\n${block}`],
   ].map(([f, after]) => [f, now(f), after]);
@@ -611,6 +616,8 @@ switch (cmd) {
     // a field as the proposal's table names it: apps.<name>.…, pinned, preview.… and env.… are the recipe's, branching.… and
     // the like the config's
     if (keys[0] === "tracker") die("the tracker is apply's --tracker");
+    // A. Tracker: other's run operations, as the human described them, which apply writes into .factory/tracker.md
+    if (field === "tracker_doc") { P.tracker_doc = raw; save(P); console.log("set tracker_doc"); break; }
     // B. Specs: a parent page's URL sends approved specs to Notion (docs notion) under that page's ID; null keeps them in
     // the repo alone (docs repo)
     if (field === "notion_parent") {
@@ -642,6 +649,7 @@ switch (cmd) {
   case "apply": {
     const P = loadProposal(), tracker = arg("--tracker", P.tracker, argv);
     if (!TRACKERS.includes(tracker)) die(`--tracker is one of ${TRACKERS.join(" | ")}`);
+    if (tracker === "other" && !P.tracker_doc && !exists(P.root, ".factory/tracker.md")) die("describe the tracker first: setup-factory.mjs set tracker_doc, its run operations on stdin");
     const files = plan(P, tracker);
     if (argv.includes("--dry-run")) { printProposal(P, tracker, files); break; }
     const unproven = commands(P.recipe).filter(([key, command]) => !proven(P, key, command));

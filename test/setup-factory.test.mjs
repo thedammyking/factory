@@ -380,6 +380,25 @@ test("apply writes .factory/, the gitignore entries and the CLAUDE.md block, not
   assert.deepEqual(tree(p), before, "a re-run with nothing new");
 });
 
+test("section A: `other` writes the run operations the human described into .factory/tracker.md, and is refused without them", () => {
+  const p = shop();
+  const f = fakes();
+  setUp(p, f);
+  const bare = run(p, f, ["apply", "--tracker", "other"]);
+  assert.equal(bare.status, 2);
+  assert.match(bare.stderr, /describe the tracker first: setup-factory\.mjs set tracker_doc/);
+  untouched(p);
+  const ops = "- **Read a reference**: `PROJ-12`; `jira issue view PROJ-12 --plain`, its summary and description.\n- **Comment**: `jira issue comment add PROJ-12 \"<the text>\"`.\n";
+  assert.equal(run(p, f, ["set", "tracker_doc"], ops).status, 0);
+  apply(p, f, ["--tracker", "other"]);
+  assert.equal(JSON.parse(read(p, ".factory/config.json")).tracker, "other");
+  const doc = read(p, ".factory/tracker.md");
+  assert.match(doc, /^# Tracker\n/);
+  assert.ok(doc.endsWith(`## Run operations\n\n${ops}`), doc);
+  setUp(p, f);
+  assert.match(apply(p, f, ["--tracker", "other"]), /nothing to write/, "a re-run keeps the described tracker");
+});
+
 const write = (p, f, body) => {
   fs.mkdirSync(path.dirname(path.join(p.dir, f)), { recursive: true });
   fs.writeFileSync(path.join(p.dir, f), typeof body === "string" ? body : json(body));
