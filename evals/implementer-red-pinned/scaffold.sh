@@ -1,4 +1,11 @@
 set -e
+# On macOS the eval sandbox can't run /usr/bin/git, an xcrun stub whose cache lies outside it, and the
+# agent's shell picks that stub. Point the shell at the real binary, in the eval run's own home only.
+case "$HOME" in */e-*/home)
+  if [ "$PWD" = "$HOME/cwd" ] && command -v xcrun >/dev/null; then
+    printf 'git() { "%s" "$@"; }\n' "$(xcrun -f git)" | tee -a "$HOME/.zshenv" >> "$HOME/.bashrc"
+  fi ;;
+esac
 git init -q -b main
 git config user.name eval
 git config user.email eval@example.com

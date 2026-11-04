@@ -1,5 +1,5 @@
 ---
-description: Captures whose heading runs past the right edge at 390 px get a UI finding at a 390 px capture, past check 0.
+description: Captures whose heading runs past the right edge at 390 px get a P0 or P1 UI finding that names a 390 px capture, past check 0.
 max_turns: 10
 timeout_seconds: 900
 allowed_tools: [Agent]
