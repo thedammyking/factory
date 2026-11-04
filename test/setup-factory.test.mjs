@@ -444,6 +444,20 @@ test("a re-run takes the kept values as defaults, fills only what's missing and 
   assert.equal(read(p, ".factory/index.md"), index, "a memory file is never rewritten");
 });
 
+test("apply records the package manager in the recipe, and a re-run keeps it and leads with it, though a lockfile now names another", () => {
+  const p = shop({ files: { "package.json": json({ name: "lib", scripts: { test: script("0") } }) } });
+  const f = fakes();
+  setUp(p, f);
+  apply(p, f);
+  assert.equal(JSON.parse(read(p, ".factory/setup.json")).package_manager, "npm");
+  const before = tree(p);
+  write(p, "pnpm-lock.yaml", "lockfileVersion: '9.0'\n");
+  const d = setUp(p, f);
+  assert.deepEqual([d.package_manager, source(d, "package_manager").source, d.disagreements], ["npm", ".factory/setup.json", []]);
+  assert.match(apply(p, f), /nothing to write/);
+  assert.deepEqual(tree(p), { ...before, "pnpm-lock.yaml": tree(p)["pnpm-lock.yaml"] }, "the recipe, CLAUDE.md and the rest as they were");
+});
+
 test("apply adds @playwright/test and @axe-core/playwright as dev dependencies, with Chromium, to a web app lacking them", () => {
   const site = { "package.json": json({ name: "site", scripts: { test: "vitest run" }, dependencies: { next: "15.0.0" } }), "pnpm-lock.yaml": "lockfileVersion: '9.0'\n", "next.config.js": "module.exports = {};\n" };
   const p = shop({ files: site });

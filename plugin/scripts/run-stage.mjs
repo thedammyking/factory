@@ -58,9 +58,33 @@ const wt = ticketWorktree(ctx.MAIN, ctx.id, n), branch = ticketBranch(ctx.id, n)
 const IMPL = path.join(dir, "implementation.md"), EVIDENCE = path.join(dir, "evidence.json");
 // the child's --max-turns: the implementer's own maxTurns
 const MAX_TURNS = fs.readFileSync(path.join(PLUGIN, "agents", "implementer.md"), "utf8").match(/^maxTurns:[ \t]*(\d+)/m)[1];
-const INSTALL = { npm: ["ci", "install"], pnpm: ["install", "add"], yarn: ["install", "add"], bun: ["install", "add"] };  // a package manager's install and add
+// A package manager's install, ci, add, remove, run, test, exec, create and dlx as it names them, and its runner: npm's
+// add is install, its remove uninstall and its dlx npx.
+const PM = {
+  npm: ["npm ci", "npm install", "npm uninstall", "npm run", "npm test", "npm exec", "npm create", "npx"],
+  pnpm: ["pnpm install", "pnpm add", "pnpm remove", "pnpm run", "pnpm test", "pnpm exec", "pnpm create", "pnpm dlx"],
+  yarn: ["yarn install", "yarn add", "yarn remove", "yarn run", "yarn test", "yarn exec", "yarn create", "yarn dlx"],
+  bun: ["bun install", "bun add", "bun remove", "bun run", "bun test", "bun create", "bun x", "bunx"],
+};
 // git as the implementer uses it: never push, fetch, rebase or switch branches
 const GIT = ["status", "diff", "log", "show", "add", "rm", "mv", "restore", "commit"];
+// What the implementer child may run: each check's program, git as it needs it, the package manager's commands, node,
+// verify and each rule the human allowed. A check run through a package manager is its run or test rule, never the
+// package manager whole, which would allow publish. It's read from the run worktree's recipe, so a recipe change on
+// the run branch reaches a ticket cut before it. Reads and edits in its worktree and the run dir need no rule under
+// acceptEdits.
+// ponytail: a check's program is its first word, so a check written `cd web && make lint` allows only cd.
+function allowlist() {
+  const recipe = readJson(path.join(ctx.worktree, ".factory", "setup.json"), {});
+  const program = (c) => String(c ?? "").trim().split(/\s+/).find((w) => !/^[A-Za-z_]\w*=/.test(w));  // past any NAME=value
+  const programs = (recipe.apps || []).flatMap((a) => Object.values(a.checks || {}).map((c) => program(typeof c === "string" ? c : c?.cmd))).filter(Boolean);
+  // a recipe from before setup recorded its package manager names it in a check or its setup
+  const pm = recipe.package_manager ?? [...programs, program(recipe.setup)].find((p) => PM[p]);
+  // the Skill rule asks first, and a plan with UI states loads that skill
+  return [...new Set([...programs.filter((p) => !PM[p]).map((p) => `Bash(${p}:*)`), ...GIT.map((c) => `Bash(git ${c}:*)`),
+    ...(PM[pm] || []).map((c) => `Bash(${c}:*)`), "Bash(node:*)", `Bash(node ${path.join(HERE, "verify.mjs")}:*)`,
+    "Skill(factory:ui-craft)", ...(recipe.allow || [])])];
+}
 const config = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {});
 const node = (script, args, opts) => spawnSync(process.execPath, [path.join(HERE, script), ...args], { encoding: "utf8", ...opts });
 const runState = (...args) => node("run-state.mjs", [...args, "--run", ctx.id]);
@@ -173,15 +197,8 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   process.stdout.write(d.stdout);
   if (d.status) { process.stderr.write(d.stderr); process.exit(d.status); }
   const from = state().dispatches.at(-1).sha;
-  // The same flags as a ticket's child (below), from the run worktree's recipe.
-  // ponytail: the allowlist, the spawn and the denials copy the implement path's; share them once run-stage's parallel
-  // edits have landed.
-  const recipe = readJson(path.join(ctx.worktree, ".factory", "setup.json"), {});
-  const program = (c) => String(c ?? "").trim().split(/\s+/).find((w) => !/^[A-Za-z_]\w*=/.test(w));
-  const programs = (recipe.apps || []).flatMap((a) => Object.values(a.checks || {}).map((c) => program(typeof c === "string" ? c : c?.cmd))).filter(Boolean);
-  const allowed = [...new Set([...programs.map((p) => `Bash(${p}:*)`), ...GIT.map((c) => `Bash(git ${c}:*)`),
-    ...[...programs, program(recipe.setup)].filter((p) => INSTALL[p]).flatMap((p) => INSTALL[p].map((c) => `Bash(${p} ${c}:*)`)),
-    `Bash(node ${path.join(HERE, "verify.mjs")}:*)`, "Skill(factory:ui-craft)"])];
+  // The same flags as a ticket's child (below).
+  // ponytail: the spawn and the denials copy the implement path's; share them once run-stage's parallel edits have landed.
   const again = moved ? ` Then write ${REPORT} again from the top: the last one is now ${moved}.` : "";
   const message = review ? (last ? `${red || ""}The review left open what ${FIXES} now lists: fix each finding there.${again}` : "The run's review found what the plan lists. Fix each finding, and nothing else.")
     : last ? `${red || ""}CI is still red, as ${FIXES} now says: fix it.${again}` : "CI on the run's PR is red where the plan says. Fix that, and nothing else.";
@@ -189,7 +206,7 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   fs.mkdirSync(path.dirname(log), { recursive: true });
   const fd = fs.openSync(log, "w");
   const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", config.models?.implement || "sonnet", "--max-turns", String(MAX_TURNS),
-    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowed.join(","), "--strict-mcp-config",
+    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), "--strict-mcp-config",
     "--add-dir", ctx.runDir, "--output-format", "stream-json", "--verbose", ...(last ? ["--resume", session] : ["--session-id", session])],
     { cwd: ctx.worktree, stdio: ["pipe", fd, fd], env: { ...process.env, FACTORY_CHILD: "1" } });
   fs.closeSync(fd);
@@ -262,17 +279,6 @@ if (!fs.existsSync(wt)) {
   }
 }
 
-// The child may run each check's program, git as it needs it, the package manager's install and add, and verify. Reads
-// and edits in its worktree and the run dir need no rule under acceptEdits.
-// ponytail: a check's program is its first word, so a check written `cd web && pnpm lint` allows only cd and names no
-// package manager; read the package manager from the recipe once setup records it.
-const recipe = readJson(path.join(wt, ".factory", "setup.json"), {});
-const program = (c) => String(c ?? "").trim().split(/\s+/).find((w) => !/^[A-Za-z_]\w*=/.test(w));  // past any NAME=value
-const programs = (recipe.apps || []).flatMap((a) => Object.values(a.checks || {}).map((c) => program(typeof c === "string" ? c : c?.cmd))).filter(Boolean);
-const allowed = [...new Set([...programs.map((p) => `Bash(${p}:*)`), ...GIT.map((c) => `Bash(git ${c}:*)`),
-  ...[...programs, program(recipe.setup)].filter((p) => INSTALL[p]).flatMap((p) => INSTALL[p].map((c) => `Bash(${p} ${c}:*)`)),
-  `Bash(node ${path.join(HERE, "verify.mjs")}:*)`, "Skill(factory:ui-craft)"])];  // Skill asks first, and a plan with UI states loads this one
-
 // What the child is told: the plan for a fresh child, else what its last attempt left to do.
 function message() {
   const again = moved ? ` Then write ${IMPL} again from the top: the last one is now ${moved}.` : "";
@@ -298,7 +304,7 @@ const log = path.join(ctx.runDir, "logs", `implement-${n}.${attempts + 1}.jsonl`
 fs.mkdirSync(path.dirname(log), { recursive: true });
 const fd = fs.openSync(log, "w");
 const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", model, "--max-turns", String(MAX_TURNS),
-  "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowed.join(","), "--strict-mcp-config",
+  "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), "--strict-mcp-config",
   "--add-dir", ctx.runDir, "--output-format", "stream-json", "--verbose", ...(fresh ? ["--session-id", session] : ["--resume", session])],
   { cwd: wt, stdio: ["pipe", fd, fd], env: { ...process.env, FACTORY_CHILD: "1" } });
 fs.closeSync(fd);

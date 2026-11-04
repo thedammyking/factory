@@ -239,8 +239,10 @@ function detect(root, repo, mcp) {
   const add = (field, value, source, guess = false) => sources.push({ field, value, source, guess });
   const pkg = readJson(path.join(root, "package.json"), {});
   const lock = LOCKS.find(([f]) => exists(root, f)), declared = pkg.packageManager?.split("@")[0];
-  const pm = lock?.[1] || (ADD[declared] ? declared : "npm");
-  add("package_manager", pm, lock?.[0] || (ADD[declared] ? "package.json packageManager" : "default"));
+  // the recipe's package manager leads on a re-run, as the kept tracker does
+  const held = kept(root, ".factory/setup.json").package_manager;
+  const pm = ADD[held] ? held : lock?.[1] || (ADD[declared] ? declared : "npm");
+  add("package_manager", pm, ADD[held] ? ".factory/setup.json" : lock?.[0] || (ADD[declared] ? "package.json packageManager" : "default"));
   // an app is named for its directory (the package, at the root), or for its whole path when another directory shares the name
   const dirs = workspaceDirs(root, pkg), base = (d) => path.posix.basename(d);
   const nameOf = (d) => d === "." ? pkg.name?.split("/").pop() || path.basename(root)
@@ -299,7 +301,7 @@ function detect(root, repo, mcp) {
   const recipe = {
     apps: [...keptApps.map((a) => merge(a, apps.find((x) => x.name === a.name), `apps.${a.name}`, disagreements, false)), ...apps.filter(isNew)],
     pinned,
-    ...merge(keptRest, { preview }, "", disagreements),
+    ...merge(keptRest, { preview, package_manager: pm }, "", disagreements),
   };
   const names = envNames(root, recipe);
   for (const [name, { purpose, file }] of Object.entries(names)) add(`env.${name}`, purpose, file);

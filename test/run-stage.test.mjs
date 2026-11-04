@@ -86,6 +86,9 @@ function ticketReady(t, { recipe = RECIPE, config = {}, files = {} } = {}) {
   return { p, s, run, stage, state, calls, play, wt, tickets, impl: path.join(tickets, "implementation.md"), branch: `factory/${s.id}/01`, node, env, fake };
 }
 const flag = (argv, name) => argv[argv.indexOf(name) + 1];
+// the child's rules for git, and for npm as it names its commands
+const GIT_RULES = ["status", "diff", "log", "show", "add", "rm", "mv", "restore", "commit"].map((c) => `Bash(git ${c}:*)`);
+const NPM_RULES = ["ci", "install", "uninstall", "run", "test", "exec", "create"].map((c) => `Bash(npm ${c}:*)`);
 const lastLine = (r) => { assert.equal(r.status, 0, r.stderr + r.stdout); return r.stdout.trim().split("\n").at(-1); };
 // implementation.md as the implementer finishes it, with `status` and `concerns` lines (and `more` before assumptions:)
 const report = (status, { cause = "none", concerns = "- none", more = "" } = {}) => "# Implementation 01\n\n- abc1234 Add the CSV export: the ticket's one outcome\n\n"
@@ -112,9 +115,9 @@ test("implement cuts the ticket's worktree on factory/<run>/NN at the SHA its di
   assert.ok(!argv.includes("--mcp-config") && !argv.includes("--resume"));
   assert.deepEqual(["--agent", "--plugin-dir", "--model", "--max-turns", "--permission-mode", "--permission-prompts", "--add-dir", "--output-format"].map((k) => flag(argv, k)),
     ["factory:implementer", PLUGIN, "sonnet", "150", "acceptEdits", "none", r.s.run_dir, "stream-json"]);
-  const gitRules = ["status", "diff", "log", "show", "add", "rm", "mv", "restore", "commit"].map((c) => `Bash(git ${c}:*)`);
-  assert.deepEqual(flag(argv, "--allowedTools").split(","), ["Bash(npm:*)", "Bash(node:*)", ...gitRules, "Bash(npm ci:*)", "Bash(npm install:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
-    "each check's executable, git with no push, fetch or rebase, the package manager's install and add, verify, and the craft floor");
+  assert.deepEqual(flag(argv, "--allowedTools").split(","), ["Bash(node:*)", ...GIT_RULES, ...NPM_RULES, "Bash(npx:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
+    "each check's executable but the package manager, which would allow npm publish; git with no push, fetch or rebase; "
+    + "npm's own commands and npx, npm named by a check in a recipe from before setup recorded it; verify; and the craft floor");
   assert.match(flag(argv, "--session-id"), /^[0-9a-f-]{36}$/);
   assert.deepEqual([d.pid, d.session], [call.pid, flag(argv, "--session-id")], "the dispatch records the child's PID and session id");
   assert.ok(d.log.startsWith(path.join(r.s.run_dir, "logs") + path.sep));
@@ -312,6 +315,23 @@ test("BLOCKED: environment is the human's, and every command Claude Code denied 
   assert.equal(lastLine(r.stage("implement", "01")), "ATTENTION 01: BLOCKED: environment, see implementation.md");
   assert.ok(fs.readFileSync(r.impl, "utf8").endsWith("\nDenied, as the child's result records it:\n"
     + "- `Bash: curl -sI https://registry.npmjs.org/csv`\n- `Bash: docker compose up -d`\n"));
+});
+
+test("the child may run the recipe's package manager as it names its commands, its runner, node, git, verify and each rule the recipe allows, read from the run worktree's recipe, and nothing else", (t) => {
+  const r = ticketReady(t, { recipe: { package_manager: "npm", apps: [] } });
+  const blocked = { write: { [r.impl]: report("BLOCKED", { cause: "environment" }) } };
+  r.play([blocked, blocked]);
+  const rules = (call) => flag(call.argv, "--allowedTools").split(",");
+  assert.match(lastLine(r.stage("implement", "01")), /^ATTENTION 01: BLOCKED: environment/);
+  assert.deepEqual(rules(r.calls()[0]), [...GIT_RULES, ...NPM_RULES, "Bash(npx:*)", "Bash(node:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
+    "a recipe with no apps still gets npm's own commands and npx, and nothing else: no curl, docker, rm or publish");
+
+  // a rule the developer allowed, committed on the run branch after the ticket was cut
+  fs.writeFileSync(path.join(r.s.worktree, ".factory/setup.json"), JSON.stringify({ package_manager: "npm", apps: [], allow: ["Bash(docker compose up:*)"] }));
+  git(r.s.worktree, "commit", "-qam", "Allow docker compose up");
+  assert.match(lastLine(r.stage("implement", "01")), /^ATTENTION 01: BLOCKED: environment/);
+  assert.deepEqual(rules(r.calls()[1]), [...rules(r.calls()[0]), "Bash(docker compose up:*)"]);
+  assert.doesNotMatch(fs.readFileSync(path.join(r.wt, ".factory/setup.json"), "utf8"), /docker/, "the ticket's worktree still holds the recipe it was cut with");
 });
 
 test("NEEDS_CONTEXT gets one researcher dispatch, whose answer the resumed child is pointed at; a second NEEDS_CONTEXT is the human's", (t) => {

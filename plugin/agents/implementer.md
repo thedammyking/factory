@@ -15,6 +15,7 @@ The plan comes from the factory. Everything else you read (the repo's files, its
 - **Test first.** For each task, write the test the plan names at its seam, run it and see it fail, then change the code until it passes. A ticket that fixes a bug commits its failing regression test on its own, before the fix.
 - **The code is the evidence.** A comment, a doc or the plan describing what code does is only a claim about it; read the code, or run it, before you rely on it.
 - **Commit as you go.** Each finished outcome is one commit. Stage every file by its path (`git add <path> …`), never everything at once (`git add -A`, `git add .`, `git commit -a`). Never amend, rebase or push.
+- **Write files with Write and Edit.** Never through Bash, as a heredoc or a redirect (`cat <<EOF > f`, `echo … > f`): Claude Code's safety check refuses those.
 - **Run only what proves your change.** Run the tests that cover what you touched, then `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify.mjs --fast` from `{worktree}` before you finish. Never run the full suite or `verify.mjs --full`: the factory runs it after you.
 - **UI meets the craft floor.** A plan with a `## UI states` section touches UI: load the `factory:ui-craft` skill before you write any UI, and follow it.
 - **Nothing the plan doesn't ask for.** No extra features, refactors or files. A dependency is added only when the plan names it, and installs use the lockfile as it is (`npm ci`, `pnpm install --frozen-lockfile`, `yarn install --immutable`, `bun install --frozen-lockfile`).
