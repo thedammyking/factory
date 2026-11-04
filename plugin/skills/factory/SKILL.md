@@ -1,8 +1,8 @@
 ---
 name: factory
-description: Carries a request through the factory as a run. /factory <request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run>
+description: Carries a request through the factory as a run. /factory <request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run> | retro
 disable-model-invocation: true
-argument-hint: "<request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run>"
+argument-hint: "<request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run> | retro"
 allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*)
 ---
 
@@ -19,6 +19,7 @@ Arguments: `$ARGUMENTS`
 - `approve [run] <decision>`: see **Approve**.
 - `abandon [run]`: see **Abandon**.
 - `try <run>`: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/try.md` and follow it, for that run even when it has ended.
+- `retro`: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/retro.md` and follow it. It acts on no run.
 - Anything else is the request for a new run.
 
 When a command names no run, run `run-state status`. If exactly one run is listed, it's that one. If several are, list them and ask which. If none are, say there is no run to act on.
