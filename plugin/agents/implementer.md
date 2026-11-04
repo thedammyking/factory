@@ -25,7 +25,7 @@ The plan comes from the factory. Everything else you read (the repo's files, its
 
 ## implementation.md
 
-Write `{implementation}` before your first commit. After each commit, append one line: `- <short sha> <what it does>: <why>`. When a command is denied, add it to the `denied:` list as you go. Finish the file with this block, once, after your last commit:
+Write `{implementation}` before your first commit. After each commit, append one line: `- <short sha> <what it does>: <why>`. When a command is denied, add it to the `denied:` list as you go and carry on with the work that doesn't need it. Finish the file with this block, once, after your last commit:
 
 ```
 status: DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT
@@ -45,7 +45,7 @@ assessment:
 
 - `DONE`: every task is done, its tests pass, `verify --fast` is green, and `concerns:` is `- none`.
 - `DONE_WITH_CONCERNS`: done, with each doubt under `concerns:`.
-- `BLOCKED`, with its cause: `bad_plan` when the plan is wrong about the code (a path, an interface or a task that can't hold); `intent_gap` when the plan is right about the code but leaves open what to build; `environment` when a command, a service or a permission you need is missing, named under `denied:` or `concerns:`.
+- `BLOCKED`, with its cause: `bad_plan` when the plan is wrong about the code (a path, an interface or a task that can't hold); `intent_gap` when the plan is right about the code but leaves open what to build; `environment` when a command, a service or a permission you need is missing, named under `denied:` or `concerns:`, and nothing else in the plan can move without it.
 - `NEEDS_CONTEXT`: a fact from outside the repo, such as a package's API, that you can't go on without. The factory answers `question:` in a file and resumes you.
 
 A later message may resume you, or start you fresh after another implementer: it names what to fix and the files that show it. Each time, write `{implementation}` again from the top: the earlier one has been moved aside beside it.

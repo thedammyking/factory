@@ -48,6 +48,11 @@
 //                                                recorded with who, so its merge decision there may let them through
 //   run-state.mjs ticket <NN> <status>        -> after `done tickets`, the only change to a ticket's Status line that
 //                                                keeps the hash it recorded
+//   run-state.mjs allow "<rule>"              -> a rule the human allowed at a BLOCKED: environment stop, such as
+//                                                Bash(npm install:*): added once to the allow list of the run worktree's
+//                                                .factory/setup.json, committed on the run branch and logged. Refuses
+//                                                anything but one Bash rule naming its program, and a program that runs
+//                                                any command
 //   run-state.mjs next-ticket                 -> after `done tickets`, a line per takeable ticket of lib's frontier,
 //                                                in-progress first: `STARTED <NN-slug>` for one that goes on, `NEXT
 //                                                <NN-slug>` (start it) while fewer than config's parallel_tickets (2) are
@@ -150,6 +155,11 @@ const BEFORE_SPEC_GATE = ["triage", "research", "spec", "builder-check"];  // a 
 const TICKET_STATUSES = ["ready-for-agent", "in-progress", "done", "blocked"];
 const CREDENTIAL = /KEY|SECRET|TOKEN|PASS|PWD|PRIVATE|CREDENTIAL|AUTH|DSN/i;  // an env name whose value the snapshot withholds
 const LENSES = ["code", "ui", "security"];  // each writes review-<lens>.md, dispatched as stage review-<lens>
+// programs that run any command given to them, so a rule allowing one allows every command
+// ponytail: shells and wrappers only; an interpreter's -c or -e (python3 -c, perl -e) runs anything too, as the
+// child's Bash(node:*) already does, so refuse those flags if the allowlist ever narrows node.
+const RUNS_ANY = ["sh", "bash", "zsh", "dash", "ksh", "csh", "tcsh", "fish", "busybox", "env", "sudo", "doas", "su", "xargs", "eval", "exec",
+  "command", "source", ".", "nohup", "nice", "time", "timeout", "stdbuf"];
 // A request issue's reference, when it is the whole request: on GitHub #12 or the issue's URL, on Linear ENG-123 or its URL.
 const GITHUB_REF = /^(?:#(\d+)|https:\/\/github\.com\/([^/\s]+\/[^/\s]+)\/issues\/(\d+)(?:[/?#]\S*)?)$/i;
 const LINEAR_KEY = /^[a-z][a-z0-9]*-\d+$/i, LINEAR_URL = /^https:\/\/linear\.app\/[^/\s]+\/issue\/([a-z][a-z0-9]*-\d+)(?:[/?#]\S*)?$/i;
@@ -456,10 +466,18 @@ function newestAttention(ctx) {
   return fs.readdirSync(ctx.runDir).filter((f) => /^attention-.+\.md$/.test(f) && !["attention-secret.md", "attention-snapshot.md"].includes(f)).sort((a, b) => at(b) - at(a))[0];
 }
 // Why a run hasn't ended as its request issue sees it, or null: a suspended run carries on, and one at its spec or map
-// gate, or asked whether to cut its tickets again, is mid-run, the developer deciding in session.
+// gate, asked whether to cut its tickets again, or asked to allow and retry what a ticket was denied, is mid-run, the
+// developer deciding in session.
 const MID_RUN = ["attention-spec-gate.md", "attention-map-gate.md", "attention-tickets-cut.md"];
+// A ticket's stop offers Allow and retry when its report's last cause is environment and it names a command denied,
+// under the child's denied: or as the child's result records it.
+const midRun = (ctx, item = newestAttention(ctx)) => {
+  const n = item?.match(/^attention-implement-(\d{2})\.md$/)?.[1], text = n ? readText(path.join(ctx.runDir, "tickets", n, "implementation.md")) : "";
+  return MID_RUN.includes(item) || ([...text.matchAll(/^blocked_cause:[ \t]*(\w+)/gm)].at(-1)?.[1] === "environment"
+    && /^(denied:[ \t]*\n[ \t]*- (?!none\b)|Denied, as the child's result records it:\n- )/m.test(text));
+};
 const notEnded = (ctx, s) => !ENDINGS.includes(s.stage) ? `a run ${s.stage} hasn't ended`
-  : s.stage === "needs-human" && MID_RUN.includes(newestAttention(ctx)) ? "a run waiting on a decision in session hasn't ended" : null;
+  : s.stage === "needs-human" && midRun(ctx) ? "a run waiting on a decision in session hasn't ended" : null;
 // The one comment a request issue gets when its run ends: the outcome, the PR, a charted run's map (`set map_link`), a
 // stopped run's attention item (its headline, what happened, so hold's questions reach whoever filed it, and its
 // options, never its evidence) and an answer in full, with the home directory as ~ since the tracker may be public.
@@ -854,6 +872,30 @@ switch (cmd) {
     console.log(`ticket ${t.id} ${status}`);
     break;
   }
+  case "allow": {
+    // One Bash rule that names the program it runs: never one that allows every command, as Bash, Bash(*) or Bash(:*)
+    // would, or names a program that runs whatever follows it. No parenthesis, comma or line break inside, which would
+    // end the rule early in the child's --allowedTools.
+    const [rule = ""] = args, command = rule.match(/^Bash\(([^(),\n]*)\)$/)?.[1].replace(/:\*$/, "") ?? "";
+    const program = command.trim().split(/\s+/)[0];
+    if (!/^[\w@./+-]+$/.test(program) || RUNS_ANY.includes(path.basename(program))) {
+      die(`allow takes one Bash rule that names the program it runs, as Bash(npm install:*): ${JSON.stringify(rule)} isn't one`);
+    }
+    const [ctx, s] = load();
+    if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+    // The recipe on the run branch, which run-stage builds every ticket's allowlist from and the PR shows. One that
+    // doesn't parse is never written over.
+    const file = path.join(ctx.worktree, ".factory", "setup.json"), recipe = readJson(file) ?? die(`${file} doesn't parse as a recipe`);
+    if ((recipe.allow ||= []).includes(rule)) { console.log(`allowed already: ${rule}`); break; }
+    recipe.allow.push(rule);
+    fs.writeFileSync(file, JSON.stringify(recipe, null, 2) + "\n");
+    // --no-verify: the project's commit hooks never judge the factory's recipe.
+    git(ctx.worktree, "add", "--", file);
+    git(ctx.worktree, "commit", "-q", "--no-verify", "-m", attributed(`factory(run): allow ${rule}`, "commit", s), "--", file);
+    log(ctx.runDir, `run: ${ctx.id} allowed ${rule}`);
+    console.log(`allowed ${rule}, committed on ${git(ctx.worktree, "branch", "--show-current")}`);
+    break;
+  }
   case "next-ticket": {
     const [ctx, s] = load();
     if (!ticketsChecked(ctx, s)) die(whyUnchecked(ctx));
@@ -1075,5 +1117,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | approve | notion | ticket | next-ticket | get | set | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
+  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | approve | notion | ticket | allow | next-ticket | get | set | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
 }

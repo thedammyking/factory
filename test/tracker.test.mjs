@@ -304,6 +304,24 @@ test("a run at its spec gate, or asked whether to cut its tickets again, is mid-
   assert.ok(!comments(t)[0].includes(os.homedir()), "no home directory on a tracker that may be public");
 });
 
+test("a ticket's BLOCKED: environment stop with a command to allow is mid-run and comments nothing; one with nothing denied, or intent_gap, is an ending", () => {
+  const t = setup(), s = started(t, "#12");
+  routed(t, s);
+  const stop = (n, cause, denied) => {
+    write(s.run_dir, { [`tickets/${n}/implementation.md`]: `# Implementation ${n}\n\nstatus: BLOCKED\nblocked_cause: ${cause}\nconcerns:\n- none\ndenied:\n${denied}\n`,
+      [`attention-implement-${n}.md`]: HOLD.replace(/^# .*/, `# Ticket ${n} stopped BLOCKED: ${cause}`) });
+    ok(t, s, ["set", "stage", "needs-human"]);
+    assert.equal(snapshot(t, s).status, 0);
+    return ok(t, s, ["comment"]);
+  };
+  assert.match(stop("01", "environment", "- `npm install zod`"), /^skip: a run waiting on a decision in session hasn't ended$/, "Allow and retry carries it on");
+  assert.match(stop("04", "environment", "- none\n\nDenied, as the child's result records it:\n- `Bash: npm install zod`"), /^skip: /, "a denial only the child's result records");
+  assert.deepEqual(comments(t), []);
+  assert.match(stop("02", "environment", "- none"), /^commented on #12$/, "nothing to allow");
+  assert.match(stop("03", "intent_gap", "- none"), /^commented on #12$/);
+  assert.deepEqual(comments(t).map((c) => c.match(/\*\*(Ticket .*)\*\*/)[1]), ["Ticket 02 stopped BLOCKED: environment", "Ticket 03 stopped BLOCKED: intent_gap"]);
+});
+
 test("a finished run's worktree waits for its comment: delivered links the PR, answered carries the answer in full", () => {
   const t = setup(), s = started(t, "#12");
   routed(t, s);

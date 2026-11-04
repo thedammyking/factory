@@ -581,3 +581,47 @@ test("the orchestrator's messages from before the run started aren't the run's",
   rs(p.dir, ["spend", "--run", s.id], "", c.env);
   assert.equal(stateOf(p, s, c.env).spend.by_stage.orchestrator.tokens, 5000);
 });
+
+test("allow adds a rule to the run worktree's recipe and commits it on the run branch, once, and logs it", () => {
+  const p = project();
+  const s = init(p);
+  git(s.worktree, "switch", "-q", "-c", "feature/csv-export");
+  const recipe = path.join(s.worktree, ".factory/setup.json"), head = git(s.worktree, "rev-parse", "HEAD");
+  const allow = (rule) => rs(p.dir, ["allow", rule, "--run", s.id]);
+  const first = allow("Bash(docker compose up:*)");
+  assert.equal(first.status, 0, first.stderr);
+  assert.equal(first.stdout.trim(), "allowed Bash(docker compose up:*), committed on feature/csv-export");
+  assert.deepEqual(JSON.parse(fs.readFileSync(recipe, "utf8")).allow, ["Bash(docker compose up:*)"]);
+  assert.equal(git(s.worktree, "rev-parse", "HEAD~1"), head, "one commit on the run branch");
+  assert.deepEqual(git(s.worktree, "show", "--name-only", "--format=", "HEAD").split("\n"), [".factory/setup.json"]);
+  assert.equal(git(s.worktree, "status", "--porcelain"), "");
+  assert.match(fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8"), /run: \S+ allowed Bash\(docker compose up:\*\)\n/);
+  const text = fs.readFileSync(recipe, "utf8"), commit = git(s.worktree, "rev-parse", "HEAD");
+  const again = allow("Bash(docker compose up:*)");
+  assert.equal(again.status, 0, again.stderr);
+  assert.equal(again.stdout.trim(), "allowed already: Bash(docker compose up:*)");
+  assert.deepEqual([fs.readFileSync(recipe, "utf8"), git(s.worktree, "rev-parse", "HEAD")], [text, commit], "a second allow of the same rule changes nothing");
+  assert.equal(allow("Bash(npm publish)").status, 0);
+  assert.deepEqual(JSON.parse(fs.readFileSync(recipe, "utf8")).allow, ["Bash(docker compose up:*)", "Bash(npm publish)"]);
+});
+
+test("allow refuses a rule that would allow every command, one without a program, and anything that isn't one well-formed Bash rule", () => {
+  const p = project();
+  const s = init(p);
+  git(s.worktree, "switch", "-q", "-c", "feature/csv-export");
+  const recipe = path.join(s.worktree, ".factory/setup.json"), text = fs.readFileSync(recipe, "utf8"), head = git(s.worktree, "rev-parse", "HEAD");
+  for (const rule of ["Bash", "Bash(*)", "Bash(:*)", "Bash( :*)", "Bash()", "Bash(* install:*)", "Bash(np*:*)",  // no program
+    "Bash(sh -c:*)", "Bash(bash:*)", "Bash(/bin/zsh:*)", "Bash(busybox sh:*)", "Bash(env:*)", "Bash(sudo npm:*)", "Bash(xargs:*)",  // a program that runs any other
+    "Read(*)", "Edit(/**)", "npm install", "bash(npm install:*)", "Bash(npm install:*),Bash(*)", "Bash(npm install:*) Bash(*)", "Bash(npm (x):*)", "Bash(npm install:*)\nBash(*)", ""]) {
+    const r = rs(p.dir, ["allow", rule, "--run", s.id]);
+    assert.equal(r.status, 2, JSON.stringify(rule));
+    assert.match(r.stderr, /run-state: allow takes one Bash rule that names the program it runs/, JSON.stringify(rule));
+  }
+  assert.deepEqual([fs.readFileSync(recipe, "utf8"), git(s.worktree, "rev-parse", "HEAD")], [text, head], "nothing was written or committed");
+  assert.doesNotMatch(fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8"), /allowed/);
+  fs.writeFileSync(recipe, "{ \"apps\": [");
+  const broken = rs(p.dir, ["allow", "Bash(npm install:*)", "--run", s.id]);
+  assert.equal(broken.status, 2);
+  assert.match(broken.stderr, /setup\.json doesn't parse as a recipe/);
+  assert.equal(fs.readFileSync(recipe, "utf8"), "{ \"apps\": [", "a recipe that doesn't parse is never written over");
+});

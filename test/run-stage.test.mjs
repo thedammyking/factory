@@ -316,6 +316,24 @@ test("BLOCKED: environment is the human's, and every command Claude Code denied 
     + "- `Bash: curl -sI https://registry.npmjs.org/csv`\n- `Bash: docker compose up -d`\n"));
 });
 
+test("Allow and retry: from the ticket's needs-human stop, the retry resumes the child's session with the allowed rule and the ticket's commits", (t) => {
+  const r = ticketReady(t);
+  r.play([{ ...CSV, write: { [r.impl]: report("BLOCKED", { cause: "environment" }) }, denied: ["curl -sI https://registry.npmjs.org/csv"] },
+    { files: { "notes.txt": "1\n" }, commit: "Note the registry's answer", write: { [r.impl]: report("DONE") } }]);
+  assert.equal(lastLine(r.stage("implement", "01")), "ATTENTION 01: BLOCKED: environment, see implementation.md");
+  const blocked = git(r.wt, "rev-parse", "HEAD");
+  r.run("set", "stage", "needs-human");
+  r.run("allow", "Bash(curl -sI:*)");
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
+  const [first, retry] = r.calls();
+  assert.deepEqual([flag(retry.argv, "--resume"), retry.argv.includes("--session-id")], [flag(first.argv, "--session-id"), false], "the same child, resumed");
+  assert.ok(!flag(first.argv, "--allowedTools").split(",").includes("Bash(curl -sI:*)"));
+  assert.ok(flag(retry.argv, "--allowedTools").split(",").includes("Bash(curl -sI:*)"), "the rule the human allowed");
+  assert.ok(retry.stdin.startsWith("The human allowed commands you were denied: try each again, then carry on with the plan."), retry.stdin);
+  assert.equal(git(r.wt, "rev-parse", "HEAD~1"), blocked, "the ticket's commits stay");
+  assert.equal(r.state().rounds, undefined, "and the retry costs no round");
+});
+
 test("the child may run the recipe's package manager as it names its commands, its runner, node, git, verify and each rule the recipe allows, read from the run worktree's recipe, and nothing else", (t) => {
   const r = ticketReady(t, { recipe: { package_manager: "npm", apps: [] } });
   const blocked = { write: { [r.impl]: report("BLOCKED", { cause: "environment" }) } };

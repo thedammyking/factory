@@ -251,7 +251,7 @@ const resumable = (session) => before.dispatches.some((d) => d.session === sessi
 const sincePlan = before.dispatches.slice(planned + 1).filter((d) => d.stage === stage), lastTry = sincePlan.at(-1);
 const last = sincePlan.filter((d) => d.session && resumable(d.session)).at(-1);  // the latest attempt whose session resumes
 const escalated = !!last && atLast && (last.round || 0) < round, fresh = !last || escalated;
-const [was] = attempts ? verdict(before) : [], { status: wasStatus } = report();
+const [was] = attempts ? verdict(before) : [], { status: wasStatus, cause: wasCause } = report();
 const ev = readJson(EVIDENCE), moved = fs.existsSync(IMPL) && path.join(dir, `implementation.round${attempts}.md`);
 
 const d = runState("dispatch", stage);
@@ -295,6 +295,7 @@ function message() {
   if (was === "ROUND" && !wasStatus) return `Your last turn ended before implementation.md had its status line. Carry on with the plan.${again}`;
   if (was === "ROUND") return `Fix each concern under concerns: in ${moved || IMPL}, or say there why it needs no fix.${again}`;
   if (was === "RESEARCH") return `The answer to your question is in ${path.join(dir, "context.md")}. Carry on with the plan.${again}`;
+  if (wasStatus === "BLOCKED" && wasCause === "environment") return `The human allowed commands you were denied: try each again, then carry on with the plan.${again}`;
   return `Carry on with the plan where you left off.${again}`;
 }
 const lines = [`run_dir: ${ctx.runDir}`, `worktree: ${wt}`, `ticket: ${ticket}`, `plan: ${path.join(dir, "plan.md")}`, `implementation: ${IMPL}`];
