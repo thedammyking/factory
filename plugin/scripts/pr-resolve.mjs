@@ -7,6 +7,8 @@
 //   1. replies on the thread with the SHA, marked <!-- factory --> so pr-comments never takes it for the human's;
 //   2. resolves the thread, through GraphQL's resolveReviewThread, since REST has no thread state;
 //   3. records the resolution as a status: closed block in review-human.md, which synthesize reads.
+// Where pr-comments read the PR over REST (`source: rest`, docs/adr/0001), it skips step 2: the thread stays open on
+// GitHub, and the next ingest makes it an ask.
 // A review has no thread: it gets the reply as a PR comment, and stays open until its reviewer approves it or it's
 // dismissed. An ask is the human's, and gets nothing. Exits 1 at the first refusal, quoting GitHub; run again, it
 // carries on from the first thread not recorded.
@@ -23,7 +25,7 @@ const repo = githubRepo(ctx.MAIN);  // from git's trimmed output, so no newline 
 if (!repo) die("origin isn't a GitHub repo");
 const lens = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "";
 const key = (id, k) => lens.match(new RegExp(`^- id: ${id}\\n(?:[ \\t]+.*\\n)*?[ \\t]+${k}:[ \\t]*(\\S+)`, "m"))?.[1];
-const recorded = (id) => new RegExp(`^- id: ${id}\\n[ \\t]+status: closed$`, "m").test(lens);
+const recorded = (id) => new RegExp(`^- id: ${id}\\n[ \\t]+status: closed$`, "m").test(lens), rest = /^source: rest$/m.test(lens);
 const fixes = (readJson(path.join(ctx.runDir, "findings.json"))?.findings || []).filter((f) => f.status === "open" && ["P0", "P1"].includes(f.severity) && f.action === "fix");
 const ids = [...new Set(fixes.flatMap((f) => f.members))].filter((id) => /^human-[rv]\d+$/.test(id) && key(id, "action") === "fix" && !recorded(id));
 if (!ids.length) { console.log("pr-resolve: no human finding of the round to answer"); process.exit(0); }
@@ -40,9 +42,14 @@ for (const id of ids) {
     continue;
   }
   const thread = key(id, "thread");
-  if (!thread) die(`review-human.md has no thread for ${id}: run pr-comments.mjs again`);
+  if (!thread && !rest) die(`review-human.md has no thread for ${id}: run pr-comments.mjs again`);
   const reply = ghApi("-X", "POST", `repos/${repo}/pulls/${pr.number}/comments/${id.replace("human-r", "")}/replies`, "-f", `body=Addressed in ${sha}.${MARK}`);
   if (!reply.ok) refused(`the reply to ${id}`, reply);
+  if (rest) {
+    fs.appendFileSync(file, `- id: ${id}\n  status: closed\n  note: answered in ${sha.slice(0, 7)}; open on GitHub, since resolving it takes GraphQL\n`);
+    console.log(`${id}: replied with ${sha.slice(0, 7)} and recorded; the thread stays open on GitHub, since resolving it takes GraphQL`);
+    continue;
+  }
   const r = ghApi("graphql", "-f", `query=${RESOLVE}`, "-f", `id=${thread}`);
   if (!r.ok || r.json?.data?.resolveReviewThread?.thread?.isResolved !== true) refused(`to resolve ${id}`, r);
   fs.appendFileSync(file, `- id: ${id}\n  status: closed\n  note: answered in ${sha.slice(0, 7)} and resolved on GitHub\n`);

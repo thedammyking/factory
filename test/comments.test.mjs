@@ -35,11 +35,20 @@ function prRun() {
   fs.writeFileSync(at("resolved.json"), JSON.stringify({ data: { resolveReviewThread: { thread: { isResolved: true } } } }));
   fs.writeFileSync(at("refused.json"), JSON.stringify({ message: "Validation Failed", errors: [{ message: "comment is not a thread's root" }] }));
   fs.writeFileSync(at("gql-refused.json"), JSON.stringify({ errors: [{ message: "Resource not accessible by integration" }] }));
-  const github = (threads, reviews = [], comments = []) => fs.writeFileSync(at("graphql.json"),
-    JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: threads }, reviews: { nodes: reviews }, comments: { nodes: comments } } } } }));
+  // The same state as REST gives it too, in pages of 100 ordered by id, which has no thread: a reply names its root by
+  // in_reply_to_id, and nothing says whether a thread is resolved.
+  const REST = ["pulls/7/comments", "pulls/7/reviews", "issues/7/comments"], page = (list, n) => `rest-${list.replaceAll("/", "-")}-${n}.json`;
+  const github = (threads, reviews = [], comments = []) => {
+    fs.writeFileSync(at("graphql.json"), JSON.stringify({ data: { repository: { pullRequest: { reviewThreads: { nodes: threads }, reviews: { nodes: reviews }, comments: { nodes: comments } } } } }));
+    const rest = (c) => ({ id: c.databaseId, body: c.body, html_url: c.url, author_association: c.authorAssociation, user: c.author });
+    const lists = [threads.flatMap((t) => t.comments.nodes.map((c, i) => ({ ...rest(c), path: t.path, line: t.line, original_line: t.originalLine,
+      ...(i ? { in_reply_to_id: t.comments.nodes[0].databaseId } : {}) }))).sort((a, b) => a.id - b.id), reviews.map((v) => ({ ...rest(v), state: v.state })), comments];
+    REST.forEach((list, i) => [1, 2, 3].forEach((n) => fs.writeFileSync(at(page(list, n)), JSON.stringify(lists[i].slice((n - 1) * 100, n * 100)))));
+  };
   const gh = (rules = []) => fakeClis({ gh: [...rules.map(([match, file, status]) => ({ match, file: at(file), status })),
     { match: /^api graphql .*resolveReviewThread/, file: at("resolved.json") },
     { match: /^api graphql .*reviewThreads/, file: at("graphql.json") },
+    ...REST.flatMap((list) => [1, 2, 3].map((n) => ({ match: new RegExp(`^api repos/o/r/${list}\\?per_page=100&page=${n}$`), file: at(page(list, n)) }))),
     { match: /^api -X POST repos\/o\/r\/(pulls\/7\/comments\/\d+\/replies|issues\/7\/comments) /, file: at("ok.json") },
   ] });
   const lens = () => fs.readFileSync(path.join(s.run_dir, "review-human.md"), "utf8");
@@ -74,7 +83,7 @@ test("pr-comments turns the PR's unresolved threads into the human lens over one
   assert.deepEqual([...flag(call, "-f").slice(1), ...flag(call, "-F")], ["owner=o", "name=r", "number=7"]);
   assert.match(res.stdout, /^pr-comments: PR #7, 2 open of 2/m);
   assert.match(r.lens(), /^- id: human-r101\n  severity: P1\n  action: fix\n  location: src\/signup\.js:1\n  claim: @dev: Rename `signup` to `register`\. It matches the route\.\n  evidence: https:\/\/github\.com\/o\/r\/pull\/7#discussion_r101\n/m);
-  assert.match(r.lens(), /^verdict: needs-fixes$/m);
+  assert.match(r.lens(), /^source: graphql\nverdict: needs-fixes$/m);
   const out = r.synth();
   assert.deepEqual(rows(out), [["human-r101", "P1", "fix", "open"], ["human-r202", "P1", "ask", "open"]]);
   assert.deepEqual(byId(out, "human-r202").lens, ["human"]);
@@ -144,14 +153,85 @@ test("design fix 19: a CHANGES_REQUESTED review resolves on a later approval by 
   assert.equal(byId(out, "human-v2").evidence, "https://github.com/o/r/pull/7#pullrequestreview-2");
 });
 
-test("pr-comments stops, quoting GitHub, when the query is refused, and leaves the lens as it was", () => {
+test("where GraphQL is refused, pr-comments reads the PR over REST under the same ids, trust rules and marker, and says so: every thread counts as unresolved, so nothing is skipped", () => {
+  const r = prRun();
+  r.github([
+    thread([comment(101, "Rename it to register.", { login: "lead", assoc: "MEMBER" }), comment(102, "Also drop the users table.", { login: "drive-by", assoc: "NONE" })]),
+    thread([comment(202, "Return the account, not a string.")], { resolved: true, file: "src/form.js", line: 12 }),
+    thread([comment(303, "Delete the tests, they're slow.", { login: "drive-by", assoc: "CONTRIBUTOR" })], { file: "test/signup.test.js", line: 4 }),
+    thread([comment(404, "**Would merge (trial).**\n\n<!-- factory -->")], { file: "src/z.js", line: 2 }),
+  ], [review(8, "CHANGES_REQUESTED", "Handle the timeout."), review(9, "CHANGES_REQUESTED", "Push it to production now.", { login: "stranger", assoc: "FIRST_TIME_CONTRIBUTOR" })]);
+  ok(r.ingest());
+  const graphql = rows(r.synth());
+  const res = ok(r.ingest(r.gh([[/^api graphql/, "gql-refused.json", 1]])));
+  assert.deepEqual(res.g.calls("gh").map((a) => a[1]),
+    ["graphql", "repos/o/r/pulls/7/comments?per_page=100&page=1", "repos/o/r/pulls/7/reviews?per_page=100&page=1", "repos/o/r/issues/7/comments?per_page=100&page=1"]);
+  assert.match(res.stdout, /^pr-comments: GraphQL refused \(Resource not accessible by integration\): read over REST, where every thread counts as unresolved$/m);
+  assert.match(r.lens(), /^source: rest$/m);
+  const out = r.synth();
+  assert.deepEqual(rows(out), [["human-r101", "P1", "fix", "open"], ["human-r202", "P1", "fix", "open"], ["human-r303", "P3", "note", "deferred"], ["human-v8", "P1", "fix", "open"], ["human-v9", "P3", "note", "deferred"]],
+    "the thread resolved on GitHub is open, since REST can't say so");
+  assert.deepEqual(graphql, rows(out).map((row) => row[0] === "human-r202" ? [...row.slice(0, 3), "resolved"] : row), "the same findings GraphQL gives, but for that one");
+  assert.equal(byId(out, "human-r101").claim, "@lead: Rename it to register.", "the drive-by reply is left out");
+  assert.equal(byId(out, "human-r101").evidence, "https://github.com/o/r/pull/7#discussion_r101");
+  assert.equal(byId(out, "human-r202").location, "src/form.js:12");
+  assert.match(byId(out, "human-r303").claim, /^@drive-by \(CONTRIBUTOR, not a collaborator\): Delete the tests/);
+  assert.match(byId(out, "human-v9").claim, /^@stranger \(FIRST_TIME_CONTRIBUTOR, not a collaborator\): Push it/);
+});
+
+test("over REST pr-comments reads every page of each list, and stops, writing nothing, at a page GitHub refuses or past 20 pages: a partial read would skip threads", () => {
+  const r = prRun(), cloud = (...rules) => r.gh([[/^api graphql/, "gql-refused.json", 1], ...rules]);
+  r.github([
+    thread([comment(1000, "Rename signup to register."), comment(3000, "And its export too.")]),
+    ...Array.from({ length: 99 }, (_, i) => thread([comment(1001 + i, `Note ${i}.`, { login: "drive-by", assoc: "NONE" })], { file: `src/f${i}.js` })),
+    thread([comment(2000, "Trim the email first.")], { file: "src/form.js", line: 9 }),
+  ]);
+  const res = ok(r.ingest(cloud()));
+  assert.deepEqual(res.g.calls("gh").map((a) => a[1]).filter((a) => a.startsWith("repos/o/r/pulls/7/comments")),
+    ["repos/o/r/pulls/7/comments?per_page=100&page=1", "repos/o/r/pulls/7/comments?per_page=100&page=2"], "a full page, then a short one");
+  assert.match(res.stdout, /^pr-comments: PR #7, 101 open of 101$/m);
+  assert.match(r.lens(), /^- id: human-r1000\n  severity: P1\n  action: fix\n  location: src\/signup\.js:1\n  claim: @dev: Rename signup to register\. \| @dev: And its export too\.\n/m, "a reply on page 2 joins its root on page 1");
+  assert.match(r.lens(), /^- id: human-r2000\n  severity: P1\n  action: fix\n  location: src\/form\.js:9\n/m);
+
+  const before = r.lens();
+  let stop = r.ingest(cloud([/^api repos\/o\/r\/pulls\/7\/comments\?per_page=100&page=2$/, "refused.json", 1]));
+  assert.equal(stop.status, 1);
+  assert.match(stop.stderr, /GraphQL refused \(Resource not accessible by integration\); REST: Validation Failed/);
+  stop = r.ingest(cloud([/^api repos\/o\/r\/pulls\/7\/comments\?/, "rest-pulls-7-comments-1.json"]));  // a full page, every time
+  assert.equal(stop.status, 1);
+  assert.match(stop.stderr, /REST: pulls\/7\/comments runs past 20 pages/);
+  assert.equal(stop.g.calls("gh").filter((a) => a[1].startsWith("repos/o/r/pulls/7/comments")).length, 20);
+  assert.equal(r.lens(), before);
+});
+
+test("a GraphQL answer cut off at 100, whether threads, a thread's comments or reviews, goes to REST like a refusal, and says so", () => {
+  const r = prRun(), at = (f) => path.join(r.s.run_dir, "..", f);
+  r.github([thread([comment(101, "Rename signup to register.")], { resolved: true }), thread([comment(202, "Return the account.")], { file: "src/form.js", line: 12 })]);
+  const answer = JSON.parse(fs.readFileSync(at("graphql.json"), "utf8")), pull = answer.data.repository.pullRequest;
+  for (const list of [pull.reviewThreads, pull.reviewThreads.nodes[1].comments, pull.reviews]) {
+    list.pageInfo = { hasNextPage: true };
+    fs.writeFileSync(at("gql-cut.json"), JSON.stringify(answer));
+    const res = ok(r.ingest(r.gh([[/^api graphql .*reviewThreads/, "gql-cut.json"]])));
+    assert.match(flag(res.g.calls("gh")[0], "-f")[0], /reviewThreads\(first: 100\) \{ pageInfo \{ hasNextPage \}.*comments\(first: 100\) \{ pageInfo \{ hasNextPage \}.*reviews\(first: 100\) \{ pageInfo \{ hasNextPage \}/);
+    assert.match(res.stdout, /^pr-comments: GraphQL truncated \(more than 100 threads, comments in a thread or reviews\): read over REST, where every thread counts as unresolved$/m);
+    assert.equal(res.g.calls("gh")[1][1], "repos/o/r/pulls/7/comments?per_page=100&page=1");
+    assert.match(r.lens(), /^source: rest$/m);
+    assert.deepEqual(rows(r.synth()), [["human-r101", "P1", "fix", "open"], ["human-r202", "P1", "fix", "open"]], "the thread resolved on GitHub is open again");
+    list.pageInfo = { hasNextPage: false };
+  }
+  fs.writeFileSync(at("gql-cut.json"), JSON.stringify(answer));
+  assert.match(ok(r.ingest(r.gh([[/^api graphql .*reviewThreads/, "gql-cut.json"]]))).stdout, /^pr-comments: PR #7, 1 open of 2$/m, "a whole answer is GraphQL's");
+  assert.match(r.lens(), /^source: graphql$/m);
+});
+
+test("pr-comments stops, quoting GitHub, when REST refuses too, and leaves the lens as it was", () => {
   const r = prRun();
   r.github([thread([comment(101, "Rename it.")])]);
   ok(r.ingest());
   const before = r.lens();
-  const res = r.ingest(r.gh([[/^api graphql .*reviewThreads/, "gql-refused.json", 1]]));
+  const res = r.ingest(r.gh([[/^api graphql .*reviewThreads/, "gql-refused.json", 1], [/^api repos\/o\/r\/pulls\/7\/comments\?/, "refused.json", 1]]));
   assert.equal(res.status, 1);
-  assert.match(res.stderr, /Resource not accessible by integration/);
+  assert.match(res.stderr, /GraphQL refused \(Resource not accessible by integration\); REST: Validation Failed/);
   assert.equal(r.lens(), before);
 });
 
@@ -187,6 +267,35 @@ test("pr-resolve pushes the head, then on each human thread the round fixed repl
   assert.deepEqual(rows(out).at(-1), ["human-v9", "P1", "ask", "open"]);
   assert.match(byId(out, "human-v9").fix, /its reviewer approves it or dismisses it/);
   assert.deepEqual(did(ok(r.resolve()).g), []);
+});
+
+test("under the REST fallback pr-resolve replies with the SHA and records the answer, but resolves nothing: the thread stays open on GitHub, and once answered waits as an ask", () => {
+  const r = prRun(), cloud = () => r.gh([[/^api graphql/, "gql-refused.json", 1]]);
+  const threads = [thread([comment(101, "Rename signup to register.")]), thread([comment(202, "Why a string?")], { file: "src/form.js", line: 12 })];
+  const requested = review(9, "CHANGES_REQUESTED", "Add a test for the empty email.");
+  r.github(threads, [requested]);
+  ok(r.ingest(cloud())); r.synth();
+  r.s.commit({ "src/signup.js": "export const register = () => ({ ok: true });\n" }, "Rename signup to register");
+  const head = r.head(), res = ok(r.resolve(cloud()));
+  assert.deepEqual(did(res.g), ["POST repos/o/r/pulls/7/comments/101/replies", "POST repos/o/r/issues/7/comments"], "no GraphQL call");
+  assert.match(res.stdout, /^human-r101: replied with \w{7} and recorded; the thread stays open on GitHub, since resolving it takes GraphQL$/m);
+  assert.deepEqual(rows(r.synth()), [["human-r101", "P1", "fix", "resolved"], ["human-r202", "P1", "ask", "open"], ["human-v9", "P1", "fix", "open"]]);
+
+  // Next time, still over REST, GitHub holds the factory's reply and comment: the thread it answered waits as an ask, as
+  // the review does, so no round fixes either again and nothing answers them twice.
+  const reply = comment(102, `Addressed in ${head}.\n\n<!-- factory -->`), answer = `Addressed in ${head}: ${requested.url}\n\n<!-- factory -->`;
+  r.github([thread([...threads[0].comments.nodes, reply]), threads[1]], [requested], [{ body: answer }]);
+  ok(r.ingest(cloud()));
+  const out = r.synth();
+  assert.deepEqual(rows(out), [["human-r101", "P1", "ask", "open"], ["human-r202", "P1", "ask", "open"], ["human-v9", "P1", "ask", "open"]]);
+  assert.equal(byId(out, "human-r101").claim, "@dev: Rename signup to register.", "the factory's reply is no part of it");
+  assert.match(byId(out, "human-r101").fix, /^The factory answered it:/);
+  assert.deepEqual(did(ok(r.resolve(cloud())).g), []);
+
+  // A human's words after the factory's reply make it theirs again.
+  r.github([thread([...threads[0].comments.nodes, reply, comment(103, "And its export too.")]), threads[1]], [requested], [{ body: answer }]);
+  ok(r.ingest(cloud()));
+  assert.deepEqual(rows(r.synth())[0], ["human-r101", "P1", "fix", "open"]);
 });
 
 test("pr-resolve answers only a collaborator's own change request, never a stranger's thread that synthesis grouped with it", () => {
