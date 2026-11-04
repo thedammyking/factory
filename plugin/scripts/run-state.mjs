@@ -24,6 +24,23 @@
 //                                                closing comment that snapshot wrote and checked, once (elsewhere prints it
 //                                                for the orchestrator to post and record); prints the run's tracker writes
 //                                                that failed
+//   run-state.mjs file-issue [filed <key> [--url <url>] [--closing "<line>"] | failed "<why>"] -> once the spec is
+//                                                approved, a plain run's request issue, once: on github files it with the
+//                                                spec's title, spec.md as its body and the gh user assigned; elsewhere
+//                                                prints the title and body for the orchestrator to file and record. It's
+//                                                recorded as request_issue with filed: true, which nothing claims. Never on
+//                                                local, nor for a run from a map's run list
+//   run-state.mjs spec-comment [filed | failed "<why>"] -> once the spec is approved, posts it as one comment on the
+//                                                request issue the run started from, once (elsewhere prints it)
+//   run-state.mjs file-tickets [filed <NN> <key> [--url <url>] | failed <NN> "<why>"] -> after `done tickets`, each
+//                                                ticket once as a sub-issue of the request issue, recording its key: NN:
+//                                                <title>, the ticket as its body, blocked by each ticket its Blocked by
+//                                                line names (elsewhere prints them in order, each recorded on its own)
+//   run-state.mjs close-ticket <NN> [filed | failed "<why>"] -> once a ticket is merged, closes its sub-issue as
+//                                                completed, once (elsewhere prints it). file-issue, spec-comment,
+//                                                file-tickets and close-ticket each try a write once, logging a failure as
+//                                                the run goes on; a body over GitHub's 65,536 characters is cut there, its
+//                                                last line pointing to history
 //   run-state.mjs lane                        -> a build or oneshot run, once: switches the run worktree to a new lane
 //                                                branch at its base's tip (prefix and base from triage's type and the
 //                                                branching model, then the request issue's key, then triage's slug, and
@@ -126,8 +143,11 @@
 //                                                ends the run needs-human, prints `needs-human: <attention item>`, exits 1.
 //                                                A run with a request issue gets issue-comment.md before the check, and a
 //                                                finished one keeps its worktree until `comment` has tried it
-//   run-state.mjs abandon                     -> ends the run abandoned; its branch is kept, and the snapshot after it
-//                                                removes a clean worktree
+//   run-state.mjs abandon [filed | failed "<why>"] -> ends the run abandoned; its branch is kept, and the snapshot
+//                                                after it removes a clean worktree. Then closes as not planned each
+//                                                sub-issue close-ticket hasn't tried and a request issue the run filed: on
+//                                                github itself, elsewhere printing them, and filed or failed records how
+//                                                the orchestrator's closes went
 //   run-state.mjs status                      -> one line per run not finished (needs-human and failed wait on a resume),
 //                                                from every run worktree's state.json
 import crypto from "node:crypto";
@@ -394,12 +414,8 @@ function requestIssue(main, tracker, text) {
   const key = arg("--issue");
   if (key) {
     if (!["linear", "other"].includes(tracker)) die(`--issue is for a linear or other tracker, and this one is ${tracker}`);
-    if (!/^[\w#./-]{1,64}$/.test(key) || (tracker === "linear" && !LINEAR_KEY.test(key))) die(`--issue ${key} isn't an issue key`);
-    const url = arg("--url"), closing = tracker === "linear" ? `Fixes ${key}` : arg("--closing");
-    if (url && !/^https?:\/\/\S+$/.test(url)) die(`--url ${url} isn't a URL`);
-    if (closing && !/^[^\n]{1,200}$/.test(closing)) die("--closing is one line");
     const [title, ...body] = text.split("\n");
-    return { issue: { tracker, key, ...(url && { url }), ...(closing && { closing }) }, title: title.trim(), body: body.join("\n").trim() };
+    return { issue: trackerIssue(tracker, key), title: title.trim(), body: body.join("\n").trim() };
   }
   const linear = tracker === "linear" && (LINEAR_KEY.test(text) ? text : text.match(LINEAR_URL)?.[1]);
   if (linear) die(`${linear} is a Linear issue: read it as the tracker doc's Run operations say, then start the run with --issue ${linear.toUpperCase()}`);
@@ -408,6 +424,19 @@ function requestIssue(main, tracker, text) {
   // its assignees too, so the claim knows what it changes without reading the issue again
   const issue = { tracker, key: `#${r.n}`, url: r.json.html_url, closing: `Closes #${r.n}`, assignees: r.json.assignees.map((a) => a.login) };
   return { issue, title: r.json.title, body: r.json.body ?? "" };
+}
+// An issue a linear or other tracker's tools read or filed, as { key, url } from its key and --url.
+function trackerKey(tracker, key = "") {
+  if (!/^[\w#./-]{1,64}$/.test(key) || (tracker === "linear" && !LINEAR_KEY.test(key))) die(`${key} isn't an issue key`);
+  const url = arg("--url");
+  if (url && !/^https?:\/\/\S+$/.test(url)) die(`--url ${url} isn't a URL`);
+  return { key, ...(url && { url }) };
+}
+// The same issue as a request issue, with its closing reference: Linear's made here, other's from --closing.
+function trackerIssue(tracker, key) {
+  const closing = tracker === "linear" ? `Fixes ${key}` : arg("--closing");
+  if (closing && !/^[^\n]{1,200}$/.test(closing)) die("--closing is one line");
+  return { tracker, ...trackerKey(tracker, key), ...(closing && { closing }) };
 }
 // An issue of origin's GitHub repo, from text that is exactly #12 or the issue's URL, read once through gh api, as
 // { n, json }; null when the text is neither. `what` names it when it can't be read.
@@ -462,6 +491,20 @@ function githubClaim(ctx, issue) {
   const r = ghApi("-X", "POST", `repos/${githubRepo(ctx.MAIN)}/issues/${issue.key.slice(1)}/assignees`, "-f", `assignees[]=${user.json.login}`);
   return r.ok ? { assignee: user.json.login } : { failed: r.message };
 }
+// A run file's text as an issue's body or a comment: GitHub refuses one over 65,536 characters, so a longer text is cut
+// there, ending on a line that points to the whole file in history.
+function issueBody(ctx, file, text) {
+  const more = `\n\n… cut at GitHub's limit: the whole file is \`.factory/history/${ctx.id}/${file}\`.\n`;
+  return text.length <= 65536 ? text : text.slice(0, 65536 - more.length).replace(/[\uD800-\uDBFF]$/, "") + more;
+}
+// spec.md without its frontmatter, as its Notion copy has it.
+const specText = (ctx) => readText(path.join(ctx.runDir, "spec.md")).replace(FRONTMATTER, "").replace(/^\n+/, "");
+// One gh api write, as why it failed, or null.
+const ghWrite = (...args) => { const r = ghApi(...args); return r.ok ? null : r.message || "no reason given"; };
+// Closes a GitHub issue (#12) as completed or not_planned, as ghWrite.
+const ghClose = (ctx, key, reason) => ghWrite("-X", "PATCH", `repos/${githubRepo(ctx.MAIN)}/issues/${key.slice(1)}`, "-f", "state=closed", "-f", `state_reason=${reason}`);
+// A tracker write's outcome, once recorded in s: saved, logged and printed.
+const report = (ctx, s, line) => { save(ctx.state, s); log(ctx.runDir, `run: ${ctx.id} ${line}`); console.log(line); };
 // The run's newest attention item, but the snapshot's own stops, which aren't the run's.
 function newestAttention(ctx) {
   const at = (f) => fs.statSync(path.join(ctx.runDir, f)).mtimeMs;
@@ -492,9 +535,12 @@ function closingComment(ctx, s) {
     s.stage === "answered" && readText(path.join(ctx.runDir, "answer.md")).trim()].filter(Boolean).join("\n\n").replaceAll(os.homedir() + path.sep, "~/") + "\n";
 }
 const sha256 = (text) => crypto.createHash("sha256").update(text).digest("hex");
-// The request issue's writes that failed this run, each tried once, for the run's final report.
+// The run's tracker writes that failed, each tried once, for the run's final report.
 const trackerFailures = (s) => [s.claim?.failed && `the claim (${s.claim.failed})`, s.unclaim?.failed && `undoing the claim (${s.unclaim.failed})`,
-  s.issue_comment?.failed && `the closing comment (${s.issue_comment.failed})`].filter(Boolean);
+  s.issue_comment?.failed && `the closing comment (${s.issue_comment.failed})`, s.file_issue?.failed && `filing the request issue (${s.file_issue.failed})`,
+  s.spec_comment?.failed && `the spec comment (${s.spec_comment.failed})`,
+  ...Object.entries(s.ticket_issues || {}).flatMap(([n, t]) => [t.failed && `ticket ${n}'s sub-issue (${t.failed})`, t.closed?.failed && `closing ticket ${n}'s sub-issue (${t.closed.failed})`]),
+  s.abandon_closes?.failed && `closing the run's issues as not planned (${s.abandon_closes.failed})`].filter(Boolean);
 const claimed = (c) => [c.state && `moved from ${c.state}`, c.assignee && `assigned ${c.assignee === true ? "you" : c.assignee}`].filter(Boolean).join(", ") || "nothing changed";
 // Each stage's spend, one line each, as the BUDGET refusal and `spend` print it.
 const breakdown = (spend) => Object.entries(spend.by_stage).map(([stage, x]) => `  ${stage}: ${x.tokens} tokens${x.estimate ? " (estimate)" : ""}; `
@@ -758,6 +804,7 @@ switch (cmd) {
     const [what, why] = args;
     const [ctx, s] = load(), issue = s.request_issue;
     if (!issue) { console.log("skip: no request issue"); break; }
+    if (issue.filed) { console.log(`skip: the run filed ${issue.key}, assigned to you as it was filed`); break; }
     if (what && issue.tracker === "github") die("on github, claim makes its own call: run it alone");
     // Once the run has made its branch, so never on hold, answer or map; and once, its record being exactly what changed,
     // until an undo (a failed run resumed claims again).
@@ -828,6 +875,109 @@ switch (cmd) {
     }
     const failed = trackerFailures(s);
     if (failed.length) console.log(`tracker writes that failed, each tried once: ${failed.join("; ")}`);
+    break;
+  }
+  case "file-issue": {
+    // A plain run's request issue, filed once its spec is approved, assigned to you in place of a claim.
+    const [what, detail] = args;
+    const [ctx, s] = load(), tracker = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {}).tracker;
+    if (!specApproved(ctx, s)) die(`the spec of ${ctx.id} isn't approved, and nothing reaches the tracker before it is`);
+    const skip = !["github", "linear", "other"].includes(tracker) ? "the local tracker has no request issues" : s.map ? "a run from a map's run list writes nothing to the tracker"
+      : s.request_issue ? `${s.request_issue.key} is the run's request issue already` : s.file_issue ? "filing the request issue was tried already" : null;
+    if (skip) { console.log(`skip: ${skip}`); break; }
+    if (what && tracker === "github") die("on github, file-issue makes its own call: run it alone");
+    const spec = specText(ctx), title = spec.match(/^# (.+)$/m)?.[1].trim() || ctx.id, body = issueBody(ctx, "spec.md", spec);
+    let failed;
+    if (what === "filed") s.request_issue = { ...trackerIssue(tracker, detail), filed: true };
+    else if (what === "failed") failed = detail || "no reason given";
+    else if (what) die('file-issue [filed <key> [--url <url>] [--closing "<line>"] | failed "<why>"]');
+    else if (tracker !== "github") { console.log(JSON.stringify({ title, body }, null, 2)); break; }  // filed through the tracker's tools
+    else {
+      const user = ghApi("user"), r = user.ok && ghApi("-X", "POST", `repos/${githubRepo(ctx.MAIN)}/issues`, "-f", `title=${title}`,
+        "-f", `body=${body}`, "-f", `assignees[]=${user.json.login}`);
+      if (r.ok) s.request_issue = { tracker, key: `#${r.json.number}`, url: r.json.html_url, closing: `Closes #${r.json.number}`, filed: true };
+      else failed = (r || user).message || "no reason given";
+    }
+    s.file_issue = { at: now(), ...(failed && { failed }) };
+    report(ctx, s, failed ? `filing the request issue failed: ${failed}` : `filed ${s.request_issue.key}: ${title}`);
+    break;
+  }
+  case "spec-comment": {
+    // The approved spec, as one comment on the issue the run started from, whose body is never touched.
+    const [what, why] = args;
+    const [ctx, s] = load(), issue = s.request_issue;
+    if (!specApproved(ctx, s)) die(`the spec of ${ctx.id} isn't approved, and nothing reaches the tracker before it is`);
+    const skip = !issue ? "no request issue" : issue.filed ? `the run filed ${issue.key}, whose body is the spec` : s.spec_comment ? "the spec comment was tried already" : null;
+    if (skip) { console.log(`skip: ${skip}`); break; }
+    if (what && issue.tracker === "github") die("on github, spec-comment makes its own call: run it alone");
+    if (what && !["filed", "failed"].includes(what)) die('spec-comment [filed | failed "<why>"]');
+    const body = issueBody(ctx, "spec.md", `The spec of the factory's run \`${ctx.id}\`, as approved:\n\n${specText(ctx)}`);
+    if (!what && issue.tracker !== "github") { console.log(JSON.stringify({ issue: issue.key, body }, null, 2)); break; }  // posted through the tracker's tools
+    const failed = what ? what === "failed" && (why || "no reason given")
+      : ghWrite("-X", "POST", `repos/${githubRepo(ctx.MAIN)}/issues/${issue.key.slice(1)}/comments`, "-f", `body=${body}`);
+    s.spec_comment = { at: now(), ...(failed && { failed }) };
+    report(ctx, s, failed ? `the spec comment on ${issue.key} failed: ${failed}` : `commented the spec on ${issue.key}`);
+    break;
+  }
+  case "file-tickets": {
+    // Each ticket of the cut `done tickets` checked, once, as a sub-issue of the request issue: titled NN: <its title>,
+    // the ticket as its body, and blocked by each ticket its Blocked by line names, which is always filed before it.
+    const [what, n, detail] = args;
+    const [ctx, s] = load(), issue = s.request_issue;
+    if (!ticketsChecked(ctx, s)) die(whyUnchecked(ctx));
+    if (!issue) { console.log("skip: no request issue to file the tickets under"); break; }
+    if (what && issue.tracker === "github") die("on github, file-tickets makes its own call: run it alone");
+    const filed = s.ticket_issues ||= {}, todo = readTickets(ctx).items.filter((t) => !filed[t.n]);
+    const title = (t) => `${t.n}: ${t.text.match(/^# (.+)$/m)?.[1].trim().replace(/^\d{2}:\s*/, "") || t.id.slice(3)}`;
+    const body = (t) => issueBody(ctx, path.relative(ctx.runDir, t.file), t.text);
+    const line = (n, f = filed[n]) => !f.key ? `filing ticket ${n} failed: ${f.failed}` : `filed ticket ${n} as ${f.key}${f.failed ? `; these failed: ${f.failed}` : ""}`;
+    if (what) {
+      const t = todo.find((t) => t.n === n) ?? die(`file-tickets ${what} <NN>: ${n} isn't a ticket still to file`);
+      if (what === "filed") filed[t.n] = trackerKey(issue.tracker, detail);
+      else if (what === "failed") filed[t.n] = { failed: detail || "no reason given" };
+      else die('file-tickets [filed <NN> <key> [--url <url>] | failed <NN> "<why>"]');
+      report(ctx, s, line(t.n));
+      break;
+    }
+    if (!todo.length) { console.log("skip: every ticket was filed, or tried, already"); break; }
+    if (issue.tracker !== "github") {  // filed through the tracker's tools, in this order
+      console.log(JSON.stringify({ parent: issue.key, tickets: todo.map((t) => ({ ticket: t.n, title: title(t), body: body(t), blocked_by: t.blockedBy })) }, null, 2));
+      break;
+    }
+    const repo = githubRepo(ctx.MAIN);
+    for (const t of todo) {
+      const r = ghApi("-X", "POST", `repos/${repo}/issues`, "-f", `title=${title(t)}`, "-f", `body=${body(t)}`), why = [];
+      if (!r.ok) why.push(r.message || "no reason given");
+      else {
+        filed[t.n] = { key: `#${r.json.number}`, id: r.json.id, url: r.json.html_url };
+        const link = ghWrite("-X", "POST", `repos/${repo}/issues/${issue.key.slice(1)}/sub_issues`, "-F", `sub_issue_id=${r.json.id}`);
+        if (link) why.push(`making it a sub-issue of ${issue.key}: ${link}`);
+        // A dependency names its blocker by database id, never by number.
+        for (const b of t.blockedBy.filter((b) => filed[b]?.id)) {
+          const edge = ghWrite("-X", "POST", `repos/${repo}/issues/${r.json.number}/dependencies/blocked_by`, "-F", `issue_id=${filed[b].id}`);
+          if (edge) why.push(`marking it blocked by ${b}: ${edge}`);
+        }
+      }
+      filed[t.n] = { ...filed[t.n], ...(why.length && { failed: why.join("; ") }) };
+      report(ctx, s, line(t.n));
+    }
+    break;
+  }
+  case "close-ticket": {
+    // A merged ticket's sub-issue, closed as completed, once.
+    const [n, what, why] = args;
+    if (!/^\d{2}$/.test(n ?? "")) die('close-ticket <NN> [filed | failed "<why>"]');
+    const [ctx, s] = load(), t = s.ticket_issues?.[n];
+    if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+    const skip = !t?.key ? `ticket ${n} has no sub-issue` : t.closed ? `ticket ${n}'s sub-issue ${t.key} was closed, or tried, already` : null;
+    if (skip) { console.log(`skip: ${skip}`); break; }
+    const tracker = s.request_issue.tracker;
+    if (what && tracker === "github") die("on github, close-ticket makes its own call: run it alone");
+    if (what && !["filed", "failed"].includes(what)) die('close-ticket <NN> [filed | failed "<why>"]');
+    if (!what && tracker !== "github") { console.log(JSON.stringify({ close: t.key, as: "completed" })); break; }  // closed through the tracker's tools
+    const failed = what ? what === "failed" && (why || "no reason given") : ghClose(ctx, t.key, "completed");
+    t.closed = { at: now(), ...(failed && { failed }) };
+    report(ctx, s, failed ? `closing ticket ${n}'s sub-issue ${t.key} failed: ${failed}` : `closed ticket ${n}'s sub-issue ${t.key}`);
     break;
   }
   case "approve": {
@@ -937,12 +1087,34 @@ switch (cmd) {
     break;
   }
   case "abandon": {
+    const [what, why] = args;
     const [ctx, s] = load();
+    // What the run filed and left open, closed as not planned once it's abandoned: each ticket's sub-issue that no
+    // close-ticket has tried, and a request issue it filed.
+    const open = [...Object.values(s.ticket_issues || {}).filter((t) => t.key && !t.closed).map((t) => t.key), ...(s.request_issue?.filed ? [s.request_issue.key] : [])];
+    if (what) {  // on linear or other, how the orchestrator's closes went
+      if (s.stage !== "abandoned") die(`run ${ctx.id} isn't abandoned`);
+      if (!open.length) die(`${ctx.id} left no issues to close`);
+      if (s.request_issue.tracker === "github") die("on github, abandon makes its own calls");
+      if (s.abandon_closes) { console.log("skip: closing them was recorded already"); break; }
+      if (!["filed", "failed"].includes(what)) die('abandon [filed | failed "<why>"]');
+      s.abandon_closes = { at: now(), ...(what === "failed" && { failed: why || "no reason given" }) };
+      report(ctx, s, what === "failed" ? `closing ${open.join(", ")} as not planned failed: ${s.abandon_closes.failed}` : `closed ${open.join(", ")} as not planned`);
+      break;
+    }
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is already ${s.stage}`);
     s.stage = "abandoned";
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} abandoned`);
     console.log(`abandoned ${ctx.id}; its branch is kept`);
+    if (!open.length) break;
+    if (s.request_issue.tracker !== "github") { console.log(JSON.stringify({ close: open, as: "not planned" })); break; }  // through the tracker's tools
+    s.abandon_closes = { at: now() };
+    for (const key of open) {
+      const failed = ghClose(ctx, key, "not_planned");
+      if (failed) s.abandon_closes.failed = [s.abandon_closes.failed, `${key}: ${failed}`].filter(Boolean).join("; ");
+      report(ctx, s, failed ? `closing ${key} as not planned failed: ${failed}` : `closed ${key} as not planned`);
+    }
     break;
   }
   case "snapshot": {
@@ -1119,5 +1291,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | approve | notion | ticket | allow | next-ticket | get | set | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
+  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | file-issue | spec-comment | file-tickets | close-ticket | approve | notion | ticket | allow | next-ticket | get | set | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
 }

@@ -108,7 +108,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/build.md` and follow it. I
 
 `/factory approve [run] <decision>`, at the spec gate or the map gate. Find the run (see above). A run routed `map` is at the map gate: follow **Decisions** in `references/map.md`, whose decisions are `chart`, `run` and `abandon`, and nothing below. Otherwise it is at the spec gate. With no decision, or one that isn't `approved`, `revise` or `abandon`, ask that gate's question (see **Attention items**). At the spec gate:
 
-- `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop; otherwise do the **Notion push** first. Then go to step 7 of **build**.
+- `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop; otherwise do the **Notion push** first, then the tracker's **Spec approval** (see **Request issue**). Then go to step 7 of **build**.
 - `revise`: `run-state approve spec revise --run <id>`; if it refuses, print why and stop. What should change is in their notes or Other answer at the gate, else ask it in plain chat. Append the answer to `grill.md` under `### Session <today's date> (revise)` as `- Q: What should change? → A: <their words>`, then go to step 4 of **build**.
 - `abandon`: the decision is the human's answer, so don't ask again. Run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.
 
@@ -159,7 +159,7 @@ Every `run-state set stage <outcome>` and every `run-state abandon` is followed 
 
 ## Request issue
 
-When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/tracker.md` and follow it: its **Start** for a new run's request, its **Claim** after every `run-state lane` that exits 0 and on every resume, and its **Closing** after the snapshot that ends a run. Whenever one of them is due, read that file first if it isn't already in this session.
+When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/tracker.md` and follow it: its **Start** for a new run's request, its **Claim** after every `run-state lane` that exits 0 and on every resume, its **Spec approval** after the Notion push, its **Tickets** after `done tickets` and each `MERGED`, and its **Closing** after the snapshot that ends a run. Whenever one of them is due, read that file first if it isn't already in this session.
 
 ## Resume
 

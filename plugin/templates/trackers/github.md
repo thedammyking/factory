@@ -8,6 +8,10 @@ Request issues live as issues on the GitHub repo `origin` names. Everything goes
 - **Claim**: `run-state claim` assigns the issue to you (`@me`) unless you already were when the run started, and records whether it did. `run-state unclaim` undoes only that: it unassigns you only if the claim assigned you.
 - **Closing reference**: `Closes #12`, which `pr-render` puts in the PR body. GitHub closes the issue when the PR merges into the default branch, and only then.
 - **Comment**: `run-state comment` posts the closing comment.
+- **File**: `run-state file-issue` files a plain run's request issue once its spec is approved: the spec's title, `spec.md` as its body and you (`@me`) as its assignee. Its closing reference is `Closes #<n>`, and nothing claims or unclaims it. A body over GitHub's 65,536 characters is cut there, its last line pointing to the whole file in history.
+- **Spec comment**: `run-state spec-comment` posts the approved spec as one comment on the issue the run started from, whose body is never changed.
+- **File tickets**: `run-state file-tickets` files each ticket as an issue titled `NN: <title>`, the ticket file as its body, makes it a sub-issue of the request issue (`repos/<repo>/issues/<n>/sub_issues`) and marks it blocked by each ticket its `Blocked by:` line names (`repos/<repo>/issues/<n>/dependencies/blocked_by`), naming each issue by its database `id`.
+- **Close ticket**: `run-state close-ticket <NN>` closes a merged ticket's sub-issue as completed. `run-state abandon` closes the sub-issues still open, and a request issue the run filed, as not planned.
 
 ## Wayfinding operations
 
