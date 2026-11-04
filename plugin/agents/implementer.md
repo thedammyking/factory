@@ -45,7 +45,7 @@ assessment:
 ```
 
 - `DONE`: every task is done, its tests pass, `verify --fast` is green, and `concerns:` is `- none`.
-- `DONE_WITH_CONCERNS`: done, with each doubt under `concerns:`.
+- `DONE_WITH_CONCERNS`: done, with each doubt under `concerns:`. A concern starts another round, so it is only what you could fix in this ticket's code. A command that was denied, or a change only the factory or the human may make (a locked path, the recipe, a permission), goes under `denied:` alone, never `concerns:`.
 - `BLOCKED`, with its cause: `bad_plan` when the plan is wrong about the code (a path, an interface or a task that can't hold); `intent_gap` when the plan is right about the code but leaves open what to build; `environment` when a command, a service or a permission you need is missing, named under `denied:` or `concerns:`, and nothing else in the plan can move without it.
 - `NEEDS_CONTEXT`: a fact from outside the repo, such as a package's API, that you can't go on without. The factory answers `question:` in a file and resumes you.
 

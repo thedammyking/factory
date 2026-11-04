@@ -139,6 +139,22 @@ const atGate = (p) => {
   return [s, run];
 };
 
+test("the minute cap counts from the spec's approval, so a long grill spends none of it, and the dispatch cap grows with the tickets", () => {
+  const p = project();
+  const [s, run] = atGate(p);
+  const file = path.join(s.run_dir, "state.json"), st = JSON.parse(fs.readFileSync(file, "utf8"));
+  fs.writeFileSync(file, JSON.stringify({ ...st, created_at: new Date(Date.now() - 200 * 60000).toISOString() }));  // a 200-minute grill
+  assert.match(run("spend").stdout, /^minutes 200\/90$/m);
+  assert.equal(run("approve", "spec", "approved").status, 0);
+  const tickets = run("dispatch", "tickets");
+  assert.equal(tickets.status, 0, tickets.stdout);
+  fs.mkdirSync(path.join(s.run_dir, "tickets"), { recursive: true });
+  for (const n of ["01", "02", "03"]) fs.writeFileSync(path.join(s.run_dir, "tickets", `${n}-part.md`), `# ${n}: part\n\nStatus: ready-for-agent\nBlocked by: none\n`);
+  const spend = run("spend").stdout;
+  assert.match(spend, /^minutes 0\/180$/m, "90, and 45 for each ticket past the first");
+  assert.match(spend, /^dispatches 4\/40$/m, "30, and 5 for each ticket past the first");
+});
+
 test("nothing past the spec gate dispatches until the human approves the spec", () => {
   const p = project();
   const s = init(p);

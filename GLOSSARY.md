@@ -100,7 +100,7 @@ _Avoid_: backlog, queue
 ### Proof
 
 **Recipe**:
-The project's proven commands for setting up, checking, running and previewing each app, plus the commands the human has allowed the factory to run. A run that adds an app extends it.
+The project's proven commands for setting up, checking, running and previewing each app. A run that adds an app extends it. The commands the factory may run are granted in the project's own Claude Code settings, never in anyone's personal ones.
 _Avoid_: config, manifest
 
 **Profile**:

@@ -367,7 +367,7 @@ test("apply refuses a recipe command that wasn't proven, writing nothing", () =>
   untouched(p);
 });
 
-test("apply writes .factory/, the gitignore entries and the CLAUDE.md block, nothing under .claude/, then the closing notes; applying twice changes nothing", () => {
+test("apply writes .factory/, the gitignore entries, the CLAUDE.md block and the factory's Bash rules in .claude/settings.json, then the closing notes; applying twice changes nothing", () => {
   const p = shop({ files: { ...SHOP, "CLAUDE.md": "# Shop\n\nHouse rules.\n" } });
   const f = fakes({ gitleaks: [] });
   setUp(p, f);
@@ -393,7 +393,10 @@ test("apply writes .factory/, the gitignore entries and the CLAUDE.md block, not
   assert.doesNotMatch(claude, /apps\/web/, "`npm run <check>` goes without saying");
   assert.match(claude, /`\/factory/);
   assert.ok(claude.endsWith("<!-- factory:end -->\n"));
-  assert.ok(!fs.existsSync(path.join(p.dir, ".claude")), "nothing under .claude/");
+  const allow = JSON.parse(read(p, ".claude/settings.json")).permissions.allow;
+  for (const rule of ["Bash(git commit:*)", "Bash(node:*)"]) assert.ok(allow.includes(rule), rule);
+  assert.ok(!allow.some((r) => /publish|git push/.test(r)), "never publish or push");
+  assert.deepEqual(fs.readdirSync(path.join(p.dir, ".claude")), ["settings.json"], "nothing else under .claude/");
   assert.ok(!fs.existsSync(path.join(p.dir, ".mcp.json")), "no MCP server registered");
   assert.match(out, /Include your own updates/);
   assert.match(out, /is:open is:pr label:factory label:needs-human/);
@@ -526,7 +529,7 @@ test("a repo with no package.json gets `pnpm init` in the proposal, run once by 
   assert.deepEqual([recipe.apps, recipe.package_manager], [[], "pnpm"]);
 });
 
-test("redetect proves what new or changed manifests bring, adds it to the recipe with kept values and allow left alone, leaves out what fails its proof and commits it", () => {
+test("redetect proves what new or changed manifests bring, adds it to the recipe with kept values and allow left alone, and its Bash rules to the project's settings, leaves out what fails its proof and commits it", () => {
   const p = shop();
   const f = fakes();
   setUp(p, f);
@@ -538,6 +541,7 @@ test("redetect proves what new or changed manifests bring, adds it to the recipe
   delete before.apps.find((a) => a.name === "api").checks.build;
   before.allow = ["Bash(docker compose up:*)"];
   write(p, ".factory/setup.json", before);
+  fs.rmSync(path.join(p.dir, ".claude"), { recursive: true });  // a project set up before setup granted rules there
   p.git("add", "-A"); p.git("commit", "-qm", "setup");
   // a ticket's commit: a new web app whose lint fails, and a lint script added to the API
   write(p, "packages/admin/package.json", { name: "@shop/admin", scripts: { test: script("0"), lint: script("console.log('2 problems'); process.exit(1)") }, dependencies: { next: "15.0.0" } });
@@ -561,6 +565,7 @@ test("redetect proves what new or changed manifests bring, adds it to the recipe
   assert.deepEqual(after.apps.slice(1, 3), before.apps.slice(1, 3));
   assert.deepEqual(after.pinned, [...before.pinned, "packages/admin/e2e"], "the new app's directory joins the kept list");
   assert.deepEqual(after.allow, before.allow);
+  assert.ok(JSON.parse(p.git("show", "HEAD:.claude/settings.json")).permissions.allow.includes("Bash(npm run:*)"), "the project's settings grant the recipe's rules");
   assert.match(p.git("log", "-1", "--format=%s"), /^factory\(run\): re-detect the recipe$/);
   assert.equal(p.git("status", "--porcelain"), "", "committed");
 

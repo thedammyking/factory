@@ -51,7 +51,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed, MANIFEST } from "./lib.mjs";
+import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed, MANIFEST, LOCKFILE, SETTINGS, factoryRules } from "./lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
@@ -61,32 +61,16 @@ const wt = ticketWorktree(ctx.MAIN, ctx.id, n), branch = ticketBranch(ctx.id, n)
 const IMPL = path.join(dir, "implementation.md"), EVIDENCE = path.join(dir, "evidence.json");
 // the child's --max-turns: the implementer's own maxTurns
 const MAX_TURNS = fs.readFileSync(path.join(PLUGIN, "agents", "implementer.md"), "utf8").match(/^maxTurns:[ \t]*(\d+)/m)[1];
-// A package manager's install, ci, add, remove, run, test, exec, create and dlx as it names them, and its runner: npm's
-// add is install, its remove uninstall and its dlx npx.
-const PM = {
-  npm: ["npm ci", "npm install", "npm uninstall", "npm run", "npm test", "npm exec", "npm create", "npx"],
-  pnpm: ["pnpm install", "pnpm add", "pnpm remove", "pnpm run", "pnpm test", "pnpm exec", "pnpm create", "pnpm dlx"],
-  yarn: ["yarn install", "yarn add", "yarn remove", "yarn run", "yarn test", "yarn exec", "yarn create", "yarn dlx"],
-  bun: ["bun install", "bun add", "bun remove", "bun run", "bun test", "bun create", "bun x", "bunx"],
-};
-// git as the implementer uses it: never push, fetch, rebase or switch branches
-const GIT = ["status", "diff", "log", "show", "add", "rm", "mv", "restore", "commit"];
-// What the implementer child may run: each check's program, git as it needs it, the package manager's commands, node,
-// verify and each rule the human allowed. A check run through a package manager is its run or test rule, never the
-// package manager whole, which would allow publish. It's read from the run worktree's recipe, so a recipe change on
-// the run branch reaches a ticket cut before it. Reads and edits in its worktree and the run dir need no rule under
-// acceptEdits.
-// ponytail: a check's program is its first word, so a check written `cd web && make lint` allows only cd.
+// What the implementer child may run: the factory's rules for the run worktree's recipe (lib's factoryRules), verify, and
+// each rule the project's .claude/settings.json allows, where setup and `run-state allow` put them (a recipe from before
+// that holds them in its own allow list). Both are read from the run worktree, so a change on the run branch reaches a
+// ticket cut before it. Reads and edits in its worktree and the run dir need no rule under acceptEdits.
 function allowlist() {
   const recipe = readJson(path.join(ctx.worktree, ".factory", "setup.json"), {});
-  const program = (c) => String(c ?? "").trim().split(/\s+/).find((w) => !/^[A-Za-z_]\w*=/.test(w));  // past any NAME=value
-  const programs = (recipe.apps || []).flatMap((a) => Object.values(a.checks || {}).map((c) => program(typeof c === "string" ? c : c?.cmd))).filter(Boolean);
-  // a recipe from before setup recorded its package manager names it in a check or its setup
-  const pm = recipe.package_manager ?? [...programs, program(recipe.setup)].find((p) => PM[p]);
+  const allowed = readJson(path.join(ctx.worktree, SETTINGS), {}).permissions?.allow || [];
   // the Skill rule asks first, and a plan with UI states loads that skill
-  return [...new Set([...programs.filter((p) => !PM[p]).map((p) => `Bash(${p}:*)`), ...GIT.map((c) => `Bash(git ${c}:*)`),
-    ...(PM[pm] || []).map((c) => `Bash(${c}:*)`), "Bash(node:*)", `Bash(node ${path.join(HERE, "verify.mjs")}:*)`,
-    "Skill(factory:ui-craft)", ...(recipe.allow || [])])];
+  return [...new Set([...factoryRules(ctx.worktree, recipe), `Bash(node ${path.join(HERE, "verify.mjs")}:*)`, "Skill(factory:ui-craft)",
+    ...allowed.filter((r) => r.startsWith("Bash(")), ...(recipe.allow || [])])];
 }
 const config = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {});
 const node = (script, args, opts) => spawnSync(process.execPath, [path.join(HERE, script), ...args], { encoding: "utf8", ...opts });
@@ -105,18 +89,20 @@ function runSetup(cwd, command, log) {
   if (r.status !== 0) console.log(digest(fs.readFileSync(log, "utf8"), log));
   return r.status === 0;
 }
-const LOCKFILE = /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
 // A docs, refactor or maintenance oneshot has no qa: the recipe's checks are its only proof, and the merge decision
 // needs-human (#24).
 // ponytail: merge-decision's triage.md parse, copied; share it from lib once the parallel edits have landed.
 const triage = (() => { try { return JSON.parse([...fs.readFileSync(path.join(ctx.runDir, "triage.md"), "utf8").matchAll(/```json\s*\n([\s\S]*?)\n```/g)].at(-1)[1]); } catch { return {}; } })();
 const noQa = (s) => s.route === "oneshot" && ["docs", "refactor", "maintenance"].includes(triage.type);
 
-// The implementer's report: its last status line (null when it has none, an INCOMPLETE attempt), cause and concerns.
+// The implementer's report: its last status line (null when it has none, an INCOMPLETE attempt), cause and concerns, and
+// each command denied it, from its own denied: list and the one copied from its result.
 function report() {
   const text = fs.existsSync(IMPL) ? fs.readFileSync(IMPL, "utf8") : "", last = (re) => [...text.matchAll(re)].at(-1)?.[1];
   const concerns = (last(/^concerns:[ \t]*\n((?:[ \t]*- .*(?:\n|$))*)/gm) || "").split("\n").map((l) => l.trim()).filter((l) => l && l !== "- none");
-  return { status: last(/^status:[ \t]*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)[ \t]*$/gm) || null, cause: last(/^blocked_cause:[ \t]*(\w+)/gm), concerns };
+  const denied = [...text.matchAll(/^(?:denied:|Denied, as the child's result records it:)[ \t]*\n((?:[ \t]*- .*(?:\n|$))*)/gm)]
+    .flatMap((m) => [...m[1].matchAll(/^[ \t]*- `(?:Bash: )?([^`]+)`/gm)].map((x) => x[1]));
+  return { status: last(/^status:[ \t]*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)[ \t]*$/gm) || null, cause: last(/^blocked_cause:[ \t]*(\w+)/gm), concerns, denied: [...new Set(denied)] };
 }
 // What the ticket's files say comes next, as [word, why]. A plan is amended and a question researched once per ticket.
 function verdict(s) {
@@ -278,7 +264,13 @@ const resumable = (session) => before.dispatches.some((d) => d.session === sessi
 const sincePlan = before.dispatches.slice(planned + 1).filter((d) => d.stage === stage), lastTry = sincePlan.at(-1);
 const last = sincePlan.filter((d) => d.session && resumable(d.session)).at(-1);  // the latest attempt whose session resumes
 const escalated = !!last && atLast && (last.round || 0) < round, fresh = !last || escalated;
-const [was] = attempts ? verdict(before) : [], { status: wasStatus, cause: wasCause } = report();
+const [was] = attempts ? verdict(before) : [], { status: wasStatus, cause: wasCause, denied: wasDenied } = report();
+// Claude Code tells a child not to retry what it denied for the rest of its session, so a resumed child is told which of
+// those commands the human has since allowed. A chained one isn't, since a rule covers only its first part.
+const covers = (rule, c) => { const [, cmd, any] = rule.match(/^Bash\((.+?)(:\*)?\)$/) || []; return !!cmd && (c === cmd || (!!any && c.startsWith(`${cmd} `))); };
+const allowedNow = wasDenied.filter((c) => !/[;&|<>`$()]/.test(c) && allowlist().some((r) => covers(r, c)));
+const retry = allowedNow.length ? `The human has since allowed ${allowedNow.map((c) => `\`${c}\``).join(", ")}, which you were denied: `
+  + "that denial no longer holds, so run each again. " : "";
 const ev = readJson(EVIDENCE), moved = fs.existsSync(IMPL) && path.join(dir, `implementation.round${attempts}.md`);
 
 const d = runState("dispatch", stage);
@@ -315,7 +307,7 @@ function message() {
   if (was === "ROUND" && !wasStatus) return `Your last turn ended before implementation.md had its status line. Carry on with the plan.${again}`;
   if (was === "ROUND") return `Fix each concern under concerns: in ${moved || IMPL}, or say there why it needs no fix.${again}`;
   if (was === "RESEARCH") return `The answer to your question is in ${path.join(dir, "context.md")}. Carry on with the plan.${again}`;
-  if (wasStatus === "BLOCKED" && wasCause === "environment") return `The human allowed commands you were denied: try each again, then carry on with the plan.${again}`;
+  if (wasStatus === "BLOCKED" && wasCause === "environment") return retry ? `Then carry on with the plan.${again}` : `The human allowed commands you were denied: try each again, then carry on with the plan.${again}`;
   return `Carry on with the plan where you left off.${again}`;
 }
 const lines = [`run_dir: ${ctx.runDir}`, `worktree: ${wt}`, `ticket: ${ticket}`, `plan: ${path.join(dir, "plan.md")}`, `implementation: ${IMPL}`];
@@ -331,7 +323,7 @@ const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin
 fs.closeSync(fd);
 const exited = new Promise((resolve) => { child.on("error", resolve); child.on("close", () => resolve(null)); });
 if (!child.pid) say("ATTENTION", `claude couldn't start: ${(await exited)?.message}`);
-child.stdin.end(fresh ? `${lines.join("\n")}\n\n${message()}\n` : `${message()}\n`);
+child.stdin.end(fresh ? `${lines.join("\n")}\n\n${message()}\n` : `${retry}${message()}\n`);
 told(runState("dispatch", stage, "--log", log, "--pid", String(child.pid), "--session", session));
 await exited;
 

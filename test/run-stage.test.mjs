@@ -50,6 +50,7 @@ function ticketReady(t, { recipe = RECIPE, config = {}, files = {} } = {}) {
   const p = project({ recipe, config });
   fs.writeFileSync(path.join(p.dir, "package.json"), PACKAGE);
   fs.writeFileSync(path.join(p.dir, "index.js"), "1\n");
+  fs.writeFileSync(path.join(p.dir, "package-lock.json"), "{}\n");
   write(p.dir, files);
   p.git("add", "."); p.git("commit", "-qm", "product");
   fs.appendFileSync(path.join(p.dir, ".git/info/exclude"), ".deps\n");
@@ -395,12 +396,13 @@ test("Allow and retry: from the ticket's needs-human stop, the retry resumes the
   assert.deepEqual([flag(retry.argv, "--resume"), retry.argv.includes("--session-id")], [flag(first.argv, "--session-id"), false], "the same child, resumed");
   assert.ok(!flag(first.argv, "--allowedTools").split(",").includes("Bash(curl -sI:*)"));
   assert.ok(flag(retry.argv, "--allowedTools").split(",").includes("Bash(curl -sI:*)"), "the rule the human allowed");
-  assert.ok(retry.stdin.startsWith("The human allowed commands you were denied: try each again, then carry on with the plan."), retry.stdin);
+  assert.ok(retry.stdin.startsWith("The human has since allowed `curl -sI https://registry.npmjs.org/csv`, which you were denied: "
+    + "that denial no longer holds, so run each again. Then carry on with the plan."), retry.stdin);
   assert.equal(git(r.wt, "rev-parse", "HEAD~1"), blocked, "the ticket's commits stay");
   assert.equal(r.state().rounds, undefined, "and the retry costs no round");
 });
 
-test("the child may run the recipe's package manager as it names its commands, its runner, node, git, verify and each rule the recipe allows, read from the run worktree's recipe, and nothing else", (t) => {
+test("the child may run the recipe's package manager as it names its commands, its runner, node, git, verify and each Bash rule the project's settings allow, read from the run worktree, and nothing else", (t) => {
   const r = ticketReady(t, { recipe: { package_manager: "npm", apps: [] } });
   const blocked = { write: { [r.impl]: report("BLOCKED", { cause: "environment" }) } };
   r.play([blocked, blocked]);
@@ -409,12 +411,53 @@ test("the child may run the recipe's package manager as it names its commands, i
   assert.deepEqual(rules(r.calls()[0]), [...GIT_RULES, ...NPM_RULES, "Bash(npx:*)", "Bash(node:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
     "a recipe with no apps still gets npm's own commands and npx, and nothing else: no curl, docker, rm or publish");
 
-  // a rule the developer allowed, committed on the run branch after the ticket was cut
-  fs.writeFileSync(path.join(r.s.worktree, ".factory/setup.json"), JSON.stringify({ package_manager: "npm", apps: [], allow: ["Bash(docker compose up:*)"] }));
-  git(r.s.worktree, "commit", "-qam", "Allow docker compose up");
+  // a rule the developer allowed in the project's settings, and one in a recipe from before those held them, committed on
+  // the run branch after the ticket was cut; the settings' other rules aren't Bash's
+  fs.mkdirSync(path.join(r.s.worktree, ".claude"));
+  fs.writeFileSync(path.join(r.s.worktree, ".claude/settings.json"), JSON.stringify({ permissions: { allow: ["Bash(docker compose up:*)", "WebFetch(domain:x.dev)"] } }));
+  fs.writeFileSync(path.join(r.s.worktree, ".factory/setup.json"), JSON.stringify({ package_manager: "npm", apps: [], allow: ["Bash(make:*)"] }));
+  git(r.s.worktree, "add", "."); git(r.s.worktree, "commit", "-qm", "Allow docker compose up and make");
   assert.match(lastLine(r.stage("implement", "01")), /^ATTENTION 01: BLOCKED: environment/);
-  assert.deepEqual(rules(r.calls()[1]), [...rules(r.calls()[0]), "Bash(docker compose up:*)"]);
+  assert.deepEqual(rules(r.calls()[1]), [...rules(r.calls()[0]), "Bash(docker compose up:*)", "Bash(make:*)"]);
   assert.doesNotMatch(fs.readFileSync(path.join(r.wt, ".factory/setup.json"), "utf8"), /docker/, "the ticket's worktree still holds the recipe it was cut with");
+});
+
+test("with no lockfile yet, the recipe's package manager is setup's default, so the child may run every package manager's commands", (t) => {
+  const r = ticketReady(t, { recipe: { package_manager: "npm", apps: [] }, files: { "package-lock.json": null } });
+  r.play([{ write: { [r.impl]: report("BLOCKED", { cause: "environment" }) } }]);
+  r.stage("implement", "01");
+  const rules = flag(r.calls()[0].argv, "--allowedTools").split(",");
+  for (const rule of ["Bash(npm install:*)", "Bash(pnpm add:*)", "Bash(yarn add:*)", "Bash(bun add:*)", "Bash(pnpm dlx:*)"]) assert.ok(rules.includes(rule), rule);
+  assert.ok(!rules.some((x) => /publish/.test(x)), "and still no publish");
+});
+
+test("a resumed child is told which commands it was denied are allowed now, whatever its status, since its session says never to retry them", (t) => {
+  const r = ticketReady(t);
+  const concerned = report("DONE_WITH_CONCERNS", { concerns: "- the Docker check wasn't run: `docker info` was denied" });
+  r.play([{ ...CSV, write: { [r.impl]: concerned }, denied: ["docker info --format ok", "env DOCKER_HOST=x docker info"] },
+    { write: { [r.impl]: report("DONE") } }]);
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  assert.equal(lastLine(round(r)), "OK implement:01 round 1/3");
+  r.run("allow", "Bash(docker info:*)");
+  r.stage("implement", "01");
+  const [, again] = r.calls();
+  assert.ok(again.stdin.startsWith("The human has since allowed `docker info --format ok`, which you were denied: that denial no longer holds, "
+    + "so run each again. Fix each concern under concerns:"), again.stdin);
+  assert.ok(!again.stdin.includes("DOCKER_HOST"), "a command no rule covers isn't named");
+});
+
+test("a second attempt in a row that made no commits escalates, as a child repeating a concern it can't fix would loop", (t) => {
+  const r = ticketReady(t);
+  const concerned = { write: { [r.impl]: report("DONE_WITH_CONCERNS", { concerns: "- `.factory/setup.json` is locked" }) } };
+  r.play([{ ...CSV, ...concerned }, concerned, concerned]);
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  assert.equal(lastLine(round(r)), "OK implement:01 round 1/3");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  assert.equal(lastLine(round(r)), "OK implement:01 round 1/3: the last attempt made no commits, so it cost no round");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  const stuck = round(r);
+  assert.equal(stuck.status, 5);
+  assert.equal(stuck.stdout.trim(), "ESCALATE implement:01: two attempts in a row made no commits");
 });
 
 test("NEEDS_CONTEXT gets one researcher dispatch, whose answer the resumed child is pointed at; a second NEEDS_CONTEXT is the human's", (t) => {

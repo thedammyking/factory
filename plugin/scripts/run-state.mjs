@@ -67,8 +67,9 @@
 //   run-state.mjs ticket <NN> <status>        -> after `done tickets`, the only change to a ticket's Status line that
 //                                                keeps the hash it recorded
 //   run-state.mjs allow "<rule>"              -> a rule the human allowed at a BLOCKED: environment stop, such as
-//                                                Bash(npm install:*): added once to the allow list of the run worktree's
-//                                                .factory/setup.json, committed on the run branch and logged. Refuses
+//                                                Bash(npm install:*): added once to permissions.allow in the run
+//                                                worktree's .claude/settings.json, the project's Claude Code settings,
+//                                                committed on the run branch and logged. Refuses
 //                                                anything but one Bash rule naming its program, and a program that runs
 //                                                any command
 //   run-state.mjs next-ticket                 -> after `done tickets`, a line per takeable ticket of lib's frontier,
@@ -102,8 +103,9 @@
 //                                                `ESCALATE …` and exit 5 once caps.implement_rounds (3) are spent and
 //                                                not lifted (past a lifted cap, `OK … (lifted)`), or at once when its
 //                                                evidence shows the same failure as the round before. An attempt that
-//                                                made no commits on the ticket's branch costs no round, and a round
-//                                                counted since the last attempt isn't counted again
+//                                                made no commits on the ticket's branch costs no round, but a second
+//                                                in a row escalates, and a round counted since the last attempt isn't
+//                                                counted again
 //   run-state.mjs round review                -> before a review fix round: `OK review round <n>/<cap>`, or `ESCALATE …`
 //                                                and exit 5 once caps.review_rounds (2) are spent and not lifted. An
 //                                                attempt that made no commits on the run branch costs no round
@@ -156,7 +158,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, attributed, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock, githubRepo, ghApi } from "./lib.mjs";
+import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, attributed, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock, githubRepo, ghApi, SETTINGS, settingsWith } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
 const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted", "suspended"];
@@ -386,11 +388,12 @@ function logOf(s, d) {
   return d.log || (t && path.join(path.dirname(t), id, "subagents", `agent-${d.agent}.jsonl`));
 }
 // The run's caps as [name, used, limit], from config.json's caps over the defaults. They scale with the ticket count (the
-// planner's tickets/NN-slug.md files) once it is known (design fix 7). Minutes are those since init, less the time spent
-// waiting on the human (needs-human, failed or suspended, until the next dispatch) and the downtime reconcile finds.
+// planner's tickets/NN-slug.md files) once it is known (design fix 7). Minutes are those since the spec was approved (since
+// init on a route with no spec gate), as the grill before it goes at the human's pace, less the time spent waiting on the
+// human (needs-human, failed or suspended, until the next dispatch) and the downtime reconcile finds.
 // Once pr.json exists, tokens spent after it go to their own post_pr allowance, which the tokens cap never pays for
 // (design fix 13).
-const CAPS = { dispatches_per_run: 30, minutes_per_run: 90, minutes_per_ticket: 45, tokens_overhead: 700_000,
+const CAPS = { dispatches_per_run: 30, dispatches_per_ticket: 5, minutes_per_run: 90, minutes_per_ticket: 45, tokens_overhead: 700_000,
   tokens_per_ticket: 700_000, tokens_per_run: 1_500_000, tokens_post_pr: 400_000, implement_rounds: 3, review_rounds: 2, ci_rounds: 1 };
 const limits = (ctx) => ({ ...CAPS, ...readJson(path.join(ctx.MAIN, ".factory", "config.json"))?.caps });
 function caps(ctx, s) {
@@ -398,9 +401,9 @@ function caps(ctx, s) {
   const dir = path.join(ctx.runDir, "tickets");
   const tickets = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^\d{2}-.+\.md$/.test(f)).length : 0;
   const pr = s.spend.tokens_at_pr;
-  const ran = Date.now() - Date.parse(s.created_at) - (s.waited_ms || 0) - (s.waiting_since ? Date.now() - Date.parse(s.waiting_since) : 0);
+  const ran = Date.now() - Date.parse(s.approvals?.spec?.at ?? s.created_at) - (s.waited_ms || 0) - (s.waiting_since ? Date.now() - Date.parse(s.waiting_since) : 0);
   return [
-    ["dispatches", s.dispatches.length, c.dispatches_per_run],
+    ["dispatches", s.dispatches.length, c.dispatches_per_run + c.dispatches_per_ticket * Math.max(0, tickets - 1)],
     ["minutes", Math.floor(ran / 60000), c.minutes_per_run + c.minutes_per_ticket * Math.max(0, tickets - 1)],
     ["tokens", pr ?? s.spend.tokens, tickets ? c.tokens_overhead + c.tokens_per_ticket * tickets : c.tokens_per_run],
     ...(pr === undefined ? [] : [["post_pr", s.spend.tokens - pr, c.tokens_post_pr]]),
@@ -696,10 +699,12 @@ switch (cmd) {
     // A round counted since the last attempt is the next attempt's: a resume that asks again (after a stop between this
     // and the attempt) doesn't pay for it twice.
     if (r.n > (last.round || 0)) { console.log(`OK ${loop} round ${r.n}/${cap}`); break; }
-    // An attempt counts as a round only when it produced commits: one that crashed or made nothing costs nothing.
-    // ponytail: such attempts are free and unlimited, bounded only by the run's dispatch, minute and token caps; count
-    // them in a row if a stuck child ever burns a run's budget that way.
+    // An attempt counts as a round only when it produced commits: one that crashed or made nothing costs nothing. Two such
+    // in a row since the plan are stuck, as a child repeating a concern it can't fix is, and the second escalates. An
+    // attempt that made nothing starts its successor at its own SHA.
     let made = 0; try { made = Number(git(ctx.MAIN, "rev-list", "--count", `${last.sha}..refs/heads/${ticketBranch(ctx.id, n)}`)); } catch {}
+    const sincePlan = s.dispatches.slice(s.dispatches.findLastIndex((d) => d.stage === `plan:${n}`) + 1).filter((d) => d.stage === loop);
+    if (!made && sincePlan.at(-2)?.sha === last.sha) escalate("two attempts in a row made no commits");
     if (!made) { console.log(`OK ${loop} round ${r.n}/${cap}: the last attempt made no commits, so it cost no round`); break; }
     // The failure's signature: the checks that didn't pass and their digests, numbers masked so timings and ports don't
     // count. The same one twice in a row means the round changed nothing.
@@ -1005,6 +1010,8 @@ switch (cmd) {
       die(`${ctx.id} isn't at the spec gate, which follows the builder check`);
     }
     s.approvals = { ...s.approvals, spec: decision === "approved" ? { sha256: specHash(ctx), at: now() } : undefined };
+    // The minute cap counts from here, so the waits before it are no longer subtracted.
+    if (decision === "approved") { delete s.waited_ms; delete s.waiting_since; }
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} ${gate} ${decision}`);
     console.log(`${gate} ${decision}`);
@@ -1036,13 +1043,15 @@ switch (cmd) {
     }
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
-    // The recipe on the run branch, which run-stage builds every ticket's allowlist from and the PR shows. One that
-    // doesn't parse is never written over.
-    const file = path.join(ctx.worktree, ".factory", "setup.json"), recipe = readJson(file) ?? die(`${file} doesn't parse as a recipe`);
-    if ((recipe.allow ||= []).includes(rule)) { console.log(`allowed already: ${rule}`); break; }
-    recipe.allow.push(rule);
-    fs.writeFileSync(file, JSON.stringify(recipe, null, 2) + "\n");
-    // --no-verify: the project's commit hooks never judge the factory's recipe.
+    // The project's Claude Code settings on the run branch, which run-stage builds every ticket's allowlist from and the PR
+    // shows, so the project keeps the rule. One that doesn't parse is never written over.
+    const file = path.join(ctx.worktree, SETTINGS), text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+    const after = settingsWith(text, [rule]);
+    if (!after && readJson(file, {}).permissions?.allow?.includes(rule)) { console.log(`allowed already: ${rule}`); break; }
+    if (!after) die(`${file} doesn't parse as JSON`);
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    fs.writeFileSync(file, after);
+    // --no-verify: the project's commit hooks never judge the factory's settings.
     git(ctx.worktree, "add", "--", file);
     git(ctx.worktree, "commit", "-q", "--no-verify", "-m", attributed(`factory(run): allow ${rule}`, "commit", s), "--", file);
     log(ctx.runDir, `run: ${ctx.id} allowed ${rule}`);

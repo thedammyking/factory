@@ -193,6 +193,41 @@ export const unverifiedNative = (recipe, verified, files) => Object.keys(PLATFOR
 // or changes one re-detects the recipe (#78).
 export const MANIFEST = /(^|\/)(package\.json|app\.json|app\.config\.[cm]?[jt]s)$/;
 
+// A package manager's install, ci, add, remove, run, test, exec, create and dlx as it names them, and its runner: npm's
+// add is install, its remove uninstall and its dlx npx.
+export const PM = {
+  npm: ["npm ci", "npm install", "npm uninstall", "npm run", "npm test", "npm exec", "npm create", "npx"],
+  pnpm: ["pnpm install", "pnpm add", "pnpm remove", "pnpm run", "pnpm test", "pnpm exec", "pnpm create", "pnpm dlx"],
+  yarn: ["yarn install", "yarn add", "yarn remove", "yarn run", "yarn test", "yarn exec", "yarn create", "yarn dlx"],
+  bun: ["bun install", "bun add", "bun remove", "bun run", "bun test", "bun create", "bun x", "bunx"],
+};
+export const LOCKFILE = /(^|\/)(package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
+// git as the factory's implementer uses it: never push, fetch, rebase or switch branches
+const GIT_COMMANDS = ["status", "diff", "log", "show", "add", "rm", "mv", "restore", "commit"];
+// The project's Claude Code settings, where the factory's Bash rules live for every session in the project.
+export const SETTINGS = ".claude/settings.json";
+// The Bash rules a project's factory work runs under, for the recipe in `root`: each check's program, git as the
+// implementer needs it, the package manager's commands and node. A check run through a package manager is its run or test
+// rule, never the package manager whole, which would allow publish. With no lockfile yet, the recipe's package manager is
+// only setup's default and the first ticket installs with the one the spec chose, so each one's commands are allowed.
+// ponytail: a check's program is its first word, so a check written `cd web && make lint` allows only cd.
+export function factoryRules(root, recipe) {
+  const program = (c) => String(c ?? "").trim().split(/\s+/).find((w) => !/^[A-Za-z_]\w*=/.test(w));  // past any NAME=value
+  const programs = (recipe.apps || []).flatMap((a) => Object.values(a.checks || {}).map((c) => program(typeof c === "string" ? c : c?.cmd))).filter(Boolean);
+  // a recipe from before setup recorded its package manager names it in a check or its setup
+  const pm = recipe.package_manager ?? [...programs, program(recipe.setup)].find((p) => PM[p]);
+  const pms = fs.readdirSync(root).some((f) => LOCKFILE.test(f)) ? PM[pm] || [] : Object.values(PM).flat();
+  return [...new Set([...programs.filter((p) => !PM[p]).map((p) => `Bash(${p}:*)`), ...GIT_COMMANDS.map((c) => `Bash(git ${c}:*)`),
+    ...pms.map((c) => `Bash(${c}:*)`), "Bash(node:*)"])];
+}
+// The settings file's text with `rules` added to its permissions.allow and all else kept, or null when it has them all.
+// One that doesn't parse is never written over.
+export function settingsWith(text, rules) {
+  let settings = {}; try { settings = text ? JSON.parse(text) : {}; } catch { return null; }
+  const allow = settings.permissions?.allow || [], more = rules.filter((r) => !allow.includes(r));
+  return more.length ? JSON.stringify({ ...settings, permissions: { ...settings.permissions, allow: [...allow, ...more] } }, null, 2) + "\n" : null;
+}
+
 // What a failing command's output reaches agents as, in at most 40 lines: the lines matching an error pattern (the first
 // 29 before the last 10), then as many of the last lines as fit, each quoted word for word in log order, then
 // `full output: <log>`, where the caller saved all of it.

@@ -7,7 +7,7 @@ allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(gh auth status)
 
 # setup-factory
 
-You turn this project into one the factory can run in. A script detects, proves and writes; you ask the human only what detection can't answer, and show them one proposal. You write nothing in the project yourself, and nothing is written before the human approves the proposal except `.factory/env.local`, which git never tracks. Setup never writes under `.claude/`, and registers no MCP server but Maestro's, at local scope, for a mobile app (see **Mobile**).
+You turn this project into one the factory can run in. A script detects, proves and writes; you ask the human only what detection can't answer, and show them one proposal. You write nothing in the project yourself, and nothing is written before the human approves the proposal except `.factory/env.local`, which git never tracks. Under `.claude/` setup writes only the project's `settings.json`, adding to its `permissions.allow` the Bash rules the factory runs under (the recipe's check programs, the package manager's commands but publish, git but push, and node), so no one edits their own Claude Code settings for it. It registers no MCP server but Maestro's, at local scope, for a mobile app (see **Mobile**).
 
 Call the script as `node ${CLAUDE_PLUGIN_ROOT}/scripts/setup-factory.mjs <command>` from the project's root, written out in full each time (called `setup-factory` below). It keeps the proposal between commands. Change the proposal only through `setup-factory set`, never by editing a file.
 

@@ -50,7 +50,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, mainRoot, attributed, runEnv, envLines, device, cli, PLATFORM_NAMES, watchEnv, smokeHeaders, loginWall, MANIFEST } from "./lib.mjs";
+import { readJson, arg, git, mainRoot, attributed, runEnv, envLines, device, cli, PLATFORM_NAMES, watchEnv, smokeHeaders, loginWall, MANIFEST, SETTINGS, settingsWith, factoryRules } from "./lib.mjs";
 
 const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
 const argv = process.argv.slice(2);
@@ -482,6 +482,8 @@ function plan(P, tracker) {
   const claude = now("CLAUDE.md"), marked = /<!-- factory:begin -->[\s\S]*?<!-- factory:end -->\n?/;
   const ignore = now(".gitignore") ?? "", ignored = new Set(ignore.split("\n").map((l) => l.trim()));
   const missing = GITIGNORE.filter((l) => !ignored.has(l));
+  // the Bash rules the factory runs under, granted in the project's Claude Code settings rather than anyone's own
+  const settings = now(SETTINGS);
   return [
     [".factory/config.json", json({ ...P.config, tracker })],
     [".factory/setup.json", json(recipe)],
@@ -493,6 +495,7 @@ function plan(P, tracker) {
     ...(semgrepOn(P) ? [[SEMGREP, now(SEMGREP) ?? template("semgrep/starter.yaml")]] : []),
     ...(tracker === "other" ? [[".factory/tracker.md", P.tracker_doc ? TRACKER_DOC(P.tracker_doc) : now(".factory/tracker.md")]] : []),
     [".gitignore", missing.length ? `${ignore}${ignore && !ignore.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n` : ignore],
+    [SETTINGS, settingsWith(settings, factoryRules(P.root, recipe)) ?? settings],
     ["CLAUDE.md", !claude ? block : marked.test(claude) ? claude.replace(marked, () => block) : `${claude}${claude.endsWith("\n") ? "" : "\n"}\n${block}`],
   ].map(([f, after]) => [f, now(f), after]);
 }
@@ -812,9 +815,13 @@ async function redetect(wt) {
   }
   if (JSON.stringify(next) === JSON.stringify(recipe)) { console.log("nothing new for the recipe"); return; }
   fs.writeFileSync(path.join(wt, file), JSON.stringify(next, null, 2) + "\n");
+  // the project's settings gain the Bash rules a new app's checks need
+  const at = path.join(wt, SETTINGS), granted = settingsWith(fs.existsSync(at) ? fs.readFileSync(at, "utf8") : null, factoryRules(wt, next));
+  if (granted) { fs.mkdirSync(path.dirname(at), { recursive: true }); fs.writeFileSync(at, granted); git(wt, "add", "--", SETTINGS); }
+  const files = granted ? [file, SETTINGS] : [file];
   // --no-verify: the project's commit hooks never judge the factory's recipe.
-  git(wt, "commit", "-q", "--no-verify", "-m", attributed(`factory(run): re-detect the recipe\n\n${lines.join("\n")}`, "commit", state), "--", file);
-  console.log(`committed ${file} on ${git(wt, "branch", "--show-current") || "HEAD"}`);
+  git(wt, "commit", "-q", "--no-verify", "-m", attributed(`factory(run): re-detect the recipe\n\n${lines.join("\n")}`, "commit", state), "--", ...files);
+  console.log(`committed ${files.join(" and ")} on ${git(wt, "branch", "--show-current") || "HEAD"}`);
 }
 
 switch (cmd) {

@@ -243,7 +243,7 @@ test("osv-scanner's advisories are listed beside the audit's and never block", (
 // The real tools, where they're installed: CI has none, so there these are skipped.
 const installed = (bin) => process.env.PATH.split(path.delimiter).some((d) => fs.existsSync(path.join(d, bin)));
 const STARTER = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/templates/semgrep/starter.yaml"), "utf8");
-const TARGET = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/semgrep/starter.ts");
+const TARGET = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/semgrep/starter.ts.txt");
 
 test("the starter rules pass semgrep --test against their target", { skip: !installed("semgrep") && "semgrep isn't installed" }, () => {
   const dir = scratch("factory-starter-");

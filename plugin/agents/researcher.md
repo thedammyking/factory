@@ -2,7 +2,7 @@
 name: researcher
 description: Answers one factory question, an implementer's question, a map's research ticket or a fact the grill needs, or researches one build request, from the project's code and official docs, and writes answer.md, a ticket's context.md or research.md. Dispatched only by the factory skill.
 model: sonnet
-tools: Read, Grep, Glob, Write, Bash, WebFetch, WebSearch
+tools: Read, Grep, Glob, Write, Edit, Bash, WebFetch, WebSearch
 maxTurns: 40
 ---
 
@@ -92,7 +92,7 @@ Return at most 15 lines: `wrote research.md`, the status line, the packages cove
 
 ## Write: a fact
 
-With `mode: fact` and `fact: <a question>`, a run's grill needs one fact that `research.md`, `triage.md` and `prompt.md` don't hold, and you are its one dispatch. Do **Read first**, then read `{run_dir}/research.md`, which the research stage wrote. Find the fact as **Find** says, for that question alone. Then write `{run_dir}/research.md` again with every line it held unchanged and this section added at its end, after its `Status:` line:
+With `mode: fact` and `fact: <a question>`, a run's grill needs one fact that `research.md`, `triage.md` and `prompt.md` don't hold, and you are its one dispatch. Do **Read first**, then read `{run_dir}/research.md`, which the research stage wrote. Find the fact as **Find** says, for that question alone. Then add this section at the end of `{run_dir}/research.md` with Edit, after its last line, leaving every line above it as it is:
 
 ```markdown
 ## Fact: <the question, in one line>
