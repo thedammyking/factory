@@ -6,8 +6,10 @@
 // instead, and writes to tickets/<NN>/ in the run dir.
 //   - --full also runs each pinned test: a file qa named <run>-<NN>-<slug>.test.mjs (node:test) or .spec.ts (Playwright,
 //     the project's own) in one of the recipe's `pinned` directories. Each is a check of its own, marked pinned, run in
-//     the app whose path holds it while the apps are up, with that app's URL as BASE_URL. --pinned <path> runs only that
-//     test, in the worktree holding it, wherever it's called from, into evidence-pinned.json.
+//     the app whose path holds it while the apps are up, with that app's URL as BASE_URL. A test named
+//     <run>-<NN>-<slug>.<profile>.<ext> runs with the apps up in that profile, FACTORY_PROFILE in its env (design fix 4);
+//     a profile the recipe lacks skips it with up's reason. --pinned <path> runs only that test, in the worktree holding
+//     it, wherever it's called from, into evidence-pinned.json.
 //   - A mobile app's pinned directory holds Maestro flows. Once qa has pinned one there (<run>-<NN>-<slug>-SC-###.yaml),
 //     --full runs the directory as one check, marked pinned, with the apps up (run-apps up takes the device's
 //     machine-wide lock, down gives the device back): `maestro test --format junit` with MAESTRO_CLI_NO_ANALYTICS=1, its
@@ -57,7 +59,7 @@ const appDir = (root, name) => path.join(root, recipe.apps.find((a) => a.name ==
 const NOT_RUN = { exit: null, seconds: 0, log: null };
 const logOf = (name) => path.join(logs, `${name.replace(/[^\w.-]/g, "_")}${mode === "full" ? "" : `.${mode}`}.log`);
 const RUN_APPS = fileURLToPath(new URL("run-apps.mjs", import.meta.url));
-const apps = (cmd) => spawnSync(process.execPath, [RUN_APPS, cmd, "--run", ctx.id], { encoding: "utf8" });
+const apps = (...args) => spawnSync(process.execPath, [RUN_APPS, ...args, "--run", ctx.id], { encoding: "utf8" });
 
 // Executes one command, its stdout and stderr interleaved into logs/<name>.log.
 function execute(cwd, cmd, name, cmdEnv = env) {
@@ -85,9 +87,10 @@ function atBase(failing) {
 }
 
 // Runs a check that needs apps between run-apps up and down. A pinned test gets its path, from its app's, as
-// $FACTORY_PINNED, never spliced into the command, and its app's URL as BASE_URL.
+// $FACTORY_PINNED, never spliced into the command, its app's URL as BASE_URL, and its profile, the one the apps are
+// up in, as FACTORY_PROFILE.
 function withApps(app, check, cmd, pinnedPath, extra = {}) {
-  const up = apps("up");
+  const profile = profileOf(pinnedPath ?? ""), up = apps("up", "--profile", profile);
   try {
     if (up.status !== 0) {
       const log = logOf(`${app}-${check}`), output = `run-apps up failed\n${up.stdout}${up.stderr}`;
@@ -97,7 +100,7 @@ function withApps(app, check, cmd, pinnedPath, extra = {}) {
     const recorded = readJson(path.join(out, "apps.json"));
     const filled = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, typeof v === "string" ? fill(v, recorded) : v]));
     const url = recorded?.apps?.[app]?.url;
-    if (pinnedPath) Object.assign(filled, { FACTORY_PINNED: pinnedPath }, url && { BASE_URL: new URL(url).origin }, extra);
+    if (pinnedPath) Object.assign(filled, { FACTORY_PINNED: pinnedPath, FACTORY_PROFILE: profile }, url && { BASE_URL: new URL(url).origin }, extra);
     return execute(appDir(tree, app), fill(cmd, recorded), `${app}-${check}`, filled);
   } finally {
     // a down that fails leaves the developer's device unrestored, which the human sees here
@@ -134,6 +137,12 @@ function junitFailures(file) {
 const RUNNERS = { ".test.mjs": 'node --test "$FACTORY_PINNED"', ".spec.ts": 'npx --no playwright test "$FACTORY_PINNED"' };
 const QA_NAMED = /^[a-z0-9][a-z0-9-]*-\d{2}-[a-z0-9-]+\./;  // <run>-<NN>-<slug>.
 const runner = (rel) => Object.entries(RUNNERS).find(([ext]) => rel.endsWith(ext))?.[1];
+// A test's profile is the name between its slug and its runner's extension (<run>-<NN>-<slug>.<profile>.spec.ts), else
+// default, as is every Maestro flow's.
+const profileOf = (rel) => {
+  const ext = Object.keys(RUNNERS).find((e) => rel.endsWith(e)), stem = ext ? path.basename(rel).slice(0, -ext.length) : "";
+  return stem.includes(".") ? stem.slice(stem.indexOf(".") + 1) : "default";
+};
 const pinnedDirs = [].concat(recipe.pinned ?? []).map((d) => path.normalize(String(d)).replace(/\/+$/, ""));
 const holder = (rel) => (recipe.apps || []).map((a) => [a, path.normalize(a.path || ".")])
   .filter(([, p]) => p === "." || rel.startsWith(p + path.sep)).sort(([, a], [, b]) => b.length - a.length)[0]?.[0];

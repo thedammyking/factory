@@ -324,6 +324,23 @@ test("verify --pinned <path> runs that one pinned test with the apps up, in the 
   }
 });
 
+// A pinned test that passes only when its app runs in `profile` (the stub answers with its env) and verify says so.
+const PINNED_IN = (profile) => 'import { test } from "node:test";\nimport assert from "node:assert/strict";\n'
+  + `test("[r1] SC-001: the app runs in ${profile}", async () => {\n  assert.equal(process.env.FACTORY_PROFILE, "${profile}");\n`
+  + `  assert.equal((await (await fetch(\`\${process.env.BASE_URL}/\`)).json()).env.MODE ?? "default", "${profile}");\n});\n`;
+
+test("fix 4: a pinned test named <run>-<NN>-<slug>.<profile>.<ext> runs with the apps up in that profile, under --full and --pinned, and one whose profile the recipe lacks is skipped with up's reason", (t) => {
+  const p = withApps(t, { ...API(), profiles: { "api-slow": { api: { MODE: "api-slow" } } } }, {
+    "e2e/r1-01-total.test.mjs": PINNED_IN("default"), "e2e/r1-01-total.api-slow.test.mjs": PINNED_IN("api-slow"),
+    "e2e/r1-01-total.gone.test.mjs": PINNED_IN("gone") });
+  const r = p.verify("--full");
+  assert.deepEqual(statuses(r.evidence), ["api/test=pass", "api/e2e/r1-01-total.api-slow.test.mjs=pass", "api/e2e/r1-01-total.gone.test.mjs=skipped",
+    "api/e2e/r1-01-total.test.mjs=pass"], r.stdout);
+  assert.match(r.evidence.checks[2].digest, /no profile gone in the recipe/);
+  const one = node("verify.mjs", p.dir, ["--pinned", path.join(p.wt, "e2e/r1-01-total.api-slow.test.mjs")]);
+  assert.equal(one.status, 0, one.stdout + one.stderr);
+});
+
 test("a pinned .spec.ts runs with the project's Playwright from the directory of the app that holds it", (t) => {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), "factory-bin-"));
   fs.writeFileSync(path.join(bin, "npx"), `#!${process.execPath}\nconsole.log(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), BASE_URL: process.env.BASE_URL }));\n`, { mode: 0o755 });

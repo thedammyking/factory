@@ -23,8 +23,13 @@ The dispatch gives you `{run_dir}` (the run's directory), `{worktree}` (a clean 
 
 1. **Codebase.** Find what the answer rests on in the code. Cite each claim as a repo-relative `path:line`. If the code doesn't hold what the question assumes, say so: never invent a pattern. In research mode, find the code the change plugs into, the existing code it should mirror, and the tests that cover that code and how they run. If nothing similar exists, write "no similar code exists".
 2. **Docs.** Fetch only when the answer depends on how a package or service behaves; in research mode, for every package the change adds or touches. Take an installed package's version from the lockfile, never from the manifest's range; for a package the change would add, take the version its official docs call current, and mark it new. Fetch that version's official docs and cite the URL. Prefer official docs over blogs. Retry a failed fetch at most once, then record what couldn't be established.
-3. **`NO_ACTION`.** Say why nothing needs to change, with the evidence that shows it.
-4. **Secrets.** Never open `.env` files or `.factory/env.local`, and never write a credential's value, even one you come across. To say where a secret lives, name the file and the variable, as in "`STRIPE_SECRET_KEY`, read at `src/billing.ts:12`".
+3. **UI**, in research mode, only when the request changes what an app shows; otherwise write nothing about UI.
+   - First, the component library the codebase already uses (a shadcn/ui `components.json`, HeroUI, MUI, an internal `packages/ui`), from the lockfile and the imports, with the path its components live in. Every design is built from it.
+   - Where the project's design tokens live: its theme file, Tailwind config or CSS variables, by path. In a UI with no theme, the values the most similar screens already use, each with its `path:line`. Then those screens and the components to reuse, by path.
+   - With no UI and no component library in the repo yet, the library the first UI ticket installs: HeroUI (HeroUI React on web, HeroUI Native on mobile) when the request involves a mobile app, else shadcn/ui. Cover it under `## Packages` as new. A stack neither serves (not React or React Native) gets `no proven reference`, and why.
+   - Figma and Mobbin are read by the planner at plan time, never here.
+4. **`NO_ACTION`.** Say why nothing needs to change, with the evidence that shows it.
+5. **Secrets.** Never open `.env` files or `.factory/env.local`, and never write a credential's value, even one you come across. To say where a secret lives, name the file and the variable, as in "`STRIPE_SECRET_KEY`, read at `src/billing.ts:12`".
 
 ## Write: answer.md
 
@@ -70,12 +75,17 @@ With `mode: decision`, you answer one research ticket of a map, outside any run.
 ### <package> <version> (installed | new)
 - <a version-specific fact the plan needs: an API shape, a config key, a test setup> (<URL>)
 
+## UI
+- Library: <the one in use, with its components' path> | <the one the first UI ticket installs, and why> | none
+- Design tokens: `<path>` | <the similar screens' values, each with its `path:line`> | <the installed library's default theme>
+- `<path>`: <a similar screen or a component to reuse, and what the change takes from it>
+
 ## Risks and unknowns
 - <a risk, or what you couldn't establish and why>, or `- none`
 
 Status: ok
 ```
 
-Give each package three to eight facts. With no package involved, `## Packages` says `- none`. The last line is `Status: ok` when every package is covered, `Status: partial(<what's missing>)` when a fetch failed or a version couldn't be found, and `Status: blocked(<reason>)` only when the request can't be researched in this repo at all, such as an app or service it names that the repo doesn't hold.
+Give each package three to eight facts. With no package involved, `## Packages` says `- none`. `## UI` appears only when **Find**'s step 3 ran, and is `- no proven reference: <why>` when no library serves the stack. The last line is `Status: ok` when every package is covered, `Status: partial(<what's missing>)` when a fetch failed or a version couldn't be found, and `Status: blocked(<reason>)` only when the request can't be researched in this repo at all, such as an app or service it names that the repo doesn't hold.
 
 Return at most 15 lines: `wrote research.md`, the status line, the packages covered, and the two facts that matter most.
