@@ -220,6 +220,13 @@ export function factoryRules(root, recipe) {
   return [...new Set([...programs.filter((p) => !PM[p]).map((p) => `Bash(${p}:*)`), ...GIT_COMMANDS.map((c) => `Bash(git ${c}:*)`),
     ...pms.map((c) => `Bash(${c}:*)`), "Bash(node:*)"])];
 }
+// What runs whatever code it's handed, a package's or its own: the factory's implementer gets these for the ticket it works
+// in, but the project's settings never do, since every session in the project, and everyone who clones it, would then run
+// them unasked.
+const RUNNERS = new Set(["node", "npx", "npm exec", "npm create", "pnpm exec", "pnpm dlx", "pnpm create", "yarn exec", "yarn dlx", "yarn create",
+  "bun x", "bunx", "bun create"]);
+// The factory's rules the project's settings grant: factoryRules but its runners.
+export const projectRules = (root, recipe) => factoryRules(root, recipe).filter((r) => !RUNNERS.has(r.slice("Bash(".length, -":*)".length)));
 // The settings file's text with `rules` added to its permissions.allow and all else kept, or null when it has them all.
 // One that doesn't parse is never written over.
 export function settingsWith(text, rules) {

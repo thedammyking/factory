@@ -394,8 +394,8 @@ test("apply writes .factory/, the gitignore entries, the CLAUDE.md block and the
   assert.match(claude, /`\/factory/);
   assert.ok(claude.endsWith("<!-- factory:end -->\n"));
   const allow = JSON.parse(read(p, ".claude/settings.json")).permissions.allow;
-  for (const rule of ["Bash(git commit:*)", "Bash(node:*)"]) assert.ok(allow.includes(rule), rule);
-  assert.ok(!allow.some((r) => /publish|git push/.test(r)), "never publish or push");
+  for (const rule of ["Bash(git commit:*)", "Bash(npm install:*)", "Bash(npm run:*)"]) assert.ok(allow.includes(rule), rule);
+  assert.ok(!allow.some((r) => /publish|git push|^Bash\((node|npx|bunx|\w+ (exec|dlx|create|x)):/.test(r)), "never publish, push or a runner: " + allow.join(" "));
   assert.deepEqual(fs.readdirSync(path.join(p.dir, ".claude")), ["settings.json"], "nothing else under .claude/");
   assert.ok(!fs.existsSync(path.join(p.dir, ".mcp.json")), "no MCP server registered");
   assert.match(out, /Include your own updates/);
