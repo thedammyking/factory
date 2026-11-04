@@ -15,7 +15,8 @@ const SCRIPT = path.join(ROOT, "plugin/scripts/guard-paths.mjs");
 // inside the factory plugin's qa subagent gets "agent_type": "factory:qa", with the session's cwd and session_id; the
 // orchestrator's own calls carry no agent_type; a `claude -p --agent factory:implementer` child loads the plugin's hooks
 // and carries "factory:implementer". The input's cwd follows the session's `cd`s, while CLAUDE_PROJECT_DIR stays put.
-const QA = { agent_type: "factory:qa" }, IMPLEMENTER = { agent_type: "factory:implementer" }, ORCHESTRATOR = {};
+// The guard binds only the factory's agents, so the developer's session, SESSION, is free, the orchestrator's included.
+const QA = { agent_type: "factory:qa" }, IMPLEMENTER = { agent_type: "factory:implementer" }, PLANNER = { agent_type: "factory:planner" }, SESSION = {};
 
 const p = project({ recipe: { apps: [{ name: "web", type: "web", path: ".", checks: { test: "true" } }], pinned: ["e2e/", "apps/mobile/.maestro"] } });
 const WTS = path.join(p.dir, ".factory/worktrees");
@@ -39,8 +40,8 @@ fs.symlinkSync("/etc/hosts", path.join(live.wt, "hosts-link"));  // a file link
 fs.writeFileSync(path.join(p.dir, "notes.txt"), "");
 fs.linkSync(path.join(p.dir, "notes.txt"), path.join(live.wt, "notes-link.txt"));  // a hard link to a file outside
 
-// A session's hook: cwd is where it last cd'd, its project dir where it started (by default the same).
-const hook = (cwd, tool_name, tool_input, more = {}, project = cwd) => spawnSync(process.execPath, [SCRIPT], {
+// A hook call, by default the implementer's: cwd is where it last cd'd, its project dir where it started (by default cwd).
+const hook = (cwd, tool_name, tool_input, more = IMPLEMENTER, project = cwd) => spawnSync(process.execPath, [SCRIPT], {
   input: JSON.stringify({ session_id: "s-1", hook_event_name: "PreToolUse", cwd, tool_name, tool_input, ...more }),
   env: { ...process.env, CLAUDE_PROJECT_DIR: project }, encoding: "utf8",
 });
@@ -122,8 +123,14 @@ test("a hard link carries no write out either", () => {
 
 test("a cd moves no bounds: the current worktree is the one the session started in", () => {
   denied(hook(p.dir, "Bash", { command: "echo x > src/x.ts" }, IMPLEMENTER, ticket), /outside/);
-  denied(hook(scratch("factory-cd-"), "Write", { file_path: path.join(live.wt, ".factory/setup.json") }, {}, live.wt), /locked/);
-  denied(hook(path.join(p.dir, ".git"), "Bash", { command: `echo x > ${path.join(live.wt, ".factory/setup.json")}` }, {}, p.dir), /locked/);
+  denied(hook(scratch("factory-cd-"), "Write", { file_path: path.join(live.wt, ".factory/setup.json") }, IMPLEMENTER, live.wt), /locked/);
+  denied(hook(path.join(p.dir, ".git"), "Bash", { command: `echo x > ${path.join(live.wt, ".factory/setup.json")}` }, QA, p.dir), /locked/);
+});
+
+test("only the factory's agents are bound: during a run, the developer's session still writes where it's asked", () => {
+  const settings = path.join(os.homedir(), ".claude/settings.json");
+  allowed(write(settings, p.dir, SESSION));
+  denied(write(settings, ticket, IMPLEMENTER), /outside/);
 });
 
 test("during a run only factory:qa writes the recipe's pinned directories, and never the rest of what's locked", () => {
@@ -132,12 +139,13 @@ test("during a run only factory:qa writes the recipe's pinned directories, and n
   allowed(bash(`echo 'appId: x' > ${flow}`, ticket, QA));
   denied(write(pinnedTest, ticket, IMPLEMENTER), /pinned directory/);
   denied(bash(`echo 'appId: x' > ${flow}`, ticket, IMPLEMENTER), /pinned directory/);
-  denied(write(pinnedTest, ticket, ORCHESTRATOR), /pinned directory/);
-  denied(write(pinnedTest, ticket, { agent_type: "qa" }), /pinned directory/);  // a project's own agent named qa isn't the factory's
+  denied(write(pinnedTest, ticket, PLANNER), /pinned directory/);
+  allowed(write(pinnedTest, ticket, { agent_type: "qa" }));  // a project's own agent named qa isn't the factory's, so it isn't bound
+  denied(write(pinnedTest, ticket, { agent_type: "factory:not-qa" }), /pinned directory/);  // the exception is exactly factory:qa
   denied(write("E2E/r1-01-export.spec.ts", ticket, IMPLEMENTER), /pinned directory/);  // case-insensitive file systems
-  // qa and the orchestrator run in the main checkout, the session's cwd, and reach into the ticket worktree from there
+  // qa and the other subagents run in the main checkout, the session's cwd, and reach into the ticket worktree from there
   allowed(write(pinnedTest, p.dir, QA));
-  denied(write(pinnedTest, p.dir, ORCHESTRATOR), /pinned directory/);
+  denied(write(pinnedTest, p.dir, PLANNER), /pinned directory/);
   denied(write(".factory/setup.json", ticket, QA), /locked/);
   allowed(write(path.join(ended.wt, "e2e/r2-01-old.spec.ts"), ended.wt, IMPLEMENTER));
 });
@@ -159,10 +167,10 @@ test("during a run the factory's own files, .claude/, CI and lint config are loc
   denied(bash("rm -rf e2e", ticket, IMPLEMENTER), /pinned directory/);
   allowed(bash(`rm -rf ${path.join(live.runDir, "tickets")} && mv a.ts b.ts`));
   allowed(bash("sed -i '' 's/a/b/' src/x.ts"));
-  // the orchestrator, in the main checkout, writes the run's attention items but not its state; the main checkout itself
-  // is never a run's workspace, so a session there may still edit its own recipe
-  allowed(write(path.join(live.runDir, "attention-hold.md"), p.dir, ORCHESTRATOR));
-  denied(write(path.join(live.runDir, "state.json"), p.dir, ORCHESTRATOR), /locked/);
+  // a subagent, in the main checkout, writes the run dir but not its state; the main checkout itself is never a run's
+  // workspace, so its own recipe isn't locked
+  allowed(write(path.join(live.runDir, "spec.md"), p.dir, PLANNER));
+  denied(write(path.join(live.runDir, "state.json"), p.dir, PLANNER), /locked/);
   allowed(write(".factory/setup.json", p.dir));
   allowed(write(".claude/settings.json", ended.wt));
 });
@@ -172,9 +180,9 @@ test("reads and script calls are never denied, whatever a heredoc body says", ()
   allowed(hook(live.wt, "Grep", { pattern: "x", path: "/etc" }));
   allowed(bash("cat /etc/hosts .factory/setup.json | grep -c localhost > /dev/null"));
   const RS = path.join(ROOT, "plugin/scripts/run-state.mjs");
-  allowed(bash(`node ${RS} set stage needs-human --run r1`, p.dir, ORCHESTRATOR));
-  // the factory skill's init passes the request in a quoted heredoc, and a request is any text
-  allowed(bash(`node ${RS} init <<'FACTORY_REQUEST'\nExport fails: cp dist/app /usr/local/bin/app > /srv.log\nDon't touch CI\nFACTORY_REQUEST`, p.dir, ORCHESTRATOR));
+  allowed(bash(`node ${RS} set stage needs-human --run r1`, p.dir));
+  // a heredoc body is data, whatever it says
+  allowed(bash(`node ${RS} init <<'FACTORY_REQUEST'\nExport fails: cp dist/app /usr/local/bin/app > /srv.log\nDon't touch CI\nFACTORY_REQUEST`, p.dir));
   denied(bash("cat > /etc/motd <<EOF\nhello\nEOF"), /outside/);
   denied(bash("cat <<-'EOF' > notes.md\n\tok\n\tEOF\necho x > /srv.log"), /outside/);  // after the body, commands again
 });

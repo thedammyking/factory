@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 // guard-paths.mjs — the PreToolUse hook. Reads the hook input on stdin; exit 2 with the reason on stderr denies the tool call.
+// It binds only the factory's own agents, the plugin's subagents and the implementer child, whose calls carry an
+// agent_type starting with factory: (docs/platform-facts.md, fact 7). The developer's session carries none, orchestrator
+// turns included, so it writes wherever the developer asks.
 // It does nothing outside a factory project (a current worktree without .factory/). The current worktree is the one the
 // session started in (CLAUDE_PROJECT_DIR), since the input's cwd follows every `cd` (docs/platform-facts.md).
 // Every Write, Edit and shell write must land in the current worktree, its run dir (a ticket worktree's is in the run
@@ -15,6 +18,7 @@ import path from "node:path";
 import { readJson, git, worktreesDir, runPaths, LOCKED } from "./lib.mjs";
 
 const input = JSON.parse(fs.readFileSync(0, "utf8") || "{}");
+if (!/^factory:/.test(input.agent_type)) process.exit(0);
 const cwd = path.resolve(input.cwd || process.cwd()), project = process.env.CLAUDE_PROJECT_DIR || cwd;
 let top, common;
 try { [top, common] = git(project, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir").split("\n"); } catch { process.exit(0); }
@@ -51,7 +55,7 @@ function refuse([a, removes]) {
   if (r && (under(r, "/dev") || under(r, TMP))) return null;
   if (isLink(a)) return `${a} is a symlink or a hard link, and no write goes through one`;
   if (!r || !roots.some((d) => under(r, d))) return `${a} is outside this worktree and its run dir`;
-  // The run that matters is that of the worktree the write lands in: a session in the main checkout reaches into them all.
+  // The run that matters is that of the worktree the write lands in: a subagent in the main checkout reaches into them all.
   const wt = under(r, WTS) && r !== WTS ? path.join(WTS, path.relative(WTS, r).split(path.sep)[0]) : TOP, run = runOf(wt);
   if (!run || TERMINAL.includes(run.stage)) return null;
   const rel = path.relative(wt, r).toLowerCase(), holds = (k) => removes && (rel === "" || k.startsWith(rel + "/"));
@@ -77,7 +81,7 @@ if (tool !== "Bash") process.exit(0);
 // Simple commands as word lists. Quotes are removed but keep their content in one word; an unquoted redirect operator is
 // its own word, prefixed with OP (a digit fd before it is dropped). A subshell or a $(…) or `…` substitution, quoted or not,
 // is a { sub } of its own, so a `cd` in it stays there; a substitution's value is an unknown, empty word. Heredoc bodies are
-// skipped: they're data, such as the request the factory skill passes to run-state init.
+// skipped: they're data.
 const OP = "\0";
 function parse(cmd) {
   const cmds = []; let words = [], w = "", quoted = false, q = null, heredocs = [];
