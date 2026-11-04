@@ -22,8 +22,9 @@ const fs = require("node:fs"), path = require("node:path");
 const name = path.basename(__filename), argv = process.argv.slice(2), STATE = path.join(__dirname, "device.json");
 fs.appendFileSync(__filename + ".calls", JSON.stringify(argv) + "\\n");
 const read = fs.readFileSync(STATE, "utf8"), s = JSON.parse(read), { ios, android } = s;
-// written back only when changed, so a call that only reads never undoes a concurrent one's change
-const save = () => { if (JSON.stringify(s) !== JSON.stringify(JSON.parse(read))) fs.writeFileSync(STATE, JSON.stringify(s, null, 2)); };
+// written back only when changed, so a call that only reads never undoes a concurrent one's change, and through a
+// rename, so a concurrent reader never sees the file half written
+const save = () => { if (JSON.stringify(s) === JSON.stringify(JSON.parse(read))) return; const t = STATE + "." + process.pid; fs.writeFileSync(t, JSON.stringify(s, null, 2)); fs.renameSync(t, STATE); };
 const out = (t) => process.stdout.write(t + "\\n");
 const fail = (t) => { process.stderr.write("fake " + name + ": " + t + "\\n"); process.exit(1); };
 // a PNG's signature and IHDR, enough for its width to be read
@@ -150,6 +151,6 @@ export function fakeDevice(t, { ios = {}, android = {}, junit = PASSING, maestro
   const calls = (name) => { const log = path.join(dir, `${name}.calls`); return fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []; };
   const read = () => JSON.parse(fs.readFileSync(state, "utf8"));
   // what a developer or a flow does to the device meanwhile
-  const change = (platform, fields) => { const s = read(); Object.assign(s[platform], fields); fs.writeFileSync(state, JSON.stringify(s)); };
+  const change = (platform, fields) => { const s = read(); Object.assign(s[platform], fields); fs.writeFileSync(state + ".test", JSON.stringify(s)); fs.renameSync(state + ".test", state); };
   return { dir, env: { ...process.env, PATH: dir + path.delimiter + process.env.PATH, TMPDIR: dir }, calls, state: read, change, lock: path.join(dir, "factory-device.lock") };
 }
