@@ -10,7 +10,8 @@
 //                issue's closing reference (Closes #12, Fixes ENG-123) for the tracker's own GitHub link, and Verify in 2
 //                minutes: each app's preview that preview.json has ready at the head, the local commands, then a step
 //                per criterion opening its route, a bare path and never the path half of a URL (design fix 26).
-//   comment.md   the decision comment, when there is one: "Merged at <sha>" with --merged, "Would merge (trial)" for a
+//   comment.md   the decision comment, when there is one: "Merged at <sha>" with --merged or once decision.json records
+//                the factory's merge, "Would merge (trial)" for a
 //                merge decision, the attention item for a needs-human one (written as attention-merge.md too), and the
 //                newest attention item of a run stopped needs-human or failed with no decision. Removed when there's
 //                nothing to say.
@@ -127,9 +128,10 @@ fs.writeFileSync(path.join(dir, "pr.md"), md);
 // The decision comment, in the factory skill's attention-item shape when a human is needed.
 const commentFile = path.join(dir, "comment.md");
 let comment = null;
-if (merged) comment = `**Merged at \`${merged}\`.** Every fact held at \`${short(decision?.head)}\`: \`${history}/decision.json\`.\n`;
+if (merged || decision?.merged) comment = `**Merged at \`${merged ?? decision.merged}\`.** Every fact held at \`${short(decision?.head)}\`: \`${history}/decision.json\`.\n`;
 else if (decision?.decision === "merge") comment = `**Would merge (trial).** Every fact holds at \`${short(decision.head)}\`: the ${decision.facts.length} are in \`${history}/decision.json\`. `
-  + "In trial the factory merges nothing, so merging it as it is yourself counts toward `auto`.\n";
+  + "In trial the factory merges nothing, so merging it as it is yourself counts toward `auto`."
+  + `${decision.paused ? ` Auto acts as trial: ${decision.paused}.` : ""}\n`;
 else if (decision) {
   // run-state as the developer's shell finds it, never naming their home directory in a comment GitHub shows
   const script = fileURLToPath(new URL("run-state.mjs", import.meta.url)), home = os.homedir();

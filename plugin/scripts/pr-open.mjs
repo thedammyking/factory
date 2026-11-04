@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // pr-open.mjs — opens the run's PR from pr.md, or updates the one pr.json records (the only sign of an open PR), through
 // GitHub's REST API alone: `gh api`, never `gh pr`, which is GraphQL. Takes --run <id>, or derives the run from the run
-// worktree it runs in. It pushes the run branch to origin first, then:
+// worktree it runs in. It pushes the run branch to origin first, unless decision.json says it merged the PR, then:
 //   - opens the PR ready when the run reached the PR stage, so REST can merge it, and as a draft only for a stopped run
 //     (needs-human or failed), whose PR just carries the attention item: REST can't take a PR out of draft;
 //   - on a hotfix lane (git flow, targeting main) at the PR stage, opens the back-merge PR into develop beside it, once,
@@ -32,7 +32,8 @@ let pr = readJson(file);
 const save = () => fs.writeFileSync(file, JSON.stringify(pr, null, 2) + "\n");
 const label = (n, names) => gh("-X", "POST", `repos/${repo}/issues/${n}/labels`, ...names.flatMap((l) => ["-f", `labels[]=${l}`]));
 
-try { git(ctx.worktree, "push", "-q", "origin", `HEAD:refs/heads/${s.branch}`); } catch (e) { die(`can't push ${s.branch} to origin: ${gitError(e)}`, 1); }
+// A PR the factory merged is never pushed to again: GitHub may have deleted its branch on merge.
+if (!decision?.merged) try { git(ctx.worktree, "push", "-q", "origin", `HEAD:refs/heads/${s.branch}`); } catch (e) { die(`can't push ${s.branch} to origin: ${gitError(e)}`, 1); }
 const stopped = ["needs-human", "failed"].includes(s.stage);  // not suspended, which resume carries on to the PR stage
 if (!pr) {
   const made = gh("-X", "POST", `repos/${repo}/pulls`, "-f", `title=${title}`, "-f", `head=${s.branch}`, "-f", `base=${s.target_branch}`, "-F", `draft=${stopped}`, "-f", `body=${body}`);

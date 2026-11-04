@@ -1,21 +1,75 @@
 #!/usr/bin/env node
-// merge-decision.mjs — writes the run's decision.json: merge only when every fact below holds at the run head, else
-// needs-human with each fact that doesn't, as `<fact>: <what it read>`, the files that show it beside it. Facts, never an
-// agent's judgement. Takes --run <id>, or derives the run from the run worktree it runs in.
+// merge-decision.mjs [--record] — writes the run's decision.json: merge only when every fact below holds at the run head,
+// else needs-human with each fact that doesn't, as `<fact>: <what it read>`, the files that show it beside it. Facts, never
+// an agent's judgement. Takes --run <id>, or derives the run from the run worktree it runs in. --record is the trial
+// record instead (below).
 //   - The diff is the run's from its merge base with lib's live base (design fix 21), the factory's bookkeeping left out
 //     (design fix 2): the base's own commits are never the run's.
 //   - A run file a fact reads that's missing, or was written at another head, never lets it hold: unknown is no pass.
-//   - The mode is config.merge, trial unless it says auto. Nothing here merges.
+//   - The mode is config.merge, trial unless it says auto, and auto acts as trial while a factory revert PR is open. In
+//     auto a merge decision merges the PR, and a run behind its base and nothing else is asked for one catch-up.
 //   - A oneshot's one criterion is triage's acceptance check, and oneshot_scope holds it to one product file.
-// Prints `DECISION <merge|needs-human> (<mode>) at <sha>`, then each failing fact.
+// Prints `DECISION <merge|needs-human> (<mode>) at <sha>`, then each failing fact, then `MERGED <sha>: PR #<n>` once it
+// merged; or only `CATCH-UP …`, writing no decision, when it asks for the catch-up.
 import fs from "node:fs";
 import path from "node:path";
-import { readJson, git, gitError, runContext, liveBase, ghApi, PRODUCT, LOCKED } from "./lib.mjs";
+import { readJson, git, gitError, runContext, mainRoot, liveBase, ghApi, PRODUCT, LOCKED } from "./lib.mjs";
+
+const short = (sha) => String(sha ?? "none").slice(0, 7);
+
+// --record: the trial record, for the retro, from each ended run's decision.json under .factory/history/, as its snapshot
+// committed it on whichever base holds it (runContext reads an ended run's record so too), and its PR as GitHub has it
+// now, over REST. A trial merge decision agrees when its PR merged at the head decided and CI is green at its merge
+// commit; it disagrees when the human added commits, closed it unmerged, or CI went red there. An open PR, CI unfinished
+// or absent there, and needs-human or auto decisions don't count. It writes nothing: only the human switches the mode
+// (#15). Prints a line per trial merge decision, oldest first, then `RECORD <n> of the last <k> counted agree (…)`, k
+// being 10 at most.
+// ponytail: every ended run is read from GitHub on every call, one page of 100 workflow runs at its merge commit; keep
+// the verdicts already final if a project's history ever makes that slow.
+if (process.argv.includes("--record")) {
+  const MAIN = mainRoot(), OK = ["success", "neutral", "skipped"];
+  const committed = (f) => { try { return JSON.parse(git(MAIN, "show", `${git(MAIN, "log", "--all", "-1", "--format=%H", "--", f)}:${f}`)); } catch { return null; } };
+  const ids = new Set(git(MAIN, "log", "--all", "--format=", "--name-only", "--", ".factory/history/*/decision.json").split("\n").filter(Boolean).map((f) => f.split("/")[2]));
+  const ended = [...ids].map((id) => ({ id, d: committed(`.factory/history/${id}/decision.json`), pr: committed(`.factory/history/${id}/pr.json`) }))
+    .filter(({ d, pr }) => d?.mode === "trial" && d.decision === "merge" && pr).sort((a, b) => String(a.d.decided_at).localeCompare(String(b.d.decided_at)));
+  // [agrees, why] for one decision, agrees null when it doesn't count yet
+  const judge = (d, pr) => {
+    const r = ghApi(`repos/${pr.repo}/pulls/${pr.number}`), live = r.json;
+    if (!r.ok) return [null, `unread: ${r.message}`];
+    if (live.state === "open") return [null, "open"];
+    if (!live.merged) return [false, "closed unmerged"];
+    if (live.head?.sha !== d.head) return [false, `merged at ${short(live.head?.sha)}, not ${short(d.head)} as decided: the human added commits`];
+    // ponytail: a project whose workflows run only on pull_request has no CI at a merge commit, so its decisions never
+    // count; read the PR head's runs too if such a project ever wants a record.
+    const sha = short(live.merge_commit_sha), ci = ghApi(`repos/${pr.repo}/actions/runs?head_sha=${live.merge_commit_sha}&per_page=100`), runs = ci.json?.workflow_runs ?? [];
+    const red = runs.filter((w) => w.conclusion === "failure"), stuck = runs.filter((w) => w.status === "completed" && !OK.includes(w.conclusion));
+    if (!ci.ok) return [null, `CI at ${sha} unread: ${ci.message}`];
+    if (red.length) return [false, `CI is red at ${sha}: ${red.map((w) => w.name).join(", ")}`];
+    if (!runs.length) return [null, `no CI ran at ${sha}`];
+    if (runs.some((w) => w.status !== "completed")) return [null, `CI at ${sha} hasn't finished`];
+    return stuck.length ? [null, `CI at ${sha} reached no result: ${stuck.map((w) => `${w.name} ${w.conclusion}`).join(", ")}`] : [true, `merged at ${short(d.head)}, and CI is green at ${sha}`];
+  };
+  const counted = [];
+  for (const { id, d, pr } of ended) {
+    const [agrees, why] = judge(d, pr);
+    if (agrees !== null) counted.push(agrees);
+    console.log(`${id} PR #${pr.number}: ${agrees === null ? "not counted" : agrees ? "agrees" : "disagrees"}: ${why}`);
+  }
+  const last = counted.slice(-10), agree = counted.filter(Boolean).length;
+  console.log(`RECORD ${last.filter(Boolean).length} of the last ${last.length} counted agree (${agree} agree, ${counted.length - agree} disagree, ${ended.length - counted.length} not counted)`);
+  process.exit(0);
+}
 
 const ctx = runContext(), s = readJson(ctx.state), wt = ctx.worktree, dir = ctx.runDir;
 const config = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {}), recipe = readJson(path.join(wt, ".factory", "setup.json"), {});
 const at = (f) => path.join(dir, f), read = (f) => { try { return fs.readFileSync(at(f), "utf8"); } catch { return ""; } }, json = (f) => readJson(at(f));
-const head = git(wt, "rev-parse", "HEAD"), short = (sha) => String(sha ?? "none").slice(0, 7);
+const head = git(wt, "rev-parse", "HEAD");
+// A PR the factory merged stays merged: deciding again, on a resume, keeps that decision and never merges twice.
+const done = json("decision.json");
+if (done?.merged) {
+  console.log(`DECISION merge (${done.mode}) at ${short(done.head)}\nMERGED ${done.merged}: PR #${json("pr.json")?.number}\ndecision.json: ${at("decision.json")}`);
+  process.exit(0);
+}
 const facts = [];
 const fact = (name, ok, detail, evidence) => facts.push({ name, ok: !!ok, detail, evidence });
 
@@ -150,7 +204,39 @@ const branching = config.branching || {};
 fact("not_git_flow_main", !(branching.model === "git-flow" && s.target_branch === (branching.main || "main")),
   `${branching.model || "trunk"}, targeting ${s.target_branch}`, [path.join(ctx.MAIN, ".factory", "config.json")]);
 
-const failed = facts.filter((f) => !f.ok), mode = config.merge === "auto" ? "auto" : "trial";
-const decision = { run: ctx.id, head, mode, decision: failed.length ? "needs-human" : "merge", reasons: failed.map((f) => `${f.name}: ${f.detail}`), facts, decided_at: new Date().toISOString() };
+// auto acts as trial while a factory revert PR (post-merge's, on revert/<run>-<sha>) is open in the repo, so nothing merges
+// onto a target a revert is mending; open PRs GitHub won't list can't vouch that none is (#15). One REST query.
+// ponytail: one page of the 100 newest open PRs; page through them if a repo ever keeps more open than that.
+let mode = config.merge === "auto" ? "auto" : "trial", paused = null;
+if (mode === "auto" && pr) {
+  const r = ghApi(`repos/${pr.repo}/pulls?state=open&per_page=100`);
+  const revert = r.ok && (r.json || []).find((p) => p.head?.ref?.startsWith("revert/") && (p.labels || []).some((l) => l.name === "factory"));
+  paused = !r.ok ? `the open PRs couldn't be read: ${r.message}` : revert ? `revert PR #${revert.number} is open` : null;
+  if (paused) mode = "trial";
+}
+// In auto, a merge decision merges, over REST at the head evaluated here, by the configured method: GitHub refuses a head
+// pushed since (409) and whatever branch protection or a ruleset still wants, REST having no --admin. A refusal is one
+// more fact, GitHub's message quoted (docs/platform-facts.md, facts 18 and 19).
+let merged = null;
+if (mode === "auto" && facts.every((f) => f.ok)) {
+  const method = config.merge_method || "merge";
+  const r = ghApi("-X", "PUT", `repos/${pr.repo}/pulls/${pr.number}/merge`, "-f", `sha=${head}`, "-f", `merge_method=${method}`);
+  merged = r.ok && r.json?.merged === true ? r.json.sha : null;
+  fact("merged", merged, merged ? `PR #${pr.number} merged at ${short(merged)} by ${method}` : `GitHub refused to merge PR #${pr.number} at ${short(head)}: "${r.message}"`, [at("pr.json")]);
+}
+const failed = facts.filter((f) => !f.ok);
+// In auto, a run behind its base and nothing else gets one catch-up: the orchestrator merges the base in (sync-base
+// before-merge, update-branch on the PR), verifies the new head and decides again. The ask is catch-up.json, so the
+// decision after it never asks again, and until then there's no decision, so the PR stage says nothing on the PR. In
+// trial, behind is reported, as every failing fact is.
+if (mode === "auto" && failed.length === 1 && failed[0].name === "not_behind_base" && !unfetched && !fs.existsSync(at("catch-up.json"))) {
+  fs.writeFileSync(at("catch-up.json"), JSON.stringify({ head, base: git(wt, "rev-parse", base) }, null, 2) + "\n");
+  fs.rmSync(at("decision.json"), { force: true });
+  console.log(`CATCH-UP ${behind} commit${behind > 1 ? "s" : ""} on ${base} not in HEAD: sync-base.mjs before-merge, verify --full, then decide again`);
+  process.exit(0);
+}
+const decision = { run: ctx.id, head, mode, ...(paused && { paused }), decision: failed.length ? "needs-human" : "merge", reasons: failed.map((f) => `${f.name}: ${f.detail}`), facts,
+  ...(merged && { merged }), decided_at: new Date().toISOString() };
 fs.writeFileSync(at("decision.json"), JSON.stringify(decision, null, 2) + "\n");
-console.log([`DECISION ${decision.decision} (${mode}) at ${short(head)}`, ...decision.reasons.map((r) => `  - ${r}`), `decision.json: ${at("decision.json")}`].join("\n"));
+console.log([`DECISION ${decision.decision} (${mode}) at ${short(head)}`, ...decision.reasons.map((r) => `  - ${r}`), ...(paused ? [`auto acts as trial: ${paused}`] : []),
+  ...(merged ? [`MERGED ${merged}: PR #${pr.number}`] : []), `decision.json: ${at("decision.json")}`].join("\n"));

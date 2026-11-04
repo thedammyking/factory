@@ -145,6 +145,14 @@ _Avoid_: verdict, approval, merge gate
 What the factory does with a merge decision of merge: in trial it only says it would merge, in auto it merges and watches.
 _Avoid_: merge policy
 
+**Trial record**:
+How the trial merge decisions compare with what the human then did with each PR, as GitHub holds it: the evidence for switching to auto, which only the human does.
+_Avoid_: track record, score
+
+**Catch-up**:
+In auto, the one merge of the base into a PR that is behind it and fails no other fact, followed by a fresh verify and one more merge decision.
+_Avoid_: rebase, sync
+
 **Watch**:
 The fixed window after the factory's own merge in which it checks the target branch and, on red, opens a revert PR that it never merges.
 _Avoid_: post-merge monitoring, canary

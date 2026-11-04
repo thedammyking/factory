@@ -616,3 +616,245 @@ test("pr-open stops, quoting GitHub, when it refuses the PR, and needs a GitHub 
   assert.equal(other.status, 2);
   assert.match(other.stderr, /GitHub/);
 });
+
+// #60, auto: a fake gh answering ready()'s PR read, the open PRs (the one query for a factory revert PR), update-branch and
+// the merge, its answers shaped as docs/platform-facts.md (facts 18 and 19) reads GitHub's: open is the open PRs, or the
+// message GitHub refuses that query with, and merge and update are [body, gh's exit]. decide() returns decision.json, if
+// any, and what merge-decision printed.
+const MERGED = "c0ffee".padEnd(40, "0");
+function auto(r, { open = [], merge = [{ sha: MERGED, merged: true, message: "Pull Request successfully merged" }, 0], update = [{ message: "Updating pull request branch." }, 0] } = {}) {
+  write(r.p.dir, { ".factory/config.json": JSON.stringify({ merge: "auto", merge_method: "squash" }) });
+  const fixture = (name, value) => { const f = path.join(r.s.run_dir, "..", `${name}.json`); fs.writeFileSync(f, JSON.stringify(value)); return f; };
+  const gh = fakeClis({ gh: [
+    { match: /^api repos\/o\/r\/pulls\/7$/, file: path.join(r.s.run_dir, "..", "pr7.json") },
+    { match: /^api repos\/o\/r\/pulls\?state=open&per_page=100$/, file: fixture("open", typeof open === "string" ? { message: open } : open), status: typeof open === "string" ? 1 : 0 },
+    { match: /^api -X PUT repos\/o\/r\/pulls\/7\/merge /, file: fixture("merge", merge[0]), status: merge[1] },
+    { match: /^api -X PUT repos\/o\/r\/pulls\/7\/update-branch /, file: fixture("update", update[0]), status: update[1] },
+    { match: /^api -X (POST|PATCH|DELETE) repos\/o\/r\/(issues|pulls)\//, file: path.join(r.s.run_dir, "..", "ok.json") },
+  ] });
+  const decide = () => {
+    const res = script("merge-decision.mjs", r.p.dir, ["--run", r.s.id], { env: gh.env });
+    assert.equal(res.status, 0, res.stderr + res.stdout);
+    return { ...(fs.existsSync(path.join(r.s.run_dir, "decision.json")) && r.read("decision.json")), stdout: res.stdout };
+  };
+  const merges = () => gh.calls("gh").filter((c) => c.includes("repos/o/r/pulls/7/merge"));
+  return { gh, decide, merges };
+}
+
+test("auto: a merge decision merges over REST at the evaluated head by the configured method, never --admin, and says Merged at", () => {
+  const r = ready(), a = auto(r), d = a.decide();
+  assert.equal(d.decision, "merge", d.reasons.join("; "));
+  assert.equal(d.mode, "auto");
+  assert.deepEqual(a.merges(), [["api", "-X", "PUT", "repos/o/r/pulls/7/merge", "-f", `sha=${r.head()}`, "-f", "merge_method=squash"]]);
+  assert.ok(a.gh.calls("gh").every((c) => c[0] === "api" && !c.includes("--admin")), "REST only, and never past branch protection");
+  assert.equal(d.merged, MERGED);
+  assert.match(d.stdout, new RegExp(`^MERGED ${MERGED}`, "m"));
+  assert.match(render({ ...r, gh: a.gh }).comment, new RegExp(`^\\*\\*Merged at \`${MERGED}\`\\.\\*\\*`), "from decision.json");
+  // the record: label and comment, and no push, which would bring back a branch GitHub deleted on merge
+  sh(r.bare, "git", ["update-ref", "-d", "refs/heads/feature/signup"]);
+  const res = open({ ...r, gh: a.gh });
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  assert.throws(() => sh(r.bare, "git", ["rev-parse", "--verify", "refs/heads/feature/signup"]), "the merged branch isn't pushed again");
+  assert.deepEqual(flag(posts({ gh: a.gh }, "POST repos/o/r/issues/7/labels")[0], "-f"), ["labels[]=factory-merge"]);
+  assert.match(flag(posts({ gh: a.gh }, "comments")[0], "-f")[0], /^body=\*\*Merged at /);
+  // a resume that decides again keeps the merge, and never merges twice
+  const again = a.decide();
+  assert.deepEqual([again.decision, again.merged, again.decided_at], ["merge", MERGED, d.decided_at]);
+  assert.match(again.stdout, new RegExp(`^MERGED ${MERGED}`, "m"));
+  assert.equal(a.merges().length, 1);
+});
+
+test("auto: any merge GitHub refuses (a draft, a missing review, a moved head) makes the decision needs-human, quoting GitHub's message", () => {
+  const r = ready();
+  // stand-ins, since GitHub's docs give the status (405, or 409 for a moved head) but not the words (platform facts 18, 19)
+  for (const [status, why] of [["405", "Stand-in for the 405 on a draft PR"], ["405", "Stand-in for the 405 on a missing required review"], ["409", "Stand-in for the 409 on a moved head"]]) {
+    const a = auto(r, { merge: [{ message: why, documentation_url: "https://docs.github.com/rest/pulls/pulls#merge-a-pull-request", status }, 1] });
+    const d = a.decide();
+    assert.equal(d.decision, "needs-human", why);
+    assert.deepEqual(failing(d), ["merged"]);
+    assert.equal(d.reasons[0], `merged: GitHub refused to merge PR #7 at ${r.head().slice(0, 7)}: "${why}"`);
+    assert.equal(d.merged, undefined);
+    assert.doesNotMatch(d.stdout, /^MERGED/m);
+    assert.equal(a.merges().length, 1, "tried once");
+    const item = render({ ...r, gh: a.gh }).file("attention-merge.md");
+    assert.ok(item.includes(why), "the attention item quotes GitHub");
+    assert.match(item, /repos\/o\/r\/pulls\/7\/merge -f sha=/, "merge it yourself, once it's settled");
+  }
+});
+
+test("auto acts as trial while a factory revert PR is open in the repo, read in one REST query, and merges again once none is", () => {
+  const r = ready();
+  const pull = (number, ref, labels) => ({ number, html_url: `https://github.com/o/r/pull/${number}`, head: { ref }, labels: labels.map((name) => ({ name })) });
+  const others = [pull(9, "revert/not-ours", ["needs-human"]), pull(10, "feature/other", ["factory", "needs-human"])];
+  let a = auto(r, { open: [...others, pull(12, "revert/r0-abc1234", ["factory", "needs-human"])] }), d = a.decide();
+  assert.equal(d.decision, "merge", d.reasons.join("; "));
+  assert.equal(d.mode, "trial");
+  assert.equal(d.paused, "revert PR #12 is open");
+  assert.match(d.stdout, /^DECISION merge \(trial\)/m);
+  assert.match(d.stdout, /auto acts as trial: revert PR #12 is open/);
+  assert.deepEqual(a.merges(), [], "nothing merges onto a target a revert is mending");
+  assert.deepEqual(a.gh.calls("gh").filter((c) => c[1].startsWith("repos/o/r/pulls?")), [["api", "repos/o/r/pulls?state=open&per_page=100"]], "one query");
+  assert.match(render({ ...r, gh: a.gh }).comment, /^\*\*Would merge \(trial\)\.\*\*.*Auto acts as trial: revert PR #12 is open\./s);
+
+  // GitHub refusing the query can't vouch that none is open
+  a = auto(r, { open: "Bad credentials" }); d = a.decide();
+  assert.equal(d.mode, "trial");
+  assert.deepEqual(a.merges(), []);
+  assert.equal(d.paused, "the open PRs couldn't be read: Bad credentials");
+
+  // a revert PR that isn't the factory's, or a factory PR that isn't a revert, doesn't pause it
+  a = auto(r, { open: others }); d = a.decide();
+  assert.equal(d.mode, "auto");
+  assert.equal(d.paused, undefined);
+  assert.equal(a.merges().length, 1);
+});
+
+// The base moves on origin by a commit adding `file`.
+const baseMoves = (r, file) => { r.p.git("checkout", "-q", "main"); write(r.p.dir, { [file]: `${file}\n` }); r.p.git("add", "-A"); r.p.git("commit", "-qm", file); r.p.git("push", "-q", "origin", "main"); };
+// The catch-up as references/pr.md runs it: GitHub's side of a 202 (the base merged into the PR's branch on the server),
+// sync-base before-merge taking it, then verify --full at the new head, the run's other files pinned there, and steps 1
+// and 2 again, which say nothing on the PR: there's no decision until the one after the catch-up.
+function catchUp(r, a) {
+  const server = `${r.bare}-clone`;
+  fs.rmSync(server, { recursive: true, force: true });
+  sh(path.dirname(r.bare), "git", ["clone", "-q", "-b", "feature/signup", r.bare, server]);
+  sh(server, "git", ["-c", "user.name=gh", "-c", "user.email=gh@gh", "merge", "-q", "--no-edit", "origin/main"]);
+  sh(server, "git", ["push", "-q", "origin", "feature/signup"]);
+  const sync = script("sync-base.mjs", r.p.dir, ["before-merge", "--run", r.s.id], { env: a.gh.env });
+  assert.equal(sync.status, 0, sync.stderr + sync.stdout);
+  assert.equal(r.head(), sh(server, "git", ["rev-parse", "HEAD"]), "the run branch is GitHub's merge");
+  const verify = script("verify.mjs", r.p.dir, ["--full", "--run", r.s.id], { env: ENV });
+  assert.equal(verify.status, 0, verify.stderr + verify.stdout);
+  const ev = r.read("evidence.json");
+  assert.deepEqual([ev.sha, ev.green], [r.head(), true], "re-verified at the new head");
+  r.pin(); r.json("evidence.json", ev);
+  assert.equal(render({ ...r, gh: a.gh }).comment, null);
+  assert.equal(open({ ...r, gh: a.gh }).status, 0);
+  assert.deepEqual([posts({ gh: a.gh }, "labels"), posts({ gh: a.gh }, "comments")], [[], []], "no label or comment mid catch-up");
+}
+
+test("auto: a run behind its base and nothing else gets one catch-up, update-branch then verify --full, and merges at the one decision after it; trial reports it", () => {
+  const r = ready();
+  r.s.git("push", "-q", "origin", "HEAD:refs/heads/feature/signup");
+  baseMoves(r, "docs/next.md");
+  let d = r.decide();
+  assert.deepEqual(failing(d), ["not_behind_base"], "trial: reported, as every failing fact is");
+  assert.doesNotMatch(d.stdout, /CATCH-UP/);
+  assert.equal(d.catch_up, undefined);
+  assert.deepEqual(r.gh.calls("gh"), [["api", "repos/o/r/pulls/7"]], "no update-branch in trial");
+
+  const a = auto(r), was = r.head();
+  d = a.decide();
+  assert.equal(d.stdout, "CATCH-UP 1 commit on refs/remotes/origin/main not in HEAD: sync-base.mjs before-merge, verify --full, then decide again\n");
+  assert.equal(d.decision, undefined, "no decision yet, so the PR stage says nothing on the PR");
+  assert.deepEqual(r.read("catch-up.json"), { head: was, base: r.p.git("rev-parse", "main") });
+  assert.deepEqual(a.merges(), []);
+  catchUp(r, a);
+  assert.equal(a.gh.calls("gh").filter((c) => c.includes("repos/o/r/pulls/7/update-branch")).length, 1, "one update-branch");
+  d = a.decide();
+  assert.equal(d.decision, "merge", d.reasons.join("; "));
+  assert.doesNotMatch(d.stdout, /CATCH-UP/);
+  assert.deepEqual(a.merges().map((c) => c[5]), [`sha=${r.head()}`], "merged at the caught-up head");
+});
+
+test("auto: the catch-up is asked once, so a base that moves again before the decision after it is reported, and nothing else failing asks none", () => {
+  const r = ready();
+  r.s.git("push", "-q", "origin", "HEAD:refs/heads/feature/signup");
+  baseMoves(r, "docs/next.md");
+  const a = auto(r);
+  assert.match(a.decide().stdout, /^CATCH-UP/m);
+  catchUp(r, a);
+  baseMoves(r, "docs/again.md");
+  let d = a.decide();
+  assert.deepEqual(failing(d), ["not_behind_base"]);
+  assert.doesNotMatch(d.stdout, /CATCH-UP/, "never twice");
+  assert.equal(a.gh.calls("gh").filter((c) => c.includes("repos/o/r/pulls/7/update-branch")).length, 1);
+  assert.deepEqual(a.merges(), []);
+
+  // behind and another fact failing: a catch-up can't make it merge, so it's reported
+  const o = ready();
+  o.s.git("push", "-q", "origin", "HEAD:refs/heads/feature/signup");
+  baseMoves(o, "docs/next.md");
+  o.put("ci.json", { cause: "ours" });
+  d = auto(o).decide();
+  assert.deepEqual(failing(d), ["ci_green_at_head", "not_behind_base"]);
+  assert.doesNotMatch(d.stdout, /CATCH-UP/);
+});
+
+test("auto: a catch-up GitHub refuses stops the run, and the PR's comment is sync-base's attention item", () => {
+  const r = ready();
+  baseMoves(r, "docs/next.md");
+  const a = auto(r, { update: [{ message: "merge conflict between base and head" }, 1] });
+  assert.match(a.decide().stdout, /^CATCH-UP/m);
+  const sync = script("sync-base.mjs", r.p.dir, ["before-merge", "--run", r.s.id], { env: a.gh.env });
+  assert.equal(sync.status, 1, sync.stderr + sync.stdout);
+  const out = render({ ...r, gh: a.gh });
+  assert.equal(out.comment, out.file("attention-sync.md"));
+  assert.match(out.comment, /merge conflict between base and head/);
+});
+
+// A project with ended runs' records committed under .factory/history/, as snapshots leave them, and a fake gh answering each one's
+// PR and the workflow runs at its merge commit. run(n, decision, pr, ci) adds run h<n>, decided in that order: pr is how
+// GitHub has PR #n now ({ state, merged, head } with head "same" for the head decided), ci the merge commit's workflow
+// runs as [status, conclusion].
+function record() {
+  const p = project({ config: { merge: "trial", merge_method: "merge" } }), rules = [];
+  const sha = (n, tag = "a") => `${tag}${String(n).padStart(2, "0")}`.padEnd(40, "0");
+  const fixture = (name, value) => { const f = path.join(p.dir, ".factory/runs", `${name}.json`); fs.writeFileSync(f, JSON.stringify(value)); return f; };
+  let n = 0;
+  const run = (decision, { state = "closed", merged = true, head = "same" } = {}, ci = [["completed", "success"]]) => {
+    n++;
+    write(p.dir, {
+      [`.factory/history/h${n}/decision.json`]: JSON.stringify({ run: `h${n}`, head: sha(n), mode: "trial", decision: "merge", ...decision, decided_at: new Date(Date.UTC(2026, 10, 1, 0, n)).toISOString() }),
+      [`.factory/history/h${n}/pr.json`]: JSON.stringify({ repo: "o/r", number: n }),
+    });
+    p.git("add", "-A"); p.git("commit", "-qm", `factory(run): h${n} snapshot`);
+    rules.push({ match: new RegExp(`^api repos/o/r/pulls/${n}$`), file: fixture(`pr${n}`, { number: n, state, merged, head: { sha: head === "same" ? sha(n) : head }, merge_commit_sha: merged ? sha(n, "b") : null }) });
+    rules.push({ match: new RegExp(`^api repos/o/r/actions/runs\\?head_sha=${sha(n, "b")}&per_page=100$`), file: fixture(`ci${n}`, { workflow_runs: ci.map(([status, conclusion], i) => ({ id: i, name: `CI ${i}`, status, conclusion })) }) });
+  };
+  const tally = () => {
+    const gh = fakeClis({ gh: rules }), before = p.git("status", "--porcelain"), config = fs.readFileSync(path.join(p.dir, ".factory/config.json"), "utf8");
+    const res = script("merge-decision.mjs", p.dir, ["--record"], { env: gh.env });
+    assert.equal(res.status, 0, res.stderr + res.stdout);
+    assert.equal(p.git("status", "--porcelain"), before, "--record writes nothing");
+    assert.equal(fs.readFileSync(path.join(p.dir, ".factory/config.json"), "utf8"), config, "nothing switches the mode");
+    return { lines: res.stdout.trim().split("\n"), calls: gh.calls("gh") };
+  };
+  return { p, run, tally, sha };
+}
+
+test("--record: a trial merge decision agrees when its PR merged at the head decided and CI is green at the merge commit, else disagrees; open PRs and needs-human decisions don't count", () => {
+  const r = record();
+  r.run();                                                          // h1 agrees
+  r.run({}, { head: "f".repeat(40) });                              // h2: the human added commits
+  r.run({}, { merged: false });                                     // h3: closed unmerged
+  r.run({}, {}, [["completed", "success"], ["completed", "failure"]]); // h4: CI red at the merge commit
+  r.run({}, { state: "open", merged: false });                      // h5: open, not yet
+  r.run({ decision: "needs-human" });                               // h6: never counted
+  r.run({ mode: "auto" });                                          // h7: the factory's own merge, not a trial one
+  r.run({}, {}, [["in_progress", null]]);                           // h8: CI at the merge commit still running
+  const { lines, calls } = r.tally();
+  assert.deepEqual(lines, [
+    `h1 PR #1: agrees: merged at ${r.sha(1).slice(0, 7)}, and CI is green at ${r.sha(1, "b").slice(0, 7)}`,
+    `h2 PR #2: disagrees: merged at fffffff, not ${r.sha(2).slice(0, 7)} as decided: the human added commits`,
+    "h3 PR #3: disagrees: closed unmerged",
+    `h4 PR #4: disagrees: CI is red at ${r.sha(4, "b").slice(0, 7)}: CI 1`,
+    "h5 PR #5: not counted: open",
+    `h8 PR #8: not counted: CI at ${r.sha(8, "b").slice(0, 7)} hasn't finished`,
+    "RECORD 1 of the last 4 counted agree (1 agree, 3 disagree, 2 not counted)",
+  ]);
+  assert.ok(!calls.some((c) => /pulls\/[67]$/.test(c.at(-1))), "needs-human and auto decisions aren't read");
+  assert.ok(calls.every((c) => c[0] === "api" && c.length === 2), "GET over REST only");
+});
+
+test("--record: ten agreeing trial merges after a disagreeing one are the last 10 agreeing, which only the human turns into merge: auto", () => {
+  const r = record();
+  r.run({}, { merged: false });
+  // git flow: these ten snapshots are on develop, which the main checkout doesn't have out
+  r.p.git("checkout", "-qb", "develop");
+  for (let i = 0; i < 10; i++) r.run();
+  r.p.git("checkout", "-q", "main");
+  const { lines } = r.tally();
+  assert.equal(lines.at(-1), "RECORD 10 of the last 10 counted agree (10 agree, 1 disagree, 0 not counted)");
+  assert.equal(JSON.parse(fs.readFileSync(path.join(r.p.dir, ".factory/config.json"), "utf8")).merge, "trial");
+});
