@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // synthesize.mjs — turns the lenses' findings into findings.json, the only review output the merge decision reads, and
 // lists the P3s in deferred.md. Takes --run <id>, or derives the run from the run worktree it runs in.
+//   - The lenses are code, ui, security and human, whose review-human.md pr-comments writes from the PR's threads.
 //   - Every round of each lens counts: review-<lens>.round<N>.md in N order, then review-<lens>.md, never by mtime, which
 //     a checkout or a restore resets (design fix 16). A round with no `verdict:` line was cut off and counts for nothing.
 //     A finding is a `- id:` block of indented `key: value` lines; its newest block wins, and a block with
@@ -19,7 +20,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { runContext } from "./lib.mjs";
 
-const LENSES = ["code", "ui", "security"], RANK = ["P0", "P1", "P2", "P3"];
+const LENSES = ["code", "ui", "security", "human"], RANK = ["P0", "P1", "P2", "P3"];
 const ctx = runContext(), dir = ctx.runDir;
 const read = (f) => { try { return fs.readFileSync(path.join(dir, f), "utf8"); } catch { return ""; } };
 

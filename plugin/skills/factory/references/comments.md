@@ -1,0 +1,14 @@
+# The human lens
+
+The factory skill reads this at step 3 of **Resume** when the run has a PR (`<run_dir>/pr.json`), since the human may have reviewed it. Their review threads and change requests are the `human` lens: `pr-comments.mjs` writes them as `review-human.md` from what GitHub holds now, a change request as a P1 `fix` and a question as an `ask`. Only an owner's, member's or collaborator's comment acts; anyone else's is a P3 note. The fixes run as a review fix round, and `pr-resolve.mjs` answers each one on GitHub. Never reply to or resolve a thread yourself, a question's least of all: GitHub's state is the source of truth, so a thread the human resolves there is resolved on the next ingest. A change request the factory has answered waits as an ask until its reviewer approves it or dismisses it.
+
+The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<script> --run <id>`, written out in full.
+
+1. **Ingest.** If the run's newest attention item is `attention-comments.md` and it quotes `pr-resolve`, the last round's answers didn't all post: go to step 3. Otherwise run `pr-comments.mjs`. It prints what is open. Any non-zero exit: stop (below).
+2. **Synthesis.** `synthesize.mjs`, then by the `disposition` on its first line:
+   - `ship`: nothing the human raised is open. Go to step 1 of `references/pr.md`, which decides the PR again.
+   - `ask`: stop. What happened lists each open P0 and ask from `findings.json`, with its id, severity, location and claim.
+   - `fix`: step 5 of `references/review.md`, the review fix round, under its cap. Its `REVIEW` line names `human`, which brings you back to step 3 here.
+3. **Answer.** `pr-resolve.mjs` pushes the run branch, then replies on each human thread the round fixed with the head's SHA, resolves the thread and records it. A review gets the reply alone. Any non-zero exit: stop. Then `synthesize.mjs` again, and step 1 of `references/pr.md` whatever its disposition: what is still open waits on the human, and the merge decision lists it.
+
+To stop, write `attention-comments.md`. Its headline is the reason; What happened quotes the line that stopped it; Evidence lists `review-human.md`, `findings.json` and `pr.json`; the options are `/factory resume <id>` (once the PR's questions are settled and their threads resolved on GitHub, or GitHub answers again) and `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, then the snapshot; print it and stop.

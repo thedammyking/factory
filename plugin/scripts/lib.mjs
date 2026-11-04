@@ -209,9 +209,9 @@ export function liveBase(cwd, branch) {
 export function githubRepo(cwd) {
   try { return git(cwd, "config", "--get", "remote.origin.url").match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)?.[1] ?? null; } catch { return null; }
 }
-// One REST call, `gh api <args>` (never GraphQL): { ok, json, text, message }, text being the body as it came (a job's log
-// isn't JSON) and message GitHub's own words on a refusal (its message, then each error's), else gh's, else why gh didn't
-// start.
+// One `gh api <args>` call, REST but for the review threads pr-comments and pr-resolve need, which only GraphQL has
+// (`gh api graphql`): { ok, json, text, message }, text being the body as it came (a job's log isn't JSON) and message
+// GitHub's own words on a refusal (its message, then each error's), else gh's, else why gh didn't start.
 export function ghApi(...args) {
   const r = spawnSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
   let json = null; try { json = JSON.parse(r.stdout); } catch {}
