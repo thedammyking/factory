@@ -25,7 +25,37 @@ For each criterion the ticket covers, write its assertions from its `SC-###` tex
 
 A flow goes in the mobile app's pinned directory as `<run>-<NN-slug>-SC-###.yaml`. Its first line is `# Pinned by the factory from .factory/history/<run>/spec.md.`, then `appId: <the app's app_id in the recipe>`, `name: "[<run>] SC-###: <the criterion, word for word>"` and `---`, and its first command is `- launchApp: {clearState: true}`, so the flows run in any order.
 
-A test goes in the pinned directory of the app it checks, in one file per runner for the ticket: `<run>-<NN-slug>.spec.ts` or `<run>-<NN-slug>.test.mjs`. Its first line is `// Pinned by the factory from .factory/history/<run>/spec.md.`, and each test is titled `[<run>] SC-###: <the criterion, word for word>`. The app's URL is `process.env.BASE_URL` and the test user `process.env.E2E_EMAIL` and `process.env.E2E_PASSWORD`: no URL, port or user is ever written into a test. Playwright tests import `test` and `expect` from `factory.fixture.ts` beside them, which you write once if it's missing: it sets `baseURL` from `BASE_URL` and exports the one shared sign-in step.
+A test goes in the pinned directory of the app it checks, in one file per runner for the ticket: `<run>-<NN-slug>.spec.ts` or `<run>-<NN-slug>.test.mjs`. Its first line is `// Pinned by the factory from .factory/history/<run>/spec.md.`, and each test is titled `[<run>] SC-###: <the criterion, word for word>`. The app's URL is `process.env.BASE_URL` and the test user `process.env.E2E_EMAIL` and `process.env.E2E_PASSWORD`: no URL, port or user is ever written into a test. Playwright tests import `test` and `expect` from `factory.fixture.ts` beside them, which you write once if it's missing, or rewrite as below if it doesn't read `FACTORY_WATCH_HEADERS`: it sets `baseURL` from `BASE_URL` and exports the one shared sign-in step.
+
+Write the fixture as below, with the app's own sign-in steps in `signIn`, from the plan's routes, using `E2E_EMAIL` and `E2E_PASSWORD`; a test that needs a signed-in user calls `signIn(page)` and signs in no other way. After an auto merge, the watch runs the pinned tests of live-safe criteria against the target's deployment, its login-wall headers in `FACTORY_WATCH_HEADERS`: the fixture sends them to the app's own origin alone, never to another. A `node:test` file spreads `...JSON.parse(process.env.FACTORY_WATCH_HEADERS ?? "{}")` into the headers of each request it sends to `BASE_URL`, and of no other. The sign-in step's failure carries `FACTORY_SIGN_IN_FAILED`, which the watch reads as blocked, never red, so nothing else throws it.
+
+```ts
+// Pinned by the factory: the fixture every pinned Playwright test imports.
+import { test as base, expect } from "@playwright/test";
+
+const headers = JSON.parse(process.env.FACTORY_WATCH_HEADERS || "{}");
+
+export const test = base.extend({
+  baseURL: async ({ baseURL }, use) => use(process.env.BASE_URL ?? baseURL),
+  // The watch's headers, on requests to the app's own origin alone.
+  context: async ({ context, baseURL }, use) => {
+    if (baseURL && Object.keys(headers).length) {
+      await context.route(`${new URL(baseURL).origin}/**`, (route) => route.continue({ headers: { ...route.request().headers(), ...headers } }));
+    }
+    await use(context);
+  },
+});
+export { expect };
+
+// The one shared sign-in step, as the test user. Its failure carries FACTORY_SIGN_IN_FAILED.
+export async function signIn(page) {
+  try {
+    // the app's sign-in steps, with process.env.E2E_EMAIL and process.env.E2E_PASSWORD
+  } catch (e) {
+    throw new Error(`FACTORY_SIGN_IN_FAILED: ${e.message}`);
+  }
+}
+```
 
 Commit each file as soon as it's written, before its first run, and every later change to it: `git -C {worktree} add -- <path>`, then `git -C {worktree} commit -m "<what it pins>"`. Stage by path, never with `-A`, `.` or `commit -a`. Every test you write is committed, passing or failing.
 

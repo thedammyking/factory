@@ -18,7 +18,7 @@ A detected value is never asked about: it is confirmed once, in the proposal. A 
 1. Read your own tool list for the MCP servers the factory uses: Linear, Notion, Figma and Mobbin. A server is visible when a tool's name starts with `mcp__` and names it, such as `mcp__linear__…`, `mcp__claude_ai_Linear__…` or `mcp__plugin_<plugin>_linear__…`. Deferred tools count. Never run `claude mcp list`.
 2. Run `setup-factory detect --mcp <the visible servers, comma-separated, lowercase>`, leaving `--mcp` out when none are.
    - Exit 1: a prerequisite is missing (a `package.json`, a GitHub remote, a signed-in `gh`). Print its lines as they are and stop. Nothing was written.
-   - Exit 0: it printed the proposal as JSON. Keep its `tracker`, `existing` and `disagreements`; don't print the JSON.
+   - Exit 0: it printed the proposal as JSON. Keep its `tracker`, `existing`, `disagreements` and `auth`; don't print the JSON.
 
 On a re-run (`existing` is true) the project's `.factory/` values are the defaults. Detection only fills what's missing, and each field it disagrees with shows up in the proposal. A kept value stays unless the human changes it.
 
@@ -43,6 +43,13 @@ A script copies the dev environment, so no value ever reaches the chat. Never re
 2. With no `gap` line, go to step 4. Otherwise ask once: "Fill in each gap in `.factory/env.local` (uncomment its line and add a dev or test value, never a production one), or leave it commented out if the factory can't have it. Say done when you're finished."
 3. On "done", run `setup-factory env` again and print its lines. A gap still there is not available: the checks needing it are skipped (see **D**).
 4. Give each variable of detect's `recipe.env` whose purpose is null one line saying what it's for, from its name and where the code reads it: `setup-factory set env.<NAME> '<purpose>'`.
+5. **Login wall.** After an auto merge, the watch smoke-tests the deployment of the branch `auto` merges into. Run `setup-factory probe` and print its lines as they are. It sends one GET to that branch's latest deployment, with the recipe's `smoke.headers` once they're set, and names headers only.
+   - Exit 0 (`no wall`, or no ready deployment): no question.
+   - Exit 1, a `wall` line: ask once, "The watch can't get past the login wall at `<url>`. Put a bypass header's value in `.factory/env.local` and say done, or say skip." On a re-run whose recipe has `smoke.headers` as `{}`, the human skipped before: don't ask.
+   - Recommend Vercel's Protection Bypass for Automation when the redirect goes to vercel.com or the host ends in `.vercel.app`. The secret is in the project's Deployment Protection settings, and goes in the file as `VERCEL_AUTOMATION_BYPASS_SECRET=`. It's free on every plan and only lets the watch view this project's deployments.
+   - On done, record the header by its variable, never its value: `setup-factory set smoke.headers '{"x-vercel-protection-bypass": "{env:VERCEL_AUTOMATION_BYPASS_SECRET}"}'`, or for another host the header it names, as `{env:<the variable>}`. Then run `setup-factory probe` again to prove it. If a `wall` line is still there, say so: the watch's smoke stays blocked until the header works.
+   - On skip: `setup-factory set smoke.headers '{}'`. The watch's smoke stays blocked by the wall.
+6. **Test users.** Only when detect's `auth` names a library, ask once: "Does any app need a signed-in user for its checks? I recommend yes: `<library>` is in `<app>`." On yes, ask the human to add two test users to `.factory/env.local` and say done: a local one as `E2E_EMAIL` and `E2E_PASSWORD`, and one on the deployment `auto` merges into as `WATCH_E2E_EMAIL` and `WATCH_E2E_PASSWORD`. The factory never creates a user on a hosted environment, so that one must already exist. Then run `setup-factory set smoke.test_user '["E2E_EMAIL", "E2E_PASSWORD"]'`. Until the `WATCH_` values are in the file, the watch's smoke is blocked for want of a test user.
 
 ## D. Proof
 

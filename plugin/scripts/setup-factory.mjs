@@ -11,6 +11,11 @@
 //   setup-factory.mjs env                    -> section C: copies each of those variables' values from the developer's env
 //                                              files into .factory/env.local, keeping every line already there, and prints
 //                                              one line per variable: copied, kept or a gap, never its value.
+//   setup-factory.mjs probe                  -> section C's login wall: the latest deployment of the branch auto would merge
+//                                              into (develop under git flow, else main), as GitHub has it for that
+//                                              branch's tip, gets lib's loginWall GET with the recipe's smoke.headers.
+//                                              Prints a line per deployed URL, `wall` or `no wall`, its status and a
+//                                              redirect's host, and the headers by name only; exits 1 on a wall.
 //   setup-factory.mjs prove [<app>.<name> ...] -> runs every check and dev command in the proposal once (or only those named),
 //                                              in the recipe's environment, each dev command on a free port until its health
 //                                              URL answers, and the checks that need apps while they're up; records each
@@ -36,7 +41,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, runEnv, envLines, device, cli, PLATFORM_NAMES } from "./lib.mjs";
+import { readJson, arg, git, runEnv, envLines, device, cli, PLATFORM_NAMES, watchEnv, smokeHeaders, loginWall } from "./lib.mjs";
 
 const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
 const argv = process.argv.slice(2);
@@ -756,6 +761,23 @@ switch (cmd) {
     process.exitCode = await mobile(loadProposal());
     break;
   }
+  case "probe": {
+    // The watch reads the deployment of what auto merged (#32); setup reads the newest it can, its target's tip's.
+    const P = loadProposal(), b = P.config.branching || {}, branch = b.model === "git-flow" ? b.develop || "develop" : b.main || "main";
+    const tip = ghJson(`repos/${P.repo}/commits/${branch}`)?.sha;
+    const urls = new Set((tip && ghJson(`repos/${P.repo}/deployments?sha=${tip}&per_page=100`) || []).map((d) => ghJson(`repos/${P.repo}/deployments/${d.id}/statuses?per_page=1`)?.[0])
+      .filter((st) => st?.state === "success" && /^https?:\/\/\S+$/.test(st.environment_url ?? "")).map((st) => st.environment_url));
+    if (!urls.size) { console.log(`no wall: no ready deployment of ${branch}${tip ? ` at ${tip.slice(0, 7)}` : ""}`); break; }
+    const headers = smokeHeaders(P.recipe, watchEnv(P.root)), names = Object.keys(headers).length ? `, with ${Object.keys(headers).join(", ")}` : "";
+    let walls = 0;
+    for (const url of urls) {
+      const w = await loginWall(url, headers);
+      walls += w.wall;
+      console.log(`${w.wall ? "wall   " : "no wall"}  ${url}  ${w.why}${names}`);
+    }
+    if (walls) process.exit(1);
+    break;
+  }
   case "set": {
     const [field, raw = fs.readFileSync(0, "utf8").trim()] = args;
     if (!field || !raw) die("set <field> <value>, or the value on stdin");
@@ -780,7 +802,7 @@ switch (cmd) {
       console.log(id ? `set docs notion, under page ${P.config.notion_parent}` : "set docs repo");
       break;
     }
-    if (!["apps", "pinned", "preview", "env"].includes(keys[0]) && !(keys[0] in P.config)) die(`${field} isn't a field setup writes`);
+    if (!["apps", "pinned", "preview", "env", "smoke"].includes(keys[0]) && !(keys[0] in P.config)) die(`${field} isn't a field setup writes`);
     let node = keys[0] in P.config ? P.config : P.recipe;
     for (const [i, k] of keys.slice(0, -1).entries()) {
       node = Array.isArray(node) ? node.find((a) => a.name === k) : isObj(node[k]) || Array.isArray(node[k]) ? node[k] : (node[k] = {});
@@ -833,5 +855,5 @@ switch (cmd) {
     if (failed) process.exit(1);
     break;
   }
-  default: die("usage: setup-factory.mjs detect [--mcp <a,b>] | env | prove [<app>.<name> ...] | mobile | set <field> [<value>] | apply [--tracker <t>] [--dry-run]");
+  default: die("usage: setup-factory.mjs detect [--mcp <a,b>] | env | probe | prove [<app>.<name> ...] | mobile | set <field> [<value>] | apply [--tracker <t>] [--dry-run]");
 }

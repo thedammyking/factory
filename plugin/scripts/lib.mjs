@@ -132,6 +132,31 @@ export function runEnv(main, extra = {}) {
   return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...Object.fromEntries(local), ...extra };
 }
 
+// The watch's smoke command's environment alone (#32): runEnv's, with each WATCH_X in .factory/env.local taking X's
+// place, so the smoke signs in as the target's test user.
+export function watchEnv(main) {
+  const env = runEnv(main);
+  for (const [k, v] of Object.entries(env)) if (/^WATCH_./.test(k)) env[k.slice(6)] = v;
+  return env;
+}
+// The recipe's smoke.headers, each {env:NAME} filled from env; a header whose variable env lacks is left out.
+export const smokeHeaders = (recipe, env) => Object.fromEntries(Object.entries(recipe.smoke?.headers || {}).flatMap(([name, v]) => {
+  let gap = false;
+  const value = String(v).replace(/\{env:([^}]+)\}/g, (_, n) => env[n] || (gap = true, ""));
+  return gap ? [] : [[name, value]];
+}));
+// One GET of url's root with `headers`, its redirect never followed, so they reach that origin alone: a login wall (#32)
+// is a 401, a 403 or a redirect off its host, and no answer, or a redirect that names no host, counts as one.
+// { wall, why }, why naming the status and a redirect's host, never a header.
+export async function loginWall(url, headers = {}) {
+  const root = new URL("/", url);
+  let r; try { r = await fetch(root, { headers, redirect: "manual", signal: AbortSignal.timeout(30_000) }); } catch (e) { return { wall: true, why: `no answer: ${e.cause?.code ?? e.message}` }; }
+  r.body?.cancel().catch(() => {});
+  let to = null; try { to = r.headers.has("location") ? new URL(r.headers.get("location"), root).host : null; } catch {}
+  const moved = r.status >= 300 && r.status < 400;
+  return { wall: [401, 403].includes(r.status) || (moved && to !== root.host), why: `${r.status}${moved ? ` to ${to ?? "nowhere it names"}` : ""}` };
+}
+
 // The one device a run's mobile apps go on, from .factory/env.local as setup records it: the iOS simulator
 // FACTORY_IOS_DEVICE (its UDID) where the machine has one, else the Android emulator FACTORY_ANDROID_DEVICE (its AVD
 // name); null with neither, which NO_DEVICE says.
