@@ -12,7 +12,7 @@
 //           The permission system bounds what else a command can do.
 import fs from "node:fs";
 import path from "node:path";
-import { readJson, git, worktreesDir, runPaths } from "./lib.mjs";
+import { readJson, git, worktreesDir, runPaths, LOCKED } from "./lib.mjs";
 
 const input = JSON.parse(fs.readFileSync(0, "utf8") || "{}");
 const cwd = path.resolve(input.cwd || process.cwd()), project = process.env.CLAUDE_PROJECT_DIR || cwd;
@@ -41,10 +41,8 @@ function runOf(wt) {
 }
 const own = runOf(TOP), roots = [TOP, own && real(runPaths(MAIN, own.id).runDir)];
 const TERMINAL = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted"];  // run-state's outcomes
-// Locked while a run goes on, matched in lower case for case-insensitive file systems: the factory's own files (all of
-// .factory/ but the run dirs, plus each run's state.json, which run-state alone writes, so no agent ends its run to unlock
-// the rest), .claude/, CI workflows and actions, and lint config. LOCKED_DIRS are the ones a removal can take whole.
-const LOCKED = /^(\.factory\/(?!runs\/)|\.factory\/runs\/[^/]+\/state\.json$|\.claude\/|\.github\/(workflows|actions)\/)|(^|\/)(eslint\.config\.|\.eslint|prettier\.config\.|\.prettier|biome\.jsonc?$|stylelint\.config\.|\.stylelint|\.swiftlint\.ya?ml$|\.?ruff\.toml$|\.golangci\.)/;
+// Locked while a run goes on: lib's LOCKED, matched in lower case for case-insensitive file systems. LOCKED_DIRS are the
+// ones a removal can take whole.
 const LOCKED_DIRS = [".factory/", ".claude/", ".github/workflows/", ".github/actions/"];
 
 // why a write to the absolute path a is refused, or null; a removal also writes everything a holds

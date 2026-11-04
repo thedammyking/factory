@@ -72,6 +72,15 @@ export function bareRemote(p) {
   return dir;
 }
 
+// bareRemote as github.com/o/r: origin's configured URL names that repo, so scripts parse one, and git rewrites it to the
+// bare remote, so every push and fetch stays local.
+export function githubOrigin(p) {
+  const dir = bareRemote(p);
+  p.git("config", "remote.origin.url", "https://github.com/o/r.git");
+  p.git("config", `url.${dir}.insteadOf`, "https://github.com/o/r.git");
+  return dir;
+}
+
 const SCRIPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts");
 // One of the plugin's scripts, spawned with node.
 export const script = (name, cwd, args = [], { input = "", env = process.env } = {}) =>

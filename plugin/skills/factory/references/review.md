@@ -4,6 +4,8 @@ The factory skill reads this at step 9 of **build**, once `next-ticket` prints `
 
 The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<script> … --run <id>`, written out in full.
 
+First, once per review and never on a re-review, run `sync-base.mjs before-review`, so review sees the tree that will merge. On `rebased …`, every SHA changed: run `verify.mjs --full` with Bash's `run_in_background`, say `Verifying <id> on its base.` and end your turn, then go to step 1 when it wakes you. On exit 1 it aborted a conflict, wrote `attention-sync.md` and ended the run needs-human: run the snapshot (see **Ending a run** in the skill), print that item and stop. Any other non-zero exit is a factory error: stop (below).
+
 1. **Package.** Run `review-package.mjs`, `classify-diff.mjs` and `security-scan.mjs`, in that order. `security-scan` exits 1 when a capability failed or is missing, which the merge decision reads later: go on. Any other non-zero exit is a factory error: stop (below). Then read `<run_dir>/evidence.json` and `<run_dir>/touches.json`. The lenses judge only green evidence: unless `evidence.json` has `green: true` and its `sha` is `touches.json`'s `head`, stop.
 2. **Captures**, only when `touches.json` has `ui` hit. Write `<run_dir>/ui-states.json` as `{"states": [...]}`, one state for each line under `## UI states` in every `tickets/<NN>/plan.md`:
    - `name`: `<NN>-` and the state, in lowercase words joined by `-`;
@@ -22,7 +24,7 @@ The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<scr
 
    Then run `run-state done review-<lens>` for each.
 4. **Synthesis.** `synthesize.mjs`, then by the `disposition` on its first line:
-   - `ship`: the review is clean. This version stops before the PR: stop, with the headline that the review passed and the PR stage isn't built yet.
+   - `ship`: the review is clean. Read `references/pr.md` beside this file and follow it.
    - `ask`: an open P0 or ask is the human's to decide: stop, and What happened lists each open P0 and ask from `findings.json`, with its id, severity, location and claim.
    - `fix`: step 5.
 5. **Fix round.** `run-state round review`, in the foreground. Exit 5 prints `ESCALATE …`: the rounds are spent, so stop, quoting it and listing the open P0 and P1 fixes. On `OK …`, run `run-stage.mjs review-fix` with Bash's `run_in_background`, say `Fixing <id>'s review findings.` and end your turn. When it wakes you, read the last line of its output, ignoring the notification's text. Exit 4 is the **Caps** of the skill, with the stage `review-fix`. Otherwise, by its first word:
@@ -31,4 +33,4 @@ The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<scr
    - `SUSPENDED`: the child stopped at the usage limit, which costs no round. Stop, with the options `/factory resume <id>` (once the limit resets) and `/factory abandon <id>`, and `run-state set stage suspended --run <id>` in place of needs-human.
    - `ATTENTION`: stop.
 
-To stop, write `attention-review.md`. Its headline is the reason; What happened quotes the line that stopped it; Evidence lists `findings.json`, `deferred.md`, each `review-<lens>.md` with its `review-<lens>.round<N>.md` files, `review-fix.md`, `evidence.json` and `logs/review-fix.*.jsonl`, those that exist. The options are `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, print it and stop.
+To stop, write `attention-review.md`. Its headline is the reason; What happened quotes the line that stopped it; Evidence lists `findings.json`, `deferred.md`, each `review-<lens>.md` with its `review-<lens>.round<N>.md` files, `review-fix.md`, `evidence.json` and `logs/review-fix.*.jsonl`, those that exist. The options are `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, open the draft PR as **Draft** in `references/pr.md` says (never on `SUSPENDED`, which a resume carries on), then the snapshot; print it and stop.

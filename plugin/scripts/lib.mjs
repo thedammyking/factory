@@ -4,7 +4,7 @@
 // worktree it runs in.
 import fs from "node:fs";
 import path from "node:path";
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 
 export const readJson = (p, fallback = null) => { try { return JSON.parse(fs.readFileSync(p, "utf8")); } catch { return fallback; } };
 export const arg = (k, fallback = null, argv = process.argv) => { const i = argv.indexOf(k); return i > -1 ? argv[i + 1] : fallback; };
@@ -13,7 +13,7 @@ export const arg = (k, fallback = null, argv = process.argv) => { const i = argv
 // writer (docs/platform-facts.md, fact 14). Such a failure has changed nothing (but for the branch a `worktree add -b` makes, so
 // no script passes -b), and it's tried again, 5 times in all over about a second.
 const RACED = /failed to read .*\/commondir|cannot lock ref/;
-const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+export const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 export const git = (cwd, ...a) => {
   for (let n = 1; ; n++) try { return execFileSync("git", a, { cwd, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }).trim(); } catch (e) {
     if (n === 5 || !["worktree", "branch"].includes(a[0]) || !RACED.test(e.stderr)) throw e;
@@ -188,6 +188,37 @@ export function runDiff(ctx) {
   }
   return { base, files, added };
 }
+
+// The paths no run may change on its own: the factory's own files (all of .factory/ but the run dirs, plus each run's
+// state.json, which run-state alone writes, so no agent ends its run to unlock the rest), .claude/, CI workflows and
+// actions, and lint config. guard-paths locks them while a run goes on; a run's diff touching one needs a human.
+export const LOCKED = /^(\.factory\/(?!runs\/)|\.factory\/runs\/[^/]+\/state\.json$|\.claude\/|\.github\/(workflows|actions)\/)|(^|\/)(eslint\.config\.|\.eslint|prettier\.config\.|\.prettier|biome\.jsonc?$|stylelint\.config\.|\.stylelint|\.swiftlint\.ya?ml$|\.?ruff\.toml$|\.golangci\.)/;
+
+// The base a PR merges into, as a ref: origin's copy of `branch`, fetched now, when the project has an origin (throwing
+// when the fetch fails), else the local branch. A local base may hold commits origin never got, such as snapshots.
+export function liveBase(cwd, branch) {
+  try { git(cwd, "remote", "get-url", "origin"); } catch { return `refs/heads/${branch}`; }
+  git(cwd, "fetch", "-q", "origin", `+refs/heads/${branch}:refs/remotes/origin/${branch}`);
+  return `refs/remotes/origin/${branch}`;
+}
+// owner/name of the GitHub repo origin's configured URL names, or null. The URL as configured, before any insteadOf.
+export function githubRepo(cwd) {
+  try { return git(cwd, "config", "--get", "remote.origin.url").match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)?.[1] ?? null; } catch { return null; }
+}
+// One REST call, `gh api <args>` (never GraphQL): { ok, json, message }, message being GitHub's own words on a refusal (its
+// message, then each error's), else gh's, else why gh didn't start.
+export function ghApi(...args) {
+  const r = spawnSync("gh", ["api", ...args], { encoding: "utf8" });
+  let json = null; try { json = JSON.parse(r.stdout); } catch {}
+  const message = [json?.message, ...(json?.errors || []).map((e) => e.message ?? e)].filter(Boolean).join(": ") || (r.stderr || "").trim() || r.error?.message || "";
+  return { ok: r.status === 0, json, message };
+}
+// A value as one shell word, for a command a human pastes: as it is when plain, else single-quoted.
+export const shellQuote = (v) => /^[\w./@:+=~-]+$/.test(String(v)) ? String(v) : `'${String(v).replaceAll("'", "'\\''")}'`;
+// An attention item's text, in the factory skill's one shape. options: [[a runnable command, what it does], …].
+export const attentionItem = ({ id, stage, headline, happened, evidence, recommendation, options }) =>
+  `# ${headline}\n\nRun \`${id}\`, stage \`${stage}\`.\n\n## What happened\n${happened}\n\n## Evidence\n${evidence.map((e) => `- \`${e}\``).join("\n")}\n\n`
+  + `## Recommendation\n${recommendation}\n\n## Options\n${options.map(([c, what]) => `- \`${c}\`: ${what}`).join("\n")}\n`;
 
 // A child's stream-json log or a transcript as its JSON lines, [] when it can't be read; a line that isn't JSON is skipped.
 export function events(log) {

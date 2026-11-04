@@ -21,6 +21,8 @@
 //   run-state.mjs approve tickets approved|revise -> the human's decision at the ticket gate; approved covers the cut and
 //                                                the edges of tickets/NN-slug.md as they are, and until then a build run
 //                                                dispatches nothing past the tickets
+//   run-state.mjs approve migrations          -> the human approves a maintenance run's migrations at the run head,
+//                                                recorded with who, so its merge decision there may let them through
 //   run-state.mjs ticket <NN> <status>        -> after the ticket gate, the only change to a ticket's Status line that
 //                                                keeps the approval
 //   run-state.mjs next-ticket                 -> after the ticket gate, a line per takeable ticket of lib's frontier,
@@ -539,6 +541,19 @@ switch (cmd) {
   }
   case "approve": {
     const [gate, decision] = args;
+    if (gate === "migrations" && !decision) {
+      // The human's, never the orchestrator's: a maintenance run's migrations may then merge (merge-decision), at this head
+      // only. Not an override.
+      const [ctx, s] = load();
+      if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+      let by = "unknown"; try { by = git(ctx.MAIN, "config", "user.name"); } catch {}
+      const sha = git(ctx.worktree, "rev-parse", "HEAD");
+      s.approvals = { ...s.approvals, migrations: { by, sha, at: now() } };
+      save(ctx.state, s);
+      log(ctx.runDir, `run: ${ctx.id} migrations approved by ${by} at ${sha.slice(0, 7)}`);
+      console.log(`migrations approved by ${by} at ${sha.slice(0, 7)}`);
+      break;
+    }
     if (!["spec", "tickets"].includes(gate) || !["approved", "revise"].includes(decision)) die("approve spec|tickets approved | revise (a gate's abandon is abandon)");
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
