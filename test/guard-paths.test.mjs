@@ -40,10 +40,11 @@ fs.symlinkSync("/etc/hosts", path.join(live.wt, "hosts-link"));  // a file link
 fs.writeFileSync(path.join(p.dir, "notes.txt"), "");
 fs.linkSync(path.join(p.dir, "notes.txt"), path.join(live.wt, "notes-link.txt"));  // a hard link to a file outside
 
-// A hook call, by default the implementer's: cwd is where it last cd'd, its project dir where it started (by default cwd).
-const hook = (cwd, tool_name, tool_input, more = IMPLEMENTER, project = cwd) => spawnSync(process.execPath, [SCRIPT], {
+// A hook call, by default the implementer's: cwd is where it last cd'd, its project dir where it started (by default cwd),
+// and `env` what the session adds to the hook's environment.
+const hook = (cwd, tool_name, tool_input, more = IMPLEMENTER, project = cwd, env = {}) => spawnSync(process.execPath, [SCRIPT], {
   input: JSON.stringify({ session_id: "s-1", hook_event_name: "PreToolUse", cwd, tool_name, tool_input, ...more }),
-  env: { ...process.env, CLAUDE_PROJECT_DIR: project }, encoding: "utf8",
+  env: { ...process.env, FACTORY_CHILD: "", CLAUDE_PROJECT_DIR: project, ...env }, encoding: "utf8",
 });
 // Write's file_path is always absolute; a relative one here is relative to cwd.
 const write = (file, cwd = live.wt, more) => hook(cwd, "Write", { file_path: path.resolve(cwd, file), content: "x" }, more);
@@ -131,6 +132,12 @@ test("only the factory's agents are bound: during a run, the developer's session
   const settings = path.join(os.homedir(), ".claude/settings.json");
   allowed(write(settings, p.dir, SESSION));
   denied(write(settings, ticket, IMPLEMENTER), /outside/);
+});
+
+test("a child run-stage starts, with FACTORY_CHILD=1 in its env, is bound even without an agent_type", () => {
+  const settings = { file_path: path.join(os.homedir(), ".claude/settings.json"), content: "x" };
+  denied(hook(ticket, "Write", settings, SESSION, ticket, { FACTORY_CHILD: "1" }), /outside/);
+  allowed(hook(ticket, "Write", settings, SESSION, ticket));
 });
 
 test("during a run only factory:qa writes the recipe's pinned directories, and never the rest of what's locked", () => {

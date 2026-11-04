@@ -191,7 +191,7 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", config.models?.implement || "sonnet", "--max-turns", String(MAX_TURNS),
     "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowed.join(","), "--strict-mcp-config",
     "--add-dir", ctx.runDir, "--output-format", "stream-json", "--verbose", ...(last ? ["--resume", session] : ["--session-id", session])],
-    { cwd: ctx.worktree, stdio: ["pipe", fd, fd] });
+    { cwd: ctx.worktree, stdio: ["pipe", fd, fd], env: { ...process.env, FACTORY_CHILD: "1" } });
   fs.closeSync(fd);
   const exited = new Promise((resolve) => { child.on("error", resolve); child.on("close", () => resolve(null)); });
   if (!child.pid) end("ATTENTION", `claude couldn't start: ${(await exited)?.message}`);
@@ -300,7 +300,7 @@ const fd = fs.openSync(log, "w");
 const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", model, "--max-turns", String(MAX_TURNS),
   "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowed.join(","), "--strict-mcp-config",
   "--add-dir", ctx.runDir, "--output-format", "stream-json", "--verbose", ...(fresh ? ["--session-id", session] : ["--resume", session])],
-  { cwd: wt, stdio: ["pipe", fd, fd] });
+  { cwd: wt, stdio: ["pipe", fd, fd], env: { ...process.env, FACTORY_CHILD: "1" } });
 fs.closeSync(fd);
 const exited = new Promise((resolve) => { child.on("error", resolve); child.on("close", () => resolve(null)); });
 if (!child.pid) say("ATTENTION", `claude couldn't start: ${(await exited)?.message}`);

@@ -3,6 +3,7 @@
 // It binds only the factory's own agents, the plugin's subagents and the implementer child, whose calls carry an
 // agent_type starting with factory: (docs/platform-facts.md, fact 7). The developer's session carries none, orchestrator
 // turns included, so it writes wherever the developer asks.
+// run-stage also starts each claude -p child with FACTORY_CHILD=1, which binds it should its agent_type ever go missing.
 // It does nothing outside a factory project (a current worktree without .factory/). The current worktree is the one the
 // session started in (CLAUDE_PROJECT_DIR), since the input's cwd follows every `cd` (docs/platform-facts.md).
 // Every Write, Edit and shell write must land in the current worktree, its run dir (a ticket worktree's is in the run
@@ -18,7 +19,7 @@ import path from "node:path";
 import { readJson, git, worktreesDir, runPaths, LOCKED } from "./lib.mjs";
 
 const input = JSON.parse(fs.readFileSync(0, "utf8") || "{}");
-if (!/^factory:/.test(input.agent_type)) process.exit(0);
+if (!/^factory:/.test(input.agent_type) && process.env.FACTORY_CHILD !== "1") process.exit(0);
 const cwd = path.resolve(input.cwd || process.cwd()), project = process.env.CLAUDE_PROJECT_DIR || cwd;
 let top, common;
 try { [top, common] = git(project, "rev-parse", "--path-format=absolute", "--show-toplevel", "--git-common-dir").split("\n"); } catch { process.exit(0); }
