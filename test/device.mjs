@@ -1,17 +1,20 @@
-// device.mjs — a fake iOS simulator and Android emulator for run-apps and verify: fake xcrun, adb, emulator, maestro
-// and sips on PATH. Each call appends its argv to calls(name) and acts on one state file, so a test asserts both the
-// commands sent and what the device was left as.
+// device.mjs — a fake iOS simulator and Android emulator for run-apps, verify, capture-states and setup: fake xcrun,
+// adb, emulator, maestro and sips on PATH, and xcodebuild, java and avdmanager for setup's probes. Each call appends
+// its argv to calls(name) and acts on one state file, so a test asserts both the commands sent and what the device was
+// left as.
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 // The developer's own devices, as setup found them: neither running, each with its own look. app_id is the id of the
-// app a test's build makes, which a launch by URL brings to the front.
+// app a test's build makes, which a launch by URL brings to the front. Beside the simulator (none with udid null),
+// simctl lists `others` ({udid, name, runtime, state}, never bootable) and the `runtimes` installed; the emulator lists
+// `avds`, and boots only `avd`.
 export const DEVICES = {
-  ios: { udid: "5D2E7A0C-1111-4C3B-9E77-0A1B2C3D4E5F", name: "iPhone 16", booted: false, appearance: "light", content_size: "large", width: 1179, scale: 3,
-    app_id: "com.example.shop", installed: null, running: null },
-  android: { avd: "Pixel_9", serial: "emulator-5554", booted: false, size: "1080x2400", density: "420", override_size: null, override_density: null,
-    night: "no", font_scale: "1.0", app_id: "com.example.shop", reversed: [], installed: null, foreground: null },
+  ios: { udid: "5D2E7A0C-1111-4C3B-9E77-0A1B2C3D4E5F", name: "iPhone 16", runtime: "iOS-18-2", booted: false, appearance: "light", content_size: "large", width: 1179, scale: 3,
+    app_id: "com.example.shop", installed: null, running: null, others: [], runtimes: [] },
+  android: { avd: "Pixel_9", avds: ["Pixel_9"], serial: "emulator-5554", booted: false, accel: true, size: "1080x2400", density: "420", override_size: null, override_density: null,
+    night: "no", font_scale: "1.0", sdk: "35", app_id: "com.example.shop", reversed: [], installed: null, foreground: null },
 };
 
 const FAKE = `#!${process.execPath}
@@ -28,10 +31,21 @@ const png = (w, h) => { const b = Buffer.alloc(33); Buffer.from("89504e470d0a1a0
 // a process that lives until it's killed, or until the device goes down or the test's ALIVE file does
 const live = (up) => setInterval(() => { const now = JSON.parse(fs.readFileSync(STATE, "utf8")); if (!fs.existsSync(s.alive) || !up(now)) process.exit(); }, 50);
 const j = argv.join(" ");
+// a tool that's there but fails, as macOS's xcodebuild does with only the Command Line Tools
+if ((s.broken || []).includes(name)) fail("requires Xcode, but active developer directory '/Library/Developer/CommandLineTools' is a command line tools instance");
 if (name === "xcrun") {
   const [, cmd, id, ...rest] = argv, r = rest.join(" ");
   if (argv[0] !== "simctl") fail("no " + argv[0]);
-  if (j === "simctl list devices -j") out(JSON.stringify({ devices: { "com.apple.CoreSimulator.SimRuntime.iOS-18-2": [{ udid: ios.udid, name: ios.name, state: ios.booted ? "Booted" : "Shutdown" }] } }));
+  if (j === "simctl help") out("usage: simctl [--set <path>] [--profiles <path>] <subcommand> ...");
+  else if (j === "simctl list devices -j") {
+    const devices = {};
+    for (const d of [...(ios.udid ? [{ udid: ios.udid, name: ios.name, state: ios.booted ? "Booted" : "Shutdown", runtime: ios.runtime }] : []), ...ios.others]) {
+      (devices["com.apple.CoreSimulator.SimRuntime." + d.runtime] ||= []).push({ udid: d.udid, name: d.name, state: d.state, isAvailable: true });
+    }
+    out(JSON.stringify({ devices }));
+  }
+  else if (j === "simctl list runtimes -j") out(JSON.stringify({ runtimes: ios.runtimes }));
+  else if (cmd === "create") { Object.assign(ios, { udid: "FAC70000-0000-4000-8000-000000000001", name: id, runtime: rest[1].split(".").pop(), booted: false }); out(ios.udid); }
   else if (id !== ios.udid) fail("no device " + id);
   else if (cmd === "boot") { if (ios.booted) fail("Unable to boot device in current state: Booted"); ios.booted = true; }
   else if (!ios.booted) fail("Unable to lookup in current state: Shutdown");
@@ -51,6 +65,7 @@ if (name === "xcrun") {
   const serial = argv[0] === "-s" ? argv[1] : null, a = serial ? argv.slice(2) : argv, c = a.join(" "), sh = a[0] === "shell" ? a.slice(1).join(" ") : null;
   const runs = android.booted;
   if (c === "devices") out("List of devices attached\\n" + (runs ? android.serial + "\\tdevice\\n" : ""));
+  else if (c === "version") out("Android Debug Bridge version 1.0.41\\nVersion 35.0.2-12147458");
   else if (serial !== android.serial || !runs) fail("device '" + serial + "' not found");
   else if (c === "emu avd name") out(android.avd + "\\nOK");
   else if (c === "emu kill") Object.assign(android, { booted: false, foreground: null, reversed: [] });
@@ -61,6 +76,7 @@ if (name === "xcrun") {
   else if (a[0] === "logcat") { out("logcat " + a.slice(1).join(" ")); live((now) => now.android.booted); }
   else if (c === "exec-out screencap -p") process.stdout.write(png(...(android.override_size || android.size).split("x").map(Number)));
   else if (sh === "getprop sys.boot_completed") out("1");
+  else if (sh === "getprop ro.build.version.sdk") out(android.sdk);
   else if (sh === "wm size") out("Physical size: " + android.size + (android.override_size ? "\\nOverride size: " + android.override_size : ""));
   else if (sh === "wm density") out("Physical density: " + android.density + (android.override_density ? "\\nOverride density: " + android.override_density : ""));
   else if (/^wm (size|density) /.test(sh)) { const [, k, v] = sh.split(" "); android["override_" + k] = v === "reset" ? null : v; }
@@ -74,6 +90,8 @@ if (name === "xcrun") {
   else if (sh === "dumpsys activity activities") out(android.foreground ? "    topResumedActivity=ActivityRecord{f6e358d u0 " + android.foreground + "/.MainActivity t8}" : "    topResumedActivity=ActivityRecord{1 u0 com.android.launcher3/.Launcher t1}");
   else fail("no canned reply for " + JSON.stringify(argv));
 } else if (name === "emulator") {
+  if (j === "-accel-check") { out(android.accel ? "accel:\\n0\\nHypervisor.Framework OS X Version 15.0\\naccel" : "accel:\\n7\\nCPU doesn't support virtualization\\naccel"); process.exit(android.accel ? 0 : 1); }
+  if (j === "-list-avds") { out(android.avds.join("\\n")); process.exit(); }
   if (j !== "-avd " + android.avd + " -no-window") fail("no canned reply for " + JSON.stringify(argv));
   if (android.booted) fail("Running multiple emulators with the same AVD is an experimental feature.");
   android.booted = true;
@@ -82,6 +100,14 @@ if (name === "xcrun") {
 } else if (name === "maestro") {
   if (j === "--version") { out(s.maestro); process.exit(); }
   out("MAESTRO_CLI_NO_ANALYTICS=" + process.env.MAESTRO_CLI_NO_ANALYTICS);
+  // one flow, as capture-states runs it: kept in s.flows with the device's look then, failing where it holds s.failing
+  if (argv[0] === "test" && argv.length === 2) {
+    if (!(ios.booted && ios.running) && !(android.booted && android.foreground)) fail("no app is running on any device");
+    const flow = fs.readFileSync(argv[1], "utf8");
+    (s.flows ||= []).push({ flow, look: ios.booted ? ios.appearance + "/" + ios.content_size : android.night + "/" + android.font_scale });
+    if (s.failing && flow.includes(s.failing)) { out("Assertion is false: " + s.failing + " is visible"); process.exitCode = 1; }
+    save(); process.exit();
+  }
   const [, , , , output, flows] = argv;
   if (argv.slice(0, 4).join(" ") !== "test --format junit --output" || !fs.existsSync(flows)) fail("no canned reply for " + JSON.stringify(argv));
   if (!(ios.booted && ios.running) && !(android.booted && android.foreground)) fail("no app is running on any device");
@@ -91,6 +117,16 @@ if (name === "xcrun") {
   const [flag, width, file] = argv;
   if (flag !== "--resampleWidth") fail("no canned reply for " + JSON.stringify(argv));
   fs.writeFileSync(file, png(Number(width), Number(width) * 2));
+} else if (name === "xcodebuild") {
+  if (j !== "-version") fail("no canned reply for " + JSON.stringify(argv));
+  out("Xcode 16.2\\nBuild version 16C5032a");
+} else if (name === "java") {
+  if (j !== "-version") fail("no canned reply for " + JSON.stringify(argv));
+  process.stderr.write('openjdk version "' + s.java + '" 2026-07-15 LTS\\nOpenJDK Runtime Environment Zulu (build ' + s.java + ')\\n');
+} else if (name === "avdmanager") {
+  const [, , n, avd, k, image] = argv;
+  if (argv.slice(0, 2).join(" ") !== "create avd" || n !== "-n" || k !== "-k") fail("no canned reply for " + JSON.stringify(argv));
+  Object.assign(android, { avd, avds: [...android.avds, avd], image });
 }
 save();
 `;
@@ -100,14 +136,16 @@ const PASSING = '<?xml version="1.0" encoding="UTF-8"?>\n<testsuites>\n  <testsu
 
 // The fake device, in a dir of its own that is also the TMPDIR its env gives, so the machine-wide device lock of one
 // test is never another's. `ios` and `android` override fields of DEVICES; `junit` is the report maestro test writes,
-// and `maestro` what --version prints. After the test, pass or fail, every process the fakes started ends once its
-// ALIVE file goes, as it does when its device shuts down.
-export function fakeDevice(t, { ios = {}, android = {}, junit = PASSING, maestro = "2.12.1" } = {}) {
+// `maestro` what --version prints, and `failing` text that fails a single flow holding it. Setup's probes also find
+// xcodebuild, java (`java` the version it prints) and avdmanager here; each tool `broken` names fails, as an Xcode-only
+// one does without Xcode. After the test, pass or fail, every process the fakes started ends once its ALIVE file goes,
+// as it does when its device shuts down.
+export function fakeDevice(t, { ios = {}, android = {}, junit = PASSING, maestro = "2.12.1", failing = null, java = "17.0.12", broken = [] } = {}) {
   const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "factory-device-"))), alive = path.join(dir, ".alive");
   fs.writeFileSync(alive, "");
   const state = path.join(dir, "device.json");
-  fs.writeFileSync(state, JSON.stringify({ alive, junit, maestro, ios: { ...DEVICES.ios, ...ios }, android: { ...DEVICES.android, ...android } }));
-  for (const name of ["xcrun", "adb", "emulator", "maestro", "sips"]) fs.writeFileSync(path.join(dir, name), FAKE, { mode: 0o755 });
+  fs.writeFileSync(state, JSON.stringify({ alive, junit, maestro, failing, java, broken, ios: { ...DEVICES.ios, ...ios }, android: { ...DEVICES.android, ...android } }));
+  for (const name of ["xcrun", "adb", "emulator", "maestro", "sips", "xcodebuild", "java", "avdmanager"]) fs.writeFileSync(path.join(dir, name), FAKE, { mode: 0o755 });
   t.after(() => fs.rmSync(alive, { force: true }));
   const calls = (name) => { const log = path.join(dir, `${name}.calls`); return fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []; };
   const read = () => JSON.parse(fs.readFileSync(state, "utf8"));

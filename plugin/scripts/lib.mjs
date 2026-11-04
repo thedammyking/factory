@@ -138,6 +138,18 @@ export function runEnv(main, extra = {}) {
 export const device = (env) => env.FACTORY_IOS_DEVICE ? { platform: "ios", id: env.FACTORY_IOS_DEVICE }
   : env.FACTORY_ANDROID_DEVICE ? { platform: "android", id: env.FACTORY_ANDROID_DEVICE } : null;
 export const NO_DEVICE = "no device in .factory/env.local (FACTORY_IOS_DEVICE or FACTORY_ANDROID_DEVICE)";
+// A device command (xcrun, adb, emulator): its trimmed stdout, else it throws, naming the command and what it said.
+export function cli(bin, ...args) {
+  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 5 * 60_000 });
+  if (r.status !== 0) throw new Error(`${bin} ${args.join(" ")}: ${(r.error?.message || r.stderr || r.stdout || `exit ${r.status}`).trim()}`);
+  return r.stdout.trim();
+}
+// Each platform a run didn't verify on (all of them when `verified`, the evidence's platform, is null) whose native code
+// `files` change, its ios/ or android/ in a mobile app's path, as [{ platform, files }] (#17).
+export const PLATFORM_NAMES = { ios: "iOS", android: "Android" };
+export const unverifiedNative = (recipe, verified, files) => Object.keys(PLATFORM_NAMES).filter((p) => p !== verified).map((platform) => ({ platform,
+  files: files.filter((f) => (recipe.apps || []).some((a) => a.type === "mobile" && f.startsWith(`${path.posix.join(a.path || ".", platform)}/`))) }))
+  .filter((u) => u.files.length);
 
 // What a failing command's output reaches agents as, in at most 40 lines: the lines matching an error pattern (the first
 // 29 before the last 10), then as many of the last lines as fit, each quoted word for word in log order, then

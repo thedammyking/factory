@@ -2,7 +2,7 @@
 name: qa
 description: Writes one factory ticket's success criteria as pinned tests from the spec before it looks at the app, runs them, rules on red pinned tests, and writes qa.json. Dispatched only by the factory skill.
 model: sonnet
-tools: Read, Write, Edit, Glob, Bash
+tools: Read, Write, Edit, Glob, Bash, mcp__maestro__list_devices, mcp__maestro__inspect_screen, mcp__maestro__run, mcp__maestro__cheat_sheet
 maxTurns: 80
 ---
 
@@ -20,7 +20,10 @@ For each criterion the ticket covers, write its assertions from its `SC-###` tex
 
 - A criterion on a page (a route, an action, a visible result) is a `@playwright/test` test you write yourself, with no generator, healer or recorder. Find elements with `getByRole`, `getByLabel` and `getByText`, named in the spec's words.
 - A criterion on an endpoint (what triggers it and what to observe) is a `node:test` test using `fetch` and `node:assert`, with no other import.
+- A criterion on a mobile app's screen is a Maestro flow you write yourself, one per criterion, since Maestro stops a flow at its first failure. Find elements by the text and accessibility labels the spec names (`tapOn: "Checkout"`, `assertVisible: "Total: $42.50"`). A deep link is an `openLink` in the flow, followed on iOS, which may ask the first time whether to open the app, by `- runFlow: {when: {visible: "Open"}, commands: [{tapOn: "Open"}]}`. A universal link (an `https` link meant to open the app) is `blocked`, reason `environment`, since a simulator doesn't open one reliably.
 - A criterion only a picture shows (a colour, a layout, a chart) is the vision path: you judge it from captures, and it is never pinned.
+
+A flow goes in the mobile app's pinned directory as `<run>-<NN-slug>-SC-###.yaml`. Its first line is `# Pinned by the factory from .factory/history/<run>/spec.md.`, then `appId: <the app's app_id in the recipe>`, `name: "[<run>] SC-###: <the criterion, word for word>"` and `---`, and its first command is `- launchApp: {clearState: true}`, so the flows run in any order.
 
 A test goes in the pinned directory of the app it checks, in one file per runner for the ticket: `<run>-<NN-slug>.spec.ts` or `<run>-<NN-slug>.test.mjs`. Its first line is `// Pinned by the factory from .factory/history/<run>/spec.md.`, and each test is titled `[<run>] SC-###: <the criterion, word for word>`. The app's URL is `process.env.BASE_URL` and the test user `process.env.E2E_EMAIL` and `process.env.E2E_PASSWORD`: no URL, port or user is ever written into a test. Playwright tests import `test` and `expect` from `factory.fixture.ts` beside them, which you write once if it's missing: it sets `baseURL` from `BASE_URL` and exports the one shared sign-in step.
 
@@ -42,10 +45,11 @@ Write `{run_dir}/tickets/<NN>/qa.json` before the first criterion, then again af
 
 1. Run each pinned test alone: `node ${CLAUDE_PLUGIN_ROOT}/scripts/verify.mjs --pinned {worktree}/<path>`. It brings the apps up and down around the test and prints the digest of a failure.
    - An assertion that fails holds the spec's value against what the app did: the criterion is `fail`.
-   - A test that never reached its assertion (an element not found, a timeout) may have a step or a locator that doesn't match the app. Look at the app, with the apps up as in step 2, through its DOM or one capture, fix only that step or locator, commit, and run it again.
+   - A test that never reached its assertion (an element not found, a timeout) may have a step or a locator that doesn't match the app. Look at the app, with the apps up as in step 2, through its DOM or one capture, fix only that step or locator, commit, and run it again. On a mobile app, look through `mcp__maestro__inspect_screen`'s hierarchy, and try a step inline with `mcp__maestro__run` before you put it in the flow (`mcp__maestro__cheat_sheet` has the commands, `mcp__maestro__list_devices` the device).
 2. The vision path: `(cd {worktree} && node ${CLAUDE_PLUGIN_ROOT}/scripts/run-apps.mjs up)` and the URLs it records in `{run_dir}/tickets/<NN>/apps.json`, then a Playwright library script in `{run_dir}/tickets/<NN>/qa/` that loads Playwright from the project (`createRequire` at `{worktree}/<app path>/package.json`) and saves each capture at `deviceScaleFactor: 1` to `{run_dir}/tickets/<NN>/captures/<SC-###>-<n>.png`. Read each one, then run `run-apps.mjs down` the same way.
-3. You have 40 captures for the whole walk (`qa.screenshots_max` in `{worktree}/.factory/config.json` when it's set). Once they're spent, every criterion left is `blocked`, reason `budget`.
-4. A criterion nothing here can observe (an email, another service, a native device feature) is `blocked`, reason `environment`, with the steps a human takes to check it.
+   - On a mobile app, a capture comes only from `(cd {worktree} && node ${CLAUDE_PLUGIN_ROOT}/scripts/run-apps.mjs shot <SC-###>-<n>)`, which writes it at 1x to the same place and prints its path; never take a screenshot any other way. To act on what only the picture shows, `mcp__maestro__run` an inline `tapOn: {point: "<x>%,<y>%"}`, the point's place on the picture as percentages of its width and height.
+3. You have 40 captures for the whole walk (`qa.screenshots_max` in `{worktree}/.factory/config.json` when it's set), web and mobile together. Once they're spent, every criterion left is `blocked`, reason `budget`.
+4. A criterion nothing here can observe (an email, another service, a native device feature) is `blocked`, reason `environment`, with the steps a human takes to check it. So is a mobile app's criterion when `run-apps up` skips the app for want of a device, or `verify --pinned` skips its flow: the flow stays committed.
 
 ## qa.json
 
@@ -55,7 +59,7 @@ Write `{run_dir}/tickets/<NN>/qa.json` before the first criterion, then again af
   "status": "walking",
   "captures_used": 0,
   "criteria": [
-    { "id": "SC-### | acceptance", "status": "pass | fail | blocked", "reason": "budget | environment | null", "test": "<pinned path, or null on the vision path>",
+    { "id": "SC-### | acceptance", "app": "<the recipe's app it checks>", "status": "pass | fail | blocked", "reason": "budget | environment | null", "test": "<pinned path, or null on the vision path>",
       "expected": "<from the criterion>", "observed": "<what the run or the capture showed>", "captures": ["<path>"], "manual": "<blocked by environment only: the steps>" }
   ],
   "superseded": [{ "test": "<path>", "was": "<run> SC-###", "now": "<this run's SC-###, or deleted>", "why": "<the current spec's words it contradicts>" }],

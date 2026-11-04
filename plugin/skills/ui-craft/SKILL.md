@@ -8,6 +8,8 @@ user-invocable: false
 
 The UI lens judges captures, not code: every state in the plan's `## UI states`, at 390, 768 and 1440 px wide, in light and dark, with touch at 390 px. Build each state so it holds in all six.
 
+When the plan's app is a mobile app, read `references/mobile.md` beside this file before you write any UI: its states are pictured on a device instead, and its rules stand in for the floor's web-only ones.
+
 Authority, highest first:
 1. The floor below. Nothing else overrides it.
 2. The project's design tokens (type, color, space, radius, icons, motion), where `design-ref.md` says they live: a theme file, a Tailwind config or CSS variables.

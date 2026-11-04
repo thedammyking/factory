@@ -13,7 +13,7 @@
 // merged; or only `CATCH-UP …`, writing no decision, when it asks for the catch-up.
 import fs from "node:fs";
 import path from "node:path";
-import { readJson, git, gitError, runContext, mainRoot, liveBase, ghApi, PRODUCT, LOCKED } from "./lib.mjs";
+import { readJson, git, gitError, runContext, mainRoot, liveBase, ghApi, PRODUCT, LOCKED, PLATFORM_NAMES, unverifiedNative } from "./lib.mjs";
 
 const short = (sha) => String(sha ?? "none").slice(0, 7);
 
@@ -200,6 +200,17 @@ const tests = touches?.touches.tests?.paths || [];
 const product = changed.map(([, f]) => f).filter((f) => !tests.includes(f) && !dirs.some((d) => f.startsWith(`${d}/`)));
 fact("oneshot_scope", !oneshot || (touches && product.length <= 1), !oneshot ? `a ${s.route} run` : !touches ? stale("touches.json")
   : `${product.length} product file${product.length === 1 ? "" : "s"} on a oneshot${product.length ? `: ${product.join(", ")}` : ""}`, [at("touches.json"), diffAt]);
+// #17: a run verifies a mobile app on one platform, so what it couldn't verify is the human's: a mobile criterion qa
+// found nothing here could observe (no device, a universal link), a mobile check skipped, and native code of a platform
+// it didn't run on.
+const mobiles = (recipe.apps || []).filter((a) => a.type === "mobile").map((a) => a.name), on = PLATFORM_NAMES[ev?.platform];
+const unrun = [...results.filter((c) => mobiles.includes(c.app) && c.status === "blocked" && c.reason === "environment").map((c) => `${c.id} blocked (environment)`),
+  ...(ev?.checks || []).filter((c) => mobiles.includes(c.app) && c.status === "skipped").map((c) => `${c.app}/${c.check} skipped: ${String(c.digest).split("\n")[0]}`)];
+fact("mobile_verified", !unrun.length, !mobiles.length ? "no mobile app" : unrun.join(", ") || (on ? `verified on ${on}` : "no device, and nothing needed one"),
+  [at("evidence.json"), ...walks.map(at)]);
+const unverified = unverifiedNative(recipe, ev?.platform ?? null, changed.map(([, f]) => f));
+fact("no_unverified_native", !unverified.length, unverified.map((u) => `${u.files.join(", ")} change${u.files.length === 1 ? "s" : ""} ${PLATFORM_NAMES[u.platform]}'s native code, `
+  + `which the run didn't verify (${on ? `it verified on ${on}` : "it had no device"})`).join("; ") || "none", [at("evidence.json"), diffAt]);
 const branching = config.branching || {};
 fact("not_git_flow_main", !(branching.model === "git-flow" && s.target_branch === (branching.main || "main")),
   `${branching.model || "trunk"}, targeting ${s.target_branch}`, [path.join(ctx.MAIN, ".factory", "config.json")]);

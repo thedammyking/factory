@@ -415,6 +415,30 @@ test("an emulator up had to boot runs headless, and down resets its size and den
   assert.deepEqual([p.d.state().android.booted, p.d.state().android.override_density], [false, null]);
 });
 
+test("look sets the device's scheme and text size for a capture, the largest text being the platform's own, and down puts back the developer's", async (t) => {
+  const ios = mobile(t, "ios", { apps: [MOBILE()] }), a = ios.start("Show the cart total"), udid = DEVICES.ios.udid;
+  let r = await ios.apps(a, "look", "dark", "largest");
+  assert.deepEqual([r.status, r.stderr.trim()], [1, "run-apps: no device is up: run-apps up first"]);
+  assert.equal((await ios.apps(a, "up")).status, 0);
+  r = await ios.apps(a, "look", "dark", "largest");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.deepEqual(ios.d.calls("xcrun").slice(-2), [["simctl", "ui", udid, "appearance", "dark"], ["simctl", "ui", udid, "content_size", "accessibility-extra-extra-extra-large"]]);
+  assert.equal((await ios.apps(a, "look", "light", "default")).status, 0);
+  assert.deepEqual([ios.d.state().ios.appearance, ios.d.state().ios.content_size], ["light", "large"], "the default text size, not the developer's");
+  assert.equal((await ios.apps(a, "look", "dusk", "default")).status, 2);
+
+  for (const [sdk, largest] of [["35", "2.0"], ["33", "1.3"]]) {
+    const droid = mobile(t, "android", { apps: [MOBILE()] }, { device: { android: { booted: true, sdk, night: "yes", font_scale: "1.15" } } }), b = droid.start("Show the cart total");
+    assert.equal((await droid.apps(b, "up")).status, 0);
+    assert.equal((await droid.apps(b, "look", "dark", "largest")).status, 0);
+    assert.deepEqual([droid.d.state().android.night, droid.d.state().android.font_scale], ["yes", largest], `Android ${sdk}'s largest font scale`);
+    assert.equal((await droid.apps(b, "look", "light", "default")).status, 0);
+    assert.deepEqual([droid.d.state().android.night, droid.d.state().android.font_scale], ["no", "1.0"]);
+    assert.equal((await droid.apps(b, "down")).status, 0);
+    assert.deepEqual([droid.d.state().android.night, droid.d.state().android.font_scale], ["yes", "1.15"], "the developer's own look is back");
+  }
+});
+
 test("every simulator and emulator is behind one machine-wide lock from up to down, which a holder that died with the device's settings unrestored keeps", async (t) => {
   const d = fakeDevice(t, { ios: { booted: true } });
   const two = () => stack(t, { apps: [MOBILE()] }, { env: { FACTORY_IOS_DEVICE: DEVICES.ios.udid }, files: { "mobile/.keep": "" }, cli: d.env });

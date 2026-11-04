@@ -17,6 +17,10 @@
 //                                              one's wall-clock seconds in the proposal; exits 1 when any failed. A check
 //                                              { cmd, env: [names] } needing a name .factory/env.local lacks is skipped.
 //                                              With semgrep on, it proves the project rules too, as `semgrep`.
+//   setup-factory.mjs mobile                 -> for a recipe with a mobile app: probes iOS's and Android's tools, printing
+//                                              the fix for each that fails, then picks one device (iOS's where available),
+//                                              boots it once unless it runs, and records it in .factory/env.local; exits 1
+//                                              when no platform is available. apply then registers the Maestro MCP server.
 //   setup-factory.mjs set <field> [<value>]  -> sets one field of the proposal to the value, or to stdin without one;
 //                                              null drops the field. notion_parent takes a Notion page's URL and keeps its
 //                                              ID, setting docs notion, or null for docs repo. tracker_doc takes the other
@@ -32,7 +36,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, runEnv, envLines } from "./lib.mjs";
+import { readJson, arg, git, runEnv, envLines, device, cli, PLATFORM_NAMES } from "./lib.mjs";
 
 const TEMPLATES = path.join(path.dirname(fileURLToPath(import.meta.url)), "..", "templates");
 const argv = process.argv.slice(2);
@@ -168,6 +172,7 @@ function detectApp(root, dir, name, pm, add, found) {
     add(`apps.${name}.dev`, app.dev, `${at("package.json")} scripts.${devScript}, ${app.type === "web" ? "the framework's --port flag" : "PORT"}`);
     add(`apps.${name}.health`, app.health, "the app's URL answering");
   }
+  if (app.type === "mobile") Object.assign(app, mobileFields(root, dir, name, deps, pm, add));
   app.checks = Object.fromEntries(Object.entries(checks).map(([c, [command, src]]) => { add(`apps.${name}.checks.${c}`, command, src); return [c, command]; }));
   if (!checks.test) add(`apps.${name}.checks.test`, null, "no test script, and verify fails an app without one");
   const needsApps = Object.keys(checks).filter((c) => NEEDS_APPS.includes(c));
@@ -183,6 +188,30 @@ function detectApp(root, dir, name, pm, add, found) {
   const lib = Object.keys(deps).map((d) => [d, AUTH.find(([re]) => re.test(d))]).find(([, rule]) => rule);
   if (lib) { found.auth[name] = lib[1][1]; add(`auth.${name}`, lib[1][1], `${at("package.json")} dependency ${lib[0]}`, !!lib[1][2]); }
   return app;
+}
+
+// A mobile app's recipe fields from its app.json, Expo's or React Native's: app_id, the iOS bundle identifier, else the
+// Android package; and build, a Release build for the platform in $FACTORY_PLATFORM that prints the .app or .apk it
+// made last. A Release build carries its JavaScript, so it needs no dev server, and a flow's clearState loses nothing.
+// Expo's prebuild makes a platform's native project first when the app has none. No proof runs the build, so it's a guess.
+function mobileFields(root, dir, name, deps, pm, add) {
+  const at = (f) => path.posix.join(dir, f), conf = readJson(path.join(root, dir, "app.json"), {}), expo = conf.expo ?? conf, key = conf.expo ? "expo." : "";
+  const ids = [["ios.bundleIdentifier", expo.ios?.bundleIdentifier], ["android.package", expo.android?.package]].filter(([, v]) => v);
+  const differ = ids.length > 1 && ids[0][1] !== ids[1][1];
+  add(`apps.${name}.app_id`, ids[0]?.[1] ?? null, !ids.length ? `${at("app.json")} names no ios.bundleIdentifier or android.package`
+    : `${at("app.json")} ${key}${ids[0][0]}${differ ? `; ${key}${ids[1][0]} is ${ids[1][1]}` : ""}`, differ);
+  // A native project counts only when git tracks it: a run's worktree holds tracked files alone, so one prebuild made
+  // and the project ignores is no build there. Its Xcode workspace is the one in ios/, else prebuild names it after the
+  // app, letters and digits only.
+  const tracked = (p) => git(root, "ls-files", "--", path.posix.join(dir, p)).split("\n").filter(Boolean).map((f) => path.posix.relative(path.posix.join(dir, p), f));
+  const native = (p) => tracked(p).length > 0, ws = tracked("ios").map((f) => f.split("/")[0]).find((f) => /^[\w-]+\.xcworkspace$/.test(f));
+  const scheme = ws ? ws.replace(/\.xcworkspace$/, "") : String(expo.name ?? name).normalize("NFD").replace(/[^A-Za-z0-9]/g, "") || "app";
+  const prebuild = (p) => deps.expo && !native(p) ? `${EXEC[pm].join(" ")} expo prebuild -p ${p} && ` : "";
+  const build = `if [ "$FACTORY_PLATFORM" = ios ]; then ${prebuild("ios")}xcodebuild -workspace ios/${scheme}.xcworkspace -scheme ${scheme} -configuration Release `
+    + `-sdk iphonesimulator -derivedDataPath ios/build && echo ios/build/Build/Products/Release-iphonesimulator/${scheme}.app; `
+    + `else ${prebuild("android")}(cd android && ./gradlew assembleRelease) && echo android/app/build/outputs/apk/release/app-release.apk; fi`;
+  add(`apps.${name}.build`, build, `${ws ? at(`ios/${ws}`) : `${at("app.json")} ${key}name`}: a Release build, first proven by a run's up`, true);
+  return { ...(ids.length && { app_id: ids[0][1] }), build };
 }
 
 // Fresh detection over what's kept: a kept value always wins, a missing one is filled, and where both exist and differ the
@@ -475,6 +504,8 @@ function printProposal(P, tracker, files) {
     console.log("\n## Installs\n");
     for (const i of planned) console.log(`- In \`${i.path}\`: ${i.commands.map((c) => `\`${c.join(" ")}\``).join(", then ")}`);
   }
+  if (registersMaestro(P)) console.log(`\n## MCP\n\n- \`claude ${MAESTRO_MCP.join(" ")}\`: the Maestro server qa drives the ${KIND[P.mobile.platform].device} through, `
+    + "at local scope, so it's this project's alone, on this machine alone");
   const changed = files.filter(([, before, after]) => before !== after);
   console.log(`\n## Files\n${changed.length ? "" : "\nNothing changes."}`);
   for (const [f, before, after] of changed) console.log(`\n\`\`\`diff\n${diff(f, before, after).trimEnd()}\n\`\`\``);
@@ -586,6 +617,120 @@ async function prove(P, only) {
   return failed;
 }
 
+// The mobile section, for a recipe with a mobile app (#17). Each platform's probes, a failed one making its platform
+// unavailable and printing the fix; then one device, iOS's where it's available, else Android's, as .factory/env.local
+// names it for lib's device: a device env.local already names is kept, else the one running, else the newest runtime's
+// (booted once to prove it, then shut down), else a `factory` one made from the newest runtime installed. Returns the
+// exit code.
+// the name before -e, whose values run up to the next option (docs/platform-facts.md, fact 22)
+const MAESTRO_MCP = ["mcp", "add", "--scope", "local", "maestro", "-e", "MAESTRO_CLI_NO_ANALYTICS=1", "--", "maestro", "mcp"];
+const KIND = { ios: { device: "simulator", key: "FACTORY_IOS_DEVICE" }, android: { device: "emulator", key: "FACTORY_ANDROID_DEVICE" } };
+const registersMaestro = (P) => P.recipe.apps.some((a) => a.type === "mobile") && !!P.mobile?.platform;
+const IOS = /SimRuntime\.iOS-(\d+)-(\d+)$/, newest = (a, b) => b.v[0] - a.v[0] || b.v[1] - a.v[1];
+// Each platform's device: pick() finds or makes the one to record, and prove(d) boots one that isn't running and stops it.
+const DEVICE = {
+  ios: { pick() {
+    const sims = Object.entries(JSON.parse(cli("xcrun", "simctl", "list", "devices", "-j")).devices).flatMap(([rt, list]) => !IOS.test(rt) ? []
+      : list.filter((d) => d.isAvailable !== false).map((d) => ({ ...d, v: rt.match(IOS).slice(1).map(Number) }))).sort(newest);
+    const d = sims.find((x) => x.state === "Booted") ?? sims.find((x) => /^iPhone/.test(x.name)) ?? sims[0];
+    if (d) return { id: d.udid, name: `${d.name}, iOS ${d.v.join(".")}`, running: d.state === "Booted" };
+    const rt = JSON.parse(cli("xcrun", "simctl", "list", "runtimes", "-j")).runtimes.filter((r) => r.isAvailable !== false && IOS.test(r.identifier))
+      .map((r) => ({ ...r, v: r.identifier.match(IOS).slice(1).map(Number) })).sort(newest)[0];
+    // ponytail: simctl lists a runtime's device types oldest model first, so the last iPhone is the newest; sort by
+    // model if a runtime ever lists them otherwise
+    const type = rt?.supportedDeviceTypes?.filter((x) => x.productFamily === "iPhone").at(-1);
+    if (!type) throw new Error("no simulator, and no iOS runtime to make one from: add one in Xcode's Settings, under Components");
+    return { id: cli("xcrun", "simctl", "create", "factory", type.identifier, rt.identifier), name: `factory (${type.name}, iOS ${rt.version}), made now`, running: false };
+  },
+  async prove(d) { cli("xcrun", "simctl", "boot", d.id); try { cli("xcrun", "simctl", "bootstatus", d.id); } finally { cli("xcrun", "simctl", "shutdown", d.id); } } },
+  android: { pick() {
+    const [found] = emulators();
+    if (found) return { id: found[1], name: found[1], running: true };
+    const home = process.env.ANDROID_AVD_HOME || path.join(process.env.ANDROID_USER_HOME || path.join(os.homedir(), ".android"), "avd");
+    const api = (avd) => { try { return Number(fs.readFileSync(path.join(home, `${avd}.ini`), "utf8").match(/^target=android-(\d+)/m)?.[1] ?? 0); } catch { return 0; } };
+    const avds = cli("emulator", "-list-avds").split("\n").map((l) => l.trim()).filter((l) => /^[\w.-]+$/.test(l)).sort((a, b) => api(b) - api(a));
+    if (avds.length) return { id: avds[0], name: `${avds[0]}, API ${api(avds[0])}`, running: false };
+    // ponytail: the newest API level's first tag for this machine's ABI; pick by tag (google_apis over playstore) if one ever matters
+    const sdk = process.env.ANDROID_HOME || process.env.ANDROID_SDK_ROOT, images = sdk && path.join(sdk, "system-images"), abi = os.arch() === "arm64" ? "arm64-v8a" : "x86_64";
+    const levels = images && fs.existsSync(images) ? fs.readdirSync(images).filter((l) => /^android-\d+$/.test(l)).sort((a, b) => b.slice(8) - a.slice(8)) : [];
+    const image = levels.flatMap((l) => fs.readdirSync(path.join(images, l)).sort().filter((tag) => fs.existsSync(path.join(images, l, tag, abi)))
+      .map((tag) => `system-images;${l};${tag};${abi}`))[0];
+    if (!image) throw new Error(`no AVD, and no ${abi} system image to make one from: install one in Android Studio's SDK Manager`);
+    const r = run("avdmanager", ["create", "avd", "-n", "factory", "-k", image], { input: "no\n", timeout: 300_000 });  // no custom hardware profile
+    if (r.status !== 0) {
+      throw new Error(`avdmanager create avd -n factory -k ${image}: ${(r.error?.message || r.stderr || r.stdout).trim()} (avdmanager is in the SDK's Command-line Tools)`);
+    }
+    return { id: "factory", name: `factory (${image}), made now`, running: false };
+  },
+  // headless, as run-apps boots one, until it has booted, then killed
+  async prove(d) {
+    const child = spawn("emulator", ["-avd", d.id, "-no-window"], { detached: true, stdio: "ignore" });
+    groups.add(child.pid);
+    let gone = null; child.on("error", (e) => { gone = e.message; }).on("exit", (code) => { gone ??= `exited ${code}`; });
+    try {
+      let serial;
+      for (const end = Date.now() + 300_000; !(serial = emulators().find(([, avd]) => avd === d.id)?.[0]); await sleep(250)) {
+        if (gone || Date.now() > end) throw new Error(`emulator -avd ${d.id} ${gone ?? "didn't reach adb devices in 5 minutes"}`);
+      }
+      for (const end = Date.now() + 300_000; run("adb", ["-s", serial, "shell", "getprop", "sys.boot_completed"]).stdout?.trim() !== "1"; await sleep(1000)) {
+        if (Date.now() > end) throw new Error(`${d.id} didn't finish booting in 5 minutes`);
+      }
+      cli("adb", "-s", serial, "emu", "kill");
+    } finally {
+      for (const end = Date.now() + 10_000; !gone && Date.now() < end;) await sleep(100);
+      try { process.kill(-child.pid, "SIGKILL"); } catch {}
+      groups.delete(child.pid);
+    }
+  } },
+};
+// [serial, AVD name] of each running emulator
+const emulators = () => cli("adb", "devices").split("\n").map((l) => l.match(/^(emulator-\d+)\tdevice$/)?.[1]).filter(Boolean)
+  .map((s) => [s, cli("adb", "-s", s, "emu", "avd", "name").split("\n")[0].trim()]);
+
+async function mobile(P) {
+  if (!P.recipe.apps.some((a) => a.type === "mobile")) { console.log("no mobile app in the recipe: nothing to probe"); return 0; }
+  const file = path.join(P.root, ".factory", "env.local");
+  if (!fs.existsSync(file)) die("no .factory/env.local yet: run `setup-factory env` first");
+  // a probe's spawnSync result: a missing tool's has an error, a failing one's a status
+  const probe = (bin, ...a) => run(bin, a, { timeout: 60_000, env: { ...process.env, MAESTRO_CLI_NO_ANALYTICS: "1" } });
+  // java -version writes to stderr, as `version "17.0.12"`, or `version "1.8.0_392"` for Java 8
+  const accel = probe("emulator", "-accel-check"), maestro = probe("maestro", "--version");
+  const java = `${probe("java", "-version").stderr ?? ""}`.match(/version "((\d+)(?:\.(\d+))?[^"]*)"/), major = java && Number(java[2] === "1" ? java[3] : java[2]);
+  const both = ["ios", "android"], probes = [  // [platforms, what, passed, fix, version]
+    [["ios"], "full Xcode", probe("xcrun", "simctl", "help").status === 0 && probe("xcodebuild", "-version").status === 0, process.platform !== "darwin"
+      ? "none here: iOS simulators run on macOS only" : "install Xcode from the App Store, open it once, then `sudo xcode-select -s /Applications/Xcode.app/Contents/Developer`"],
+    [["android"], "adb", probe("adb", "version").status === 0, "install the SDK Platform-Tools in Android Studio's SDK Manager, and put `$ANDROID_HOME/platform-tools` on PATH"],
+    [["android"], "an Android emulator", !accel.error, "install the Android Emulator in Android Studio's SDK Manager, and put `$ANDROID_HOME/emulator` on PATH"],
+    ...(accel.error ? [] : [[["android"], "hardware acceleration", accel.status === 0, "turn on the CPU's virtualization (on Linux, KVM), as `emulator -accel-check` says"]]),
+    [both, "Java 17 or newer", major >= 17, "install a JDK 17 or newer (`brew install --cask zulu@17`), and put its `java` on PATH", java?.[1]],
+    [both, "Maestro", maestro.status === 0, "`curl -fsSL \"https://get.maestro.mobile.dev\" | bash`, and put `~/.maestro/bin` on PATH", maestro.stdout?.trim()],
+  ];
+  for (const [on, what, pass, fix, version] of probes) {
+    console.log(`${pass ? "pass" : "fail"}  ${what} (${on.map((p) => PLATFORM_NAMES[p]).join(" and ")})${pass && version ? `: ${version}` : ""}${pass ? "" : `\n  fix: ${fix}`}`);
+  }
+  const available = both.filter((p) => probes.every(([on, , pass]) => pass || !on.includes(p)));
+  // a device env.local names is the human's, kept; its platform counts only while its probes pass
+  const kept = device(runEnv(P.root));
+  P.mobile = { platform: available.includes(kept?.platform) ? kept.platform : null };
+  if (kept) console.log(`device  kept ${KIND[kept.platform].key} in .factory/env.local${P.mobile.platform ? "" : `, though ${PLATFORM_NAMES[kept.platform]} isn't available`}`);
+  for (const p of kept ? [] : available) {
+    const { device: kind, key } = KIND[p];
+    try {
+      const d = DEVICE[p].pick();
+      if (!d.running) await DEVICE[p].prove(d);
+      const text = fs.readFileSync(file, "utf8");
+      fs.appendFileSync(file, `${text && !text.endsWith("\n") ? "\n" : ""}# The ${kind} every run's mobile app goes on, chosen by setup.\n${key}=${d.id}\n`);
+      console.log(`device  ${PLATFORM_NAMES[p]}: ${d.name}, ${d.running ? "running" : "booted once to prove it and shut down again"}, recorded as ${key} in .factory/env.local`);
+      P.mobile.platform = p;
+      break;
+    } catch (e) { console.log(`fail  the ${PLATFORM_NAMES[p]} ${kind}: ${e.message}`); }
+  }
+  save(P);
+  if (P.mobile.platform) return 0;
+  console.log("no platform is available: each mobile criterion will be blocked (environment), each Maestro check skipped, and each run with a mobile app needs a human");
+  return 1;
+}
+
 switch (cmd) {
   case "detect": {
     let root; try { root = git(process.cwd(), "rev-parse", "--show-toplevel"); } catch { die("not a git repository: run it in the project's checkout"); }
@@ -605,6 +750,10 @@ switch (cmd) {
   }
   case "prove": {
     if (await prove(loadProposal(), args)) process.exit(1);
+    break;
+  }
+  case "mobile": {
+    process.exitCode = await mobile(loadProposal());
     break;
   }
   case "set": {
@@ -674,10 +823,15 @@ switch (cmd) {
       if (r.status !== 0) { failed = true; console.log(`${lastLines(`${r.stdout}${r.stderr}${r.error?.message ?? ""}`)}\nit failed: fix it, then run apply again`); }
       changed++;
     }
+    // the mobile section's Maestro server, once a platform is available; claude refuses a second one by the same name
+    const mcp = !failed && registersMaestro(P) && run("claude", MAESTRO_MCP, { cwd: P.root }), said = mcp && `${mcp.stdout ?? ""}${mcp.stderr ?? ""}`;
+    if (mcp?.status === 0) { console.log("registered the maestro MCP server at local scope"); changed++; }
+    else if (/already exists/.test(said)) console.log("kept the maestro MCP server already registered");
+    else if (mcp) { failed = true; console.log(`${lastLines(`${said}${mcp.error?.message ?? ""}`)}\nclaude ${MAESTRO_MCP.join(" ")} failed: fix it, then run apply again`); }
     if (!changed) console.log("nothing to write: the project already holds this proposal");
     console.log(`\n## Closing notes\n\n${closingNotes(P, tracker).map((n) => `- ${n}`).join("\n")}`);
     if (failed) process.exit(1);
     break;
   }
-  default: die("usage: setup-factory.mjs detect [--mcp <a,b>] | env | prove [<app>.<name> ...] | set <field> [<value>] | apply [--tracker <t>] [--dry-run]");
+  default: die("usage: setup-factory.mjs detect [--mcp <a,b>] | env | prove [<app>.<name> ...] | mobile | set <field> [<value>] | apply [--tracker <t>] [--dry-run]");
 }

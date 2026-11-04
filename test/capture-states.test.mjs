@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import { project, script, startRun, write } from "./harness.mjs";
+import { fakeDevice, DEVICES } from "./device.mjs";
 
 // site.json: { launch?: <error chromium.launch throws>, pages: { <path>: { scrollWidth?, missing?: [selectors],
 // console?: [errors the page logs on load] } } }. A selector a page lists as missing makes the action on it time out, as
@@ -225,4 +226,61 @@ test("a Chromium that won't launch exits 1 with its error in the saved output an
   assert.match(r.stdout, /Executable doesn't exist at \/ms-playwright\/chromium-1234\/chrome/);
   assert.equal(r.stdout.trim().split("\n").at(-1), `full output: ${path.join(run.run_dir, "logs/capture-states.log")}`);
   assert.deepEqual(run.read("captures/states.json").captures, [], "an old set never stands in for this one");
+});
+
+// A run whose mobile app is up on a fake device (fakeDevice's, `device` its options) through run-apps up, as review's
+// step 2 brings it up; capture(states) runs capture-states.mjs, and down() brings the apps down. After the test, pass or
+// fail, its apps go down.
+const MOBILE_RECIPE = { apps: [{ name: "mobile", type: "mobile", path: ".", build: "mkdir -p build/Shop.app && echo build/Shop.app", app_id: "com.example.shop", checks: { test: "true" } }] };
+function onDevice(t, device = {}) {
+  const d = fakeDevice(t, device), p = project({ recipe: MOBILE_RECIPE }), run = startRun(p);
+  write(p.dir, { ".factory/env.local": `FACTORY_IOS_DEVICE=${DEVICES.ios.udid}\n` });
+  const apps = (cmd) => script("run-apps.mjs", p.dir, [cmd, "--run", run.id], { env: d.env });
+  t.after(() => apps("down"));
+  const up = apps("up");
+  assert.equal(up.status, 0, up.stdout + up.stderr);
+  const capture = (states) => {
+    const file = path.join(run.run_dir, "ui-states.json");
+    fs.writeFileSync(file, JSON.stringify({ states }));
+    return script("capture-states.mjs", p.dir, [file, "--run", run.id], { env: d.env });
+  };
+  return { ...run, d, capture, down: () => apps("down"), read: (f) => JSON.parse(fs.readFileSync(path.join(run.run_dir, f), "utf8")) };
+}
+const LOOKS = ["light-default", "light-largest", "dark-default", "dark-largest"];
+const AX5 = "accessibility-extra-extra-extra-large";
+
+test("the mobile branch: each mobile state is captured on the run's device in light and dark at the default and largest text size, each look set through run-apps, each state reached by its flow from a fresh launch, then shot at 1x", (t) => {
+  const run = onDevice(t);
+  const states = [{ name: "01-cart", app: "mobile", flow: [{ tapOn: "Cart" }] }, { name: "01-empty-cart", app: "mobile", flow: [{ tapOn: "Cart" }, { tapOn: "Empty the cart" }] }];
+  const r = run.capture(states);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const flows = run.d.state().flows;
+  assert.deepEqual(flows.map((f) => f.look), ["light/large", "light/large", `light/${AX5}`, `light/${AX5}`, "dark/large", "dark/large", `dark/${AX5}`, `dark/${AX5}`],
+    "each look set once, before its states");
+  assert.equal(flows[1].flow, 'appId: "com.example.shop"\n---\n- {"launchApp":{"clearState":true}}\n- {"tapOn":"Cart"}\n- {"tapOn":"Empty the cart"}\n- {"waitForAnimationToEnd":{"timeout":5000}}\n');
+  const files = LOOKS.flatMap((l) => states.map((s) => `captures/${s.name}-${l}.png`));
+  assert.deepEqual(run.read("captures/states.json").captures.map((c) => [c.platform, c.file]), files.map((f) => ["ios", f]));
+  for (const f of files) assert.equal(fs.readFileSync(path.join(run.run_dir, f)).readUInt32BE(16), 393, `${f} is 1x`);
+  assert.deepEqual(run.read("captures/axe.json"), { axe: "no web state" }, "axe judges web pages only");
+  assert.match(fs.readFileSync(path.join(run.run_dir, "logs/capture-states.log"), "utf8"), /^MAESTRO_CLI_NO_ANALYTICS=1$/m);
+  assert.match(r.stdout, /^capture-states: 8 of 8 captures in /m);
+  assert.equal(run.down().status, 0);
+  const ios = run.d.state().ios;
+  assert.deepEqual([ios.appearance, ios.content_size, ios.booted], ["light", "large", false], "down gives the simulator its look back");
+});
+
+test("a mobile state whose flow fails is an error in each look, the rest still captured, and a list with a mobile state needs its app's device up", (t) => {
+  const run = onDevice(t, { failing: "Coupon" });
+  const r = run.capture([{ name: "cart", app: "mobile", flow: [{ tapOn: "Cart" }] }, { name: "coupon", app: "mobile", flow: [{ tapOn: "Coupon" }] }]);
+  assert.equal(r.status, 1, r.stdout + r.stderr);
+  const { captures } = run.read("captures/states.json");
+  assert.deepEqual(captures.filter((c) => c.file).map((c) => c.state), ["cart", "cart", "cart", "cart"]);
+  assert.deepEqual(captures.filter((c) => c.error).map((c) => `${c.state}-${c.scheme}-${c.text}: ${c.error}`), LOOKS.map((l) => `coupon-${l}: maestro test exited 1`));
+  assert.match(r.stdout, /Assertion is false: Coupon is visible/, "the digest quotes Maestro");
+  for (const states of [[{ name: "cart", app: "web", flow: [] }], [{ name: "cart", app: "mobile", flow: { tapOn: "Cart" } }]]) {
+    assert.equal(run.capture(states).status, 2, JSON.stringify(states));
+  }
+  assert.equal(run.down().status, 0);
+  const down = run.capture([{ name: "cart", app: "mobile", flow: [] }]);
+  assert.deepEqual([down.status, down.stderr.trim()], [2, "capture-states: no device is up for mobile: bring the apps up first (run-apps up)"]);
 });

@@ -14,8 +14,8 @@ Judge what the pictures show, not what anyone says they show: read no `implement
 
 The dispatch gives you `{run_dir}` (the run's directory), `{worktree}` and `{base_sha}`, and `fix_diff:` on a re-review.
 
-1. `{run_dir}/ui-states.json`: the states captured. Each is pictured at 390, 768 and 1440 px wide, in light and in dark, as `captures/<state>-<width>-<scheme>.png` in `{run_dir}`.
-2. `{run_dir}/captures/states.json`, each capture's `file` and `overflow` (its page scrolls sideways), or its `error`; and `{run_dir}/captures/axe.json`, each capture's axe violations, or `"axe": "missing"`.
+1. `{run_dir}/ui-states.json`: the states captured. Each is pictured at 390, 768 and 1440 px wide, in light and in dark, as `captures/<state>-<width>-<scheme>.png` in `{run_dir}`. A mobile app's state (one with a `flow`) is pictured on the run's device instead, in light and in dark at the default and the largest text size, as `captures/<state>-<scheme>-<default|largest>.png`.
+2. `{run_dir}/captures/states.json`, each capture's `file` and `overflow` (its page scrolls sideways), or its `error`, and a mobile capture's `platform`; and `{run_dir}/captures/axe.json`, each web capture's axe violations, or `"axe": "missing"` (`"no web state"` when every state is a mobile app's).
 3. `{run_dir}/spec.md`: its `surface`, its criteria and its anti-goals. A oneshot has no spec: `{run_dir}/triage.md` stands in for it, its `acceptance_check` the one criterion, on an `operate` surface, with no anti-goals. Then each UI ticket's `{run_dir}/tickets/<NN>/plan.md`, for its `## UI states`, and `design-ref.md` beside it.
 4. Every capture you judge, by reading the image.
 5. `{run_dir}/review.diff`, for the break-ui and motion passes only.

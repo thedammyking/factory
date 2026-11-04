@@ -12,7 +12,9 @@
 //     --full runs the directory as one check, marked pinned, with the apps up (run-apps up takes the device's
 //     machine-wide lock, down gives the device back): `maestro test --format junit` with MAESTRO_CLI_NO_ANALYTICS=1, its
 //     report at logs/maestro-<app>.xml, and a red's digest that report's failures. --pinned <flow> runs that flow alone.
-//     With no device in .factory/env.local, or no maestro, it's skipped, never run. maestro_version is in the evidence.
+//     With no device in .factory/env.local, or no maestro, it's skipped, never run. maestro_version is in the evidence,
+//     and so is platform, ios or android (lib's device: one platform per run), or null when no check of a mobile app
+//     ran on a device.
 //   - pinned_only marks a red where something failed and every check that didn't pass is pinned, on a clean and
 //     trusted tree: qa rules on it.
 //   - A check is "<command>" or { cmd, env: [names it needs] }. It runs under bash in its app's path with lib's runEnv,
@@ -192,8 +194,13 @@ const red_cause = green ? null
   : failed.length ? (failed.every((c) => !c.cmd || c.at_base?.status === "fail") ? "inherited" : "introduced")
   : dirty || !trusted ? "incomplete" : "environment";
 const pinned_only = !green && !dirty && trusted && failed.length > 0 && checks.every((c) => c.status === "pass" || c.pinned);
+// A recipe with a mobile app records the one platform the run verified it on (lib's device): null unless a check of it
+// ran with the apps up there.
+const mobiles = (recipe.apps || []).filter((a) => a.type === "mobile").map((a) => a.name);
+const onDevice = checks.some((c) => mobiles.includes(c.app) && c.needs_apps && c.status !== "skipped");
 const evidence = { mode, sha, green, dirty, trusted, red_cause, pinned_only, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString(),
-  ...(maestroVersion !== undefined && { maestro_version: maestroVersion }) };
+  ...(maestroVersion !== undefined && { maestro_version: maestroVersion }),
+  ...(mobiles.length && { platform: onDevice ? device(env)?.platform ?? null : null }) };
 const file = path.join(out, mode === "full" ? "evidence.json" : `evidence-${mode}.json`);
 fs.writeFileSync(file, JSON.stringify(evidence, null, 2) + "\n");
 

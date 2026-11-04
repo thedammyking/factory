@@ -345,10 +345,10 @@ test("a pinned .spec.ts runs with the project's Playwright from the directory of
 const MOBILE_APP = { name: "mobile", type: "mobile", path: ".", build: "mkdir -p build/Shop.app && echo build/Shop.app", app_id: "com.example.shop", checks: { test: "true" } };
 const FLOW = (n, criterion) => `# pinned by qa from .factory/history/r1/spec.md\nappId: com.example.shop\nname: "[r1] SC-00${n}: ${criterion}"\n---\n- launchApp: {clearState: true}\n`;
 const FLOWS = { ".maestro/r1-01-total-SC-001.yaml": FLOW(1, "the total shows"), ".maestro/r1-01-total-SC-002.yaml": FLOW(2, "the total is 42.50") };
-function onDevice(t, { device = true, junit } = {}) {
+function onDevice(t, { device = true, junit, env = device ? `FACTORY_IOS_DEVICE=${DEVICES.ios.udid}\n` : "" } = {}) {
   const d = fakeDevice(t, { junit });
   const p = run({ apps: [MOBILE_APP], pinned: [".maestro"] }, { ...FLOWS, ".gitignore": ".factory/runs/\n.factory/worktrees/\n.factory/env.local\nbuild/\n" });
-  fs.writeFileSync(path.join(p.dir, ".factory/env.local"), device ? `FACTORY_IOS_DEVICE=${DEVICES.ios.udid}\n` : "");
+  fs.writeFileSync(path.join(p.dir, ".factory/env.local"), env);
   t.after(() => node("run-apps.mjs", p.dir, ["down", "--run", p.s.id], { env: d.env }));
   return { ...p, d };
 }
@@ -372,6 +372,21 @@ test("verify --full runs a mobile app's pinned Maestro flows as one pinned check
   const ios = p.d.state().ios;
   assert.deepEqual([ios.booted, ios.appearance], [false, "light"], "down gave the simulator back");
   assert.ok(!fs.existsSync(p.d.lock));
+});
+
+test("one platform per run: with both devices in .factory/env.local the flows run on the iOS simulator alone, and the evidence names the platform verified", (t) => {
+  const p = onDevice(t, { env: `FACTORY_ANDROID_DEVICE=${DEVICES.android.avd}\nFACTORY_IOS_DEVICE=${DEVICES.ios.udid}\n` });
+  const r = p.verify("--full", p.d.env);
+  assert.equal(r.status, 0, r.stdout);
+  assert.equal(r.evidence.platform, "ios");
+  assert.ok(p.d.calls("xcrun").some((c) => c[1] === "install"));
+  assert.deepEqual([p.d.calls("adb"), p.d.calls("emulator")], [[], []], "the emulator is never touched");
+  const android = onDevice(t, { env: `FACTORY_ANDROID_DEVICE=${DEVICES.android.avd}\n` }), none = onDevice(t, { device: false });
+  assert.equal(android.verify("--full", android.d.env).evidence.platform, "android", "Android only where iOS isn't recorded");
+  assert.equal(none.verify("--full", none.d.env).evidence.platform, null, "no platform verified");
+  const unflowed = run({ apps: [MOBILE_APP], pinned: [".maestro"] });
+  fs.writeFileSync(path.join(unflowed.dir, ".factory/env.local"), `FACTORY_IOS_DEVICE=${DEVICES.ios.udid}\n`);
+  assert.equal(unflowed.verify("--full", none.d.env).evidence.platform, null, "nothing ran on the simulator, so nothing was verified there");
 });
 
 test("verify --pinned <flow> runs that one Maestro flow with the apps up, into evidence-pinned.json", (t) => {

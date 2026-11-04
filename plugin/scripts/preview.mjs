@@ -25,6 +25,7 @@ const recipe = readJson(path.join(ctx.worktree, ".factory", "setup.json"), {}), 
 const wait = Number(arg("--wait", 600)), poll = Number(arg("--poll", 15)) * 1000, deadline = Date.now() + wait * 1000;
 const files = runDiff(ctx).files, logs = path.join(dir, "logs"), touches = readJson(path.join(dir, "touches.json"));
 const native = touches?.head === head ? !!touches.touches?.native?.hit : null;  // null: no touches.json of the head says
+// a preview is a page the human opens: a mobile app's is too (EAS Update's expo.dev page, say), never an exp:// link
 const web = (url) => /^https?:\/\/\S+$/.test(url ?? "");
 // as merge-decision has it: an app at the root is touched by any change, else by one under its path
 const touched = (a) => [".", ""].includes(a.path ?? ".") || files.some((f) => f.startsWith(`${a.path.replace(/\/+$/, "")}/`));

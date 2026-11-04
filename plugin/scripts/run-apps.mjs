@@ -1,7 +1,7 @@
 #!/usr/bin/env node
-// run-apps.mjs up [--profile <name>] | down [--drop] | status | shot <name> — starts the run worktree's apps on ports of
-// its own, with a database of its own when the recipe can make one, without touching a sibling worktree or the
-// developer's shell, and leaves the developer's device as it found it.
+// run-apps.mjs up [--profile <name>] | down [--drop] | status | shot <name> | look <light|dark> <default|largest> —
+// starts the run worktree's apps on ports of its own, with a database of its own when the recipe can make one, without
+// touching a sibling worktree or the developer's shell, and leaves the developer's device as it found it.
 // Takes --run <id>, or derives the run from the run worktree it runs in. Run in a ticket's worktree, it starts that
 // worktree's apps instead, and keeps its apps.json, logs and captures in tickets/<NN>/ in the run dir (lib's out).
 //   - up starts each app in .factory/setup.json that has a `dev` command, under bash in its path, in a process group of
@@ -35,21 +35,24 @@
 //     or the run's reconcile. A device lock whose holder died is taken over only once that holder's device is restored.
 //   - shot <name> writes captures/<name>.png in out at 1x and prints its path: simctl io's image resampled by sips to
 //     the point width on iOS, screencap's as it comes at density 160 on Android.
+//   - look <scheme> <text> sets the device up holds to light or dark and to the default or the largest text size, for
+//     capture-states; down puts back what up recorded.
 //   - apps.json in out holds the profile, the database, each app's port, url, pid and ok (true, false or "skip"), and
 //     the device's id and settings, never another env value: it's snapshotted into the repo. status prints each app in
 //     it as up, down or skip. Each worktree reads and writes only its own, so down stops only what its up started.
 // up exits 0 when every app it started is healthy, 1 when one isn't or the database or a lock failed it; down exits 1
-// when the drop failed or the device isn't restored; shot exits 1 without a device up; all exit 2 on bad usage.
+// when the drop failed or the device isn't restored; shot and look exit 1 without a device up; all exit 2 on bad usage.
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { readJson, arg, worktreesDir, runContext, runEnv, digest, fill, device, NO_DEVICE } from "./lib.mjs";
+import { readJson, arg, worktreesDir, runContext, runEnv, digest, fill, device, cli, NO_DEVICE } from "./lib.mjs";
 
 const cmd = process.argv[2];
-if (!["up", "down", "status", "shot"].includes(cmd) || (cmd === "shot" && !/^[\w-]+$/.test(process.argv[3] ?? ""))) {
-  console.error("run-apps: usage: run-apps.mjs up [--profile <name>] | down [--drop] | status | shot <name> [--run <id>]"); process.exit(2);
+if (!["up", "down", "status", "shot", "look"].includes(cmd) || (cmd === "shot" && !/^[\w-]+$/.test(process.argv[3] ?? ""))
+  || (cmd === "look" && !(["light", "dark"].includes(process.argv[3]) && ["default", "largest"].includes(process.argv[4])))) {
+  console.error("run-apps: usage: run-apps.mjs up [--profile <name>] | down [--drop] | status | shot <name> | look <light|dark> <default|largest> [--run <id>]"); process.exit(2);
 }
 const ctx = runContext();
 let recipe; try { recipe = JSON.parse(fs.readFileSync(path.join(ctx.tree, ".factory/setup.json"), "utf8")); } catch (e) {
@@ -126,12 +129,6 @@ function listeners(port) {
   return [...(ss.stdout || "").matchAll(/pid=(\d+)/g)].map((m) => Number(m[1]));
 }
 
-// A device command: its trimmed stdout, else it throws, naming the command and what it said.
-function cli(bin, ...args) {
-  const r = spawnSync(bin, args, { encoding: "utf8", timeout: 5 * 60_000 });
-  if (r.status !== 0) throw new Error(`${bin} ${args.join(" ")}: ${(r.error?.message || r.stderr || r.stdout || `exit ${r.status}`).trim()}`);
-  return r.stdout.trim();
-}
 const quote = (s) => `'${String(s).replaceAll("'", "'\\''")}'`;  // for the device's shell, which adb shell's args reach as one line
 
 // Each platform's device commands, on d, apps.json's device record: the platform, the id .factory/env.local names, and
@@ -161,6 +158,8 @@ const PLATFORMS = {
     // ponytail: running stands for in front, as the app up just launched; read the frontmost app if a flow ever leaves it behind.
     front: (d, a) => sim("spawn", d.udid, "launchctl", "list").split("\n").some((l) => /^\d+\t/.test(l) && l.includes(`\tUIKitApplication:${a.app_id}[`)),
     restore(d) { if (d.settings) { sim("ui", d.udid, "appearance", d.settings.appearance); sim("ui", d.udid, "content_size", d.settings.text_size); } },
+    // large is iOS's default size; the largest is the last of the accessibility sizes
+    look(d, scheme, text) { sim("ui", d.udid, "appearance", scheme); sim("ui", d.udid, "content_size", text === "largest" ? "accessibility-extra-extra-extra-large" : "large"); },
     async shutdown(d) { sim("shutdown", d.udid); },
     shot(d, file) {
       sim("io", d.udid, "screenshot", file);
@@ -224,6 +223,11 @@ const PLATFORMS = {
       shell(d, "wm", "density", s.density ?? "reset");
       shell(d, "cmd", "uimode", "night", s.appearance);
       if (s.text_size === null) shell(d, "settings", "delete", "system", "font_scale"); else shell(d, "settings", "put", "system", "font_scale", s.text_size);
+    },
+    // the largest font scale Settings offers: 200% since Android 14 (API 34), 130% before
+    look(d, scheme, text) {
+      shell(d, "cmd", "uimode", "night", scheme === "dark" ? "yes" : "no");
+      shell(d, "settings", "put", "system", "font_scale", text === "default" ? "1.0" : Number(shell(d, "getprop", "ro.build.version.sdk")) >= 34 ? "2.0" : "1.3");
     },
     async shutdown(d) { if (d.serial) adb(d, "emu", "kill"); await stop([-d.pid]); },
     shot(d, file) {
@@ -390,12 +394,13 @@ else if (cmd === "down") {
   console.log("run-apps down");
   if (!given) process.exit(1);
 }
-else if (cmd === "shot") {
-  const d = record.device, file = path.join(ctx.out, "captures", `${process.argv[3]}.png`);
+else if (cmd === "shot" || cmd === "look") {
+  const d = record.device, [, , , a, b] = process.argv, file = path.join(ctx.out, "captures", `${a}.png`);
   if (!d?.settings) { console.error("run-apps: no device is up: run-apps up first"); process.exit(1); }
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  try { PLATFORMS[d.platform].shot(d, file); } catch (e) { console.error(`run-apps: ${e.message}`); process.exit(1); }
-  console.log(file);
+  try {
+    if (cmd === "look") { PLATFORMS[d.platform].look(d, a, b); console.log(`run-apps look: ${a}, ${b} text size`); }
+    else { fs.mkdirSync(path.dirname(file), { recursive: true }); PLATFORMS[d.platform].shot(d, file); console.log(file); }
+  } catch (e) { console.error(`run-apps: ${e.message}`); process.exit(1); }
 }
 else {
   const apps = Object.entries(record.apps), d = record.device;

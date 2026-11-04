@@ -7,7 +7,7 @@ allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*)
 
 # setup-factory
 
-You turn this project into one the factory can run in. A script detects, proves and writes; you ask the human only what detection can't answer, and show them one proposal. You write nothing in the project yourself, and nothing is written before the human approves the proposal except `.factory/env.local`, which git never tracks. Setup never writes under `.claude/` and registers no MCP server.
+You turn this project into one the factory can run in. A script detects, proves and writes; you ask the human only what detection can't answer, and show them one proposal. You write nothing in the project yourself, and nothing is written before the human approves the proposal except `.factory/env.local`, which git never tracks. Setup never writes under `.claude/`, and registers no MCP server but Maestro's, at local scope, for a mobile app (see **Mobile**).
 
 Call the script as `node ${CLAUDE_PLUGIN_ROOT}/scripts/setup-factory.mjs <command>` from the project's root, written out in full each time (called `setup-factory` below). It keeps the proposal between commands. Change the proposal only through `setup-factory set`, never by editing a file.
 
@@ -47,7 +47,7 @@ A script copies the dev environment, so no value ever reaches the chat. Never re
 ## D. Proof
 
 1. Run `setup-factory prove` and print its lines as they are. It runs every check and dev command once, each dev command on a free port until its health URL answers, and records each one's wall-clock seconds. It can take minutes: give the Bash call its longest timeout, or run it in the background and wait for it to finish. It stops every server it started, even when it's interrupted.
-2. Exit 0: go to **E**.
+2. Exit 0: go to **Mobile**.
 3. Exit 1: for each `fail` line, show the human its output and ask for the fix: a corrected command, or to drop it from the recipe. Record the answer with `setup-factory set`:
    - A corrected command goes on stdin through a quoted heredoc, so no shell parses it (pick another delimiter if a line of it is exactly `FACTORY_VALUE`):
 
@@ -63,6 +63,15 @@ A script copies the dev environment, so no value ever reaches the chat. Never re
    - A `semgrep` line is the starter project rules: it lists what they found in the project's tree, or says they found nothing in a planted file. The fix is in that code, or going without project rules, which leaves every run's SAST `missing`: `set security '<the JSON list without "semgrep">'`. Prove it again with `setup-factory prove semgrep`.
 
    Then run `setup-factory prove <app>.<name>` for each command changed, and repeat until nothing fails. Never change a command the human didn't answer for.
+
+### Mobile
+
+Only when detect's recipe has an app of type `mobile`; otherwise go to **E**.
+
+1. Run `setup-factory mobile` and print its lines as they are. It probes each platform's tools: full Xcode for iOS; `adb`, an emulator and hardware acceleration for Android; Java 17 or newer and Maestro for both. A `fail` line names what a platform lacks, with its fix. Then it picks one device, iOS's where iOS is available, else Android's: the one running, else the newest runtime's, which it boots once to prove and shuts down again, else a `factory` one it makes from the newest runtime installed. It records that device in `.factory/env.local`, so every run verifies on that platform alone. It can take minutes: give the Bash call its longest timeout.
+2. Exit 0: go to **E**. Exit 1: no platform is available. Ask once: "Fix what the `fail` lines say and I'll probe again, or go on without a device? Then each mobile criterion is blocked and each run with a mobile app needs you." On a fix, run `setup-factory mobile` again.
+
+The mobile app's `app_id` and `build` come from its `app.json`, and the proposal marks the build a guess: no proof runs it, so a run's first `run-apps up` is its proof. Once a device is recorded, apply registers the Maestro MCP server that `qa` drives the device through, at local scope: this project's alone, on this machine alone.
 
 ## E. Proposal
 

@@ -9,7 +9,9 @@
 //                page in its frontmatter, else where the snapshot puts it, or a oneshot's triage.md), the request
 //                issue's closing reference (Closes #12, Fixes ENG-123) for the tracker's own GitHub link, and Verify in 2
 //                minutes: each app's preview that preview.json has ready at the head, the local commands, then a step
-//                per criterion opening its route, a bare path and never the path half of a URL (design fix 26).
+//                per criterion opening its route, a bare path and never the path half of a URL (design fix 26). Above
+//                the evidence table, an "Unverified on <platform>" line for each platform the run didn't verify its
+//                mobile app on whose native code the diff changes.
 //   comment.md   the decision comment, when there is one: "Merged at <sha>" with --merged or once decision.json records
 //                the factory's merge, "Would merge (trial)" for a
 //                merge decision, the attention item for a needs-human one (written as attention-merge.md too), and the
@@ -20,7 +22,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, runContext, shellQuote as q, attentionItem } from "./lib.mjs";
+import { readJson, arg, git, runContext, runDiff, shellQuote as q, attentionItem, PLATFORM_NAMES, unverifiedNative } from "./lib.mjs";
 
 const merged = arg("--merged");
 if (merged !== null && !/^[0-9a-f]{7,40}$/.test(merged)) { console.error("pr-render: --merged takes the merge's SHA"); process.exit(2); }
@@ -67,6 +69,10 @@ const rulings = walks.flatMap((w) => [
   ...(w.repaired || []).map((t) => `- \`${t.test}\`: repaired (${t.change}): ${t.why}`),
 ]);
 const notion = fm.match(/^notion:[ \t]*(\S+)/m)?.[1];
+// One platform per run (#17): each platform the evidence didn't verify on whose native code the diff changes.
+const verifiedOn = ev.platform ? `the run verified on ${PLATFORM_NAMES[ev.platform]}` : "the run had no device";
+const unverified = !(recipe.apps || []).some((a) => a.type === "mobile") ? "" : unverifiedNative(recipe, ev.platform ?? null, runDiff(ctx).files)
+  .map((u) => `Unverified on ${PLATFORM_NAMES[u.platform]}: ${verifiedOn}, and the diff changes ${u.files.map((f) => `\`${f}\``).join(", ")}.\n\n`).join("");
 
 const md = `# ${title}
 
@@ -82,7 +88,7 @@ ${criteria.map((c) => `| ${c.id} | ${cell(c.text)} | ${cell(result(c.id))} |`).j
 ## Evidence
 ${ev.sha ? `At \`${short(ev.sha)}\`: green ${ev.green}, dirty ${ev.dirty}, trusted ${ev.trusted}.` : "No evidence.json."}
 
-| Check | Result | Duration | SHA |
+${unverified}| Check | Result | Duration | SHA |
 |---|---|---|---|
 ${(ev.checks || []).map((c) => `| ${cell(`${c.app}/${c.check}`)} | ${c.status} | ${c.seconds} s | \`${short(ev.sha)}\` |`).join("\n")}
 
