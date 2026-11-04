@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // run-apps.mjs up [--profile <name>] | down [--drop] | status — starts the run worktree's apps on ports of its own, with
 // a database of its own when the recipe can make one, without touching a sibling worktree or the developer's shell.
-// Takes --run <id>, or derives the run from the run worktree it runs in.
+// Takes --run <id>, or derives the run from the run worktree it runs in. Run in a ticket's worktree, it starts that
+// worktree's apps instead, recorded in the same apps.json.
 //   - up starts each app in .factory/setup.json that has a `dev` command, under bash in its path, in a process group of
 //     its own. Its env is lib's runEnv, then the `default` profile's env for it, then the named profile's; a profile
 //     that sets the app to null leaves it stopped. Each app gets a port the OS picks, and {port:<app>} in a dev command,
@@ -32,8 +33,8 @@ if (!["up", "down", "status"].includes(cmd)) {
   console.error("run-apps: usage: run-apps.mjs up [--profile <name>] | down [--drop] | status [--run <id>]"); process.exit(2);
 }
 const ctx = runContext();
-let recipe; try { recipe = JSON.parse(fs.readFileSync(path.join(ctx.worktree, ".factory/setup.json"), "utf8")); } catch (e) {
-  console.error(`run-apps: no recipe at ${path.join(ctx.worktree, ".factory/setup.json")} (${e.message})`); process.exit(2);
+let recipe; try { recipe = JSON.parse(fs.readFileSync(path.join(ctx.tree, ".factory/setup.json"), "utf8")); } catch (e) {
+  console.error(`run-apps: no recipe at ${path.join(ctx.tree, ".factory/setup.json")} (${e.message})`); process.exit(2);
 }
 const FILE = path.join(ctx.runDir, "apps.json"), logs = path.join(ctx.runDir, "logs"), LOCK = path.join(worktreesDir(ctx.MAIN), ".apps.lock");
 const pair = recipe.db?.create && recipe.db?.drop;
@@ -85,7 +86,7 @@ const unlock = () => { if (readJson(LOCK)?.run === ctx.id) fs.rmSync(LOCK, { for
 function db(step, name) {
   fs.mkdirSync(logs, { recursive: true });
   const log = path.join(logs, `db-${step}.log`), fd = fs.openSync(log, "w");
-  const r = spawnSync("bash", ["-c", recipe.db[step].replaceAll("{name}", name)], { cwd: ctx.worktree, env: runEnv(ctx.MAIN), stdio: ["ignore", fd, fd], timeout: 10 * 60_000 });
+  const r = spawnSync("bash", ["-c", recipe.db[step].replaceAll("{name}", name)], { cwd: ctx.tree, env: runEnv(ctx.MAIN), stdio: ["ignore", fd, fd], timeout: 10 * 60_000 });
   fs.closeSync(fd);
   if (r.status !== 0) console.log(`--- db.${step} failed\n${digest(fs.readFileSync(log, "utf8"), log)}`);
   return r.status === 0;
@@ -140,7 +141,7 @@ async function up(profile) {
     if (fixed.includes(a) && app.port && await inUse(app.port)) { failed[a.name] = `port ${app.port} is already in use`; continue; }
     const log = path.join(logs, `${a.name.replace(/[^\w.-]/g, "_")}.up.log`), fd = fs.openSync(log, "w");
     const env = Object.fromEntries(Object.entries(runEnv(ctx.MAIN, envOf(a))).filter(([, v]) => v != null).map(([k, v]) => [k, fill(String(v), record)]));
-    const child = spawn("bash", ["-c", fill(a.dev, record)], { cwd: path.join(ctx.worktree, a.path || "."), env, detached: true, stdio: ["ignore", fd, fd] });
+    const child = spawn("bash", ["-c", fill(a.dev, record)], { cwd: path.join(ctx.tree, a.path || "."), env, detached: true, stdio: ["ignore", fd, fd] });
     fs.closeSync(fd);
     child.on("exit", (code, signal) => { exits[a.name] = code ?? signal; });
     Object.assign(app, { pid: child.pid, log });

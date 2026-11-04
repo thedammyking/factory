@@ -11,6 +11,7 @@
 | `researcher-local-doc` | a question `docs/auth.md` answers | `answer.md` cites `docs/auth.md`, and WebFetch is called zero times |
 | `builder-check-uncheckable` | a spec whose `SC-003` says only "The export feels fast." | the last message and `builder-check.md` name `SC-003` |
 | `planner-plan-test-first` | a ticket adding a CSV export to a small repo with a `node:test` seam | `tickets/01/plan.md` is written, names a path the repo holds, and (judged by `llm`) writes a failing test before the change |
+| `implementer-red-pinned` | a ready plan for that CSV export, with the pinned test `e2e/r1-01-csv-export.test.mjs` red, in a run and ticket worktree laid out as `run-state` and `run-stage` make them | `node --test` in the ticket's worktree ends `# fail 0` with the pinned test passing, the pinned file is byte for byte as written and never the target of an Edit or Write, and the ticket's branch has a commit |
 
 Every case also checks that the session dispatched the agent under test.
 
@@ -32,6 +33,8 @@ Exit 0 is required before tagging. A failing case is fixed, in the prompt or the
 ## Writing a case
 
 A case is a directory holding `case.yaml` (`plugins: ["../../plugin"]` and the scaffold), `prompt.md` and `graders/`. The prompt dispatches the agent in the foreground with the three lines the factory skill sends: `run_dir: .factory/runs/r1`, `worktree: .` and `base_sha: HEAD`. `scaffold.sh` writes the whole workspace from heredocs: a tiny repo, `.factory/config.json` and `setup.json`, and the run-dir files the agent reads, which `.gitignore` keeps out of git. It ends with the commit. No case shares a fixture or reads outside its own folder.
+
+The implementer is the exception: `run-stage` starts it, not the skill, and it needs a run's real layout for `verify --fast` and `guard-paths`. Its case sends the five lines `run-stage` sends (`run_dir`, `worktree`, `ticket`, `plan`, `implementation`), each relative to the workspace, and its scaffold, after the commit, adds the run's worktree with its run dir and `state.json`, then the ticket's worktree on `factory/r1/01`.
 
 ## Eval facts
 
@@ -73,3 +76,7 @@ On the same version and date:
   - That shim exits 72, because the sandbox denies its cache under the user's temp dir.
   - The triager and the researcher then list the files some other way. Without being told how, the triager held `triager-not-oneshot` in 2 of 5 eval runs, so its prompt now names Glob as the fallback.
   - A later case whose agent must run git, such as the implementer's commit, hits this too.
+
+### Not yet run
+
+`implementer-red-pinned` was built in an agent worktree, where `claude plugin eval` can't run, so no run of it has been graded. Its scaffold was run by hand and the test command run before and after a hand-made fix: the graders' patterns failed before it and passed after. In that layout `verify --fast` ran green from the ticket's worktree, and `guard-paths` denied an implementer's Edit of the pinned file. The implementer must commit, and `verify --fast` calls git, so on macOS the case meets the git failure above. Git's exit 72 didn't reproduce in a `claude -p` child given `{"sandbox":{"enabled":true}}` through `--settings` (2.1.317, 2026-11-04): `git status` and `git commit` both exited 0. Whether that child's sandbox engaged wasn't checked, so this says nothing yet about an eval run's. Its first run decides: if `committed` fails with git exiting 72, the case passes only where the eval's Bash can run git, such as Linux. Run it alone with `--case 'implementer-*'` in the release command.

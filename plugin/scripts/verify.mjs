@@ -2,7 +2,8 @@
 // verify.mjs --fast | --full — runs every check in the run worktree's recipe (.factory/setup.json) for every app, never
 // stopping at the first failure, and writes the evidence to the run dir: evidence.json for --full, evidence-fast.json for
 // --fast (typecheck, lint and test only), so a fast pass never stands in for a full one. Takes --run <id>, or derives the
-// run from the run worktree it runs in.
+// run from the run worktree it runs in. Run in a ticket's worktree, it checks that worktree instead, and writes to
+// tickets/<NN>/ in the run dir.
 //   - A check is "<command>" or { cmd, env: [names it needs] }. It runs under bash in its app's path with lib's runEnv,
 //     its full output saved to logs/<app>-<check>.log in the run dir (.fast.log under --fast); a failing one carries
 //     lib's digest of that output.
@@ -25,7 +26,7 @@ import { readJson, git, worktreesDir, runContext, runEnv, digest, fill } from ".
 
 const mode = ["fast", "full"].find((m) => process.argv.includes(`--${m}`));
 if (!mode) { console.error("verify: usage: verify.mjs --fast | --full [--run <id>]"); process.exit(2); }
-const ctx = runContext(), s = readJson(ctx.state), tree = ctx.worktree;
+const ctx = runContext(), s = readJson(ctx.state), tree = ctx.tree, out = ctx.ticket ? path.join(ctx.runDir, "tickets", ctx.ticket) : ctx.runDir;
 const RECIPE = ".factory/setup.json", FAST = ["typecheck", "lint", "test"];
 let text, recipe; try { text = fs.readFileSync(path.join(tree, RECIPE), "utf8"); recipe = JSON.parse(text); } catch (e) {
   console.error(`verify: no recipe at ${path.join(tree, RECIPE)} (${e.message})`); process.exit(2);
@@ -34,7 +35,7 @@ let committed = null; try { committed = git(tree, "show", `HEAD:${RECIPE}`); } c
 const trusted = committed === text.trim();
 // {base} reaches a command only as a quoted reference to the base branch, never as text spliced into it.
 const env = runEnv(ctx.MAIN, { FACTORY_BASE: s.base_branch });
-const logs = path.join(ctx.runDir, "logs");
+const logs = path.join(out, "logs");
 fs.mkdirSync(logs, { recursive: true });
 const appDir = (root, name) => path.join(root, recipe.apps.find((a) => a.name === name).path || ".");
 const NOT_RUN = { exit: null, seconds: 0, log: null };
@@ -115,7 +116,7 @@ const red_cause = green ? null
   : failed.length ? (failed.every((c) => !c.cmd || c.at_base?.status === "fail") ? "inherited" : "introduced")
   : dirty || !trusted ? "incomplete" : "environment";
 const evidence = { mode, sha, green, dirty, trusted, red_cause, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString() };
-const file = path.join(ctx.runDir, mode === "full" ? "evidence.json" : "evidence-fast.json");
+const file = path.join(out, mode === "full" ? "evidence.json" : "evidence-fast.json");
 fs.writeFileSync(file, JSON.stringify(evidence, null, 2) + "\n");
 
 console.log(`verify ${mode}: green=${green} dirty=${dirty} trusted=${trusted}${red_cause ? ` red_cause=${red_cause}` : ""} sha=${sha.slice(0, 7)} `

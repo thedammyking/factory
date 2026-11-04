@@ -1,0 +1,15 @@
+# Implement one ticket
+
+The factory skill reads this at step 11 of **build**, once ticket `<NN>`'s plan is `ready`. `run-stage.mjs` does the work: it runs the implementer as a `claude -p` child in the ticket's own worktree, has `verify --full` judge what it left, and ends its output with one verdict line, `<WORD> <NN>: <why>`. You act on that word. The rounds and their caps are the scripts': never start an attempt that a step below doesn't name.
+
+`run-stage.mjs` sits beside `run-state.mjs` in the skill's scripts directory. Call it as `node <that directory>/run-stage.mjs <command> <NN> --run <id>`, written out in full (called `run-stage` below), always with Bash's `run_in_background`, since a child runs for many minutes. Say the step's line and end your turn. When the completion notification wakes you, read the background task's output for its last line, the verdict, and ignore the notification's own text.
+
+1. **Attempt.** `run-stage implement <NN>`: `Implementing ticket <NN> of <id>.` Print any `WARN` line it printed. If it exited 4, it printed run-state's `BUDGET` lines: go to **Caps** in the skill, with the stage `implement:<NN>`. Otherwise, by the verdict:
+   - `MERGE`: go to step 2.
+   - `ROUND`: run `run-state round implement:<NN> --run <id>`, in the foreground. On `OK …`, go to step 1. On exit 5, its `ESCALATE …` line means the rounds are spent: stop (below), quoting both lines, and recommend reading the last report and the evidence before deciding.
+   - `AMEND`: the plan was wrong about the code, and the ticket's commits are gone. Plan the ticket again as step 10 of **build** does; the planner amends the plan from `tickets/<NN>/implementation.md`. On `ready`, go to step 1, which starts a fresh child.
+   - `RESEARCH`: the implementer needs a fact from outside the repo. Dispatch stage `context:<NN>` the way **build** dispatches a stage: agent `factory:researcher`, model `models.research`, lines `mode: context` and `ticket: <NN-slug>`, and the line `Researching ticket <NN>'s question.` When it's done, `tickets/<NN>/context.md` must end with a `Status:` line, else the stage is incomplete. Run `run-state done context:<NN> --run <id>` and go to step 1, which resumes the child with the answer.
+   - `ATTENTION`: stop (below).
+2. **Merge.** `run-stage merge <NN>`: `Merging ticket <NN> into <id>'s branch.` On `MERGED`, the ticket is done: go to step 9 of **build** for the next one. On `ATTENTION`, stop.
+
+To stop, write `attention-implement-<NN>.md`. Its headline is the verdict's reason; What happened quotes the verdict line, and the `ESCALATE` line when there is one; Evidence lists `tickets/<NN>/implementation.md` with its `implementation.round<N>.md` files, `tickets/<NN>/evidence.json` (`evidence.json` after a merge) and `logs/implement-<NN>.*.jsonl`. When the report says `BLOCKED: environment`, the recommendation names each command under its `denied:` list; when it says `intent_gap`, it says what the spec leaves open. The options are `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, print it and stop.

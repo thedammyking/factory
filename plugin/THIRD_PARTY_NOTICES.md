@@ -50,5 +50,7 @@ SOFTWARE.
 <!-- Projects whose ideas the factory uses without copying their text. -->
 
 - [github/spec-kit](https://github.com/github/spec-kit) (MIT): `FR-###` and `SC-###` identifiers, and settled answers kept under `## Clarifications` / `### Session <date>`.
-- [obra/superpowers](https://github.com/obra/superpowers) (MIT): a builder check that reads the spec cold, its questions sorted into answered, minor and the human's, and a hard gate before anything is built.
+- [obra/superpowers](https://github.com/obra/superpowers) (MIT): a builder check that reads the spec cold, its questions sorted into answered, minor and the human's, and a hard gate before anything is built; the implementer's `DONE | DONE_WITH_CONCERNS | BLOCKED | NEEDS_CONTEXT` statuses, leave to stop, and a fresh implementer on a stronger model once fix rounds stall.
+- [coleam00/Archon](https://github.com/coleam00/Archon) (MIT): the implementer's standing rules (code over prose, a commit per outcome staged by name, checking only what changed, installs from the lockfile) and the `red_cause` vocabulary that decides whether a red costs a round.
+- [wshobson/agents](https://github.com/wshobson/agents) (MIT): ship-mate's rule that the same failure twice escalates at once.
 - [bmad-code-org/bmad-method](https://github.com/bmad-code-org/bmad-method) (MIT): an intent block frozen once the human approves it.

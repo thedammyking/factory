@@ -124,6 +124,8 @@ Writes `{run_dir}/tickets/<NN>/plan.md` for the dispatch's ticket, just before i
 
 Inputs: the ticket (`{run_dir}/tickets/<NN-slug>.md`), `spec.md`, `research.md` and `grill.md` in `{run_dir}`, whose `(ticket <NN>)` sessions answer this plan's earlier open questions. Then the code under `{worktree}` that the ticket changes or plugs into, as it is now, earlier tickets included. Read it before you name a path: every path you name either exists or is one the plan creates.
 
+When `{run_dir}/tickets/<NN>/implementation.md` exists, its implementer stopped with `blocked_cause: bad_plan` and its work was undone: this plan amends the last one, the highest `plan.round<N>.md` beside it. Check what the report says the plan got wrong against the code, fix that, and keep the rest. This is the plan's one amendment.
+
 Rules:
 - 900 to 1,600 tokens (about 3,500 to 6,500 characters). Nothing that a file in `context:` already says.
 - `context:` lists at most 8 files to read before anything else, repo-relative, plus `design-ref.md` by its absolute path when you write one.

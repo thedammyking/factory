@@ -226,6 +226,22 @@ test("a check its app lists in needs_apps runs while the run's apps are up, with
   assert.equal(r.evidence.dirty, false, "apps.json and the apps' logs never dirty the tree");
 });
 
+test("run in a ticket's worktree, verify checks that worktree, with its apps started from it, and writes beside the ticket's plan", (t) => {
+  const probe = "console.log((await (await fetch(process.argv[2])).json()).cwd);\n";
+  const p = withApps(t, { apps: [{ name: "api", path: ".", dev: "PORT={port:api} node server.mjs", health: "http://localhost:{port:api}/",
+    checks: { test: "test -f csv.js", integration: "node probe.mjs http://localhost:{port:api}/" }, needs_apps: ["integration"] }] }, { "probe.mjs": probe });
+  const ticket = path.join(p.dir, ".factory/worktrees", `${p.s.id}-01`);
+  p.git("worktree", "add", "-q", "-b", `factory/${p.s.id}/01`, ticket, git(p.wt, "rev-parse", "HEAD"));
+  fs.writeFileSync(path.join(ticket, "csv.js"), "1\n");
+  git(ticket, "add", "csv.js"); git(ticket, "commit", "-qm", "csv");
+  const r = node("verify.mjs", ticket, ["--full", "--run", p.s.id]);
+  assert.equal(r.status, 0, r.stdout);
+  const out = path.join(p.s.run_dir, "tickets", "01"), e = JSON.parse(fs.readFileSync(path.join(out, "evidence.json"), "utf8"));
+  assert.deepEqual([e.sha, e.green, statuses(e)], [git(ticket, "rev-parse", "HEAD"), true, ["api/test=pass", "api/integration=pass"]]);
+  assert.equal(fs.readFileSync(path.join(out, "logs", "api-integration.log"), "utf8"), ticket + "\n", "the app ran from the ticket's worktree");
+  assert.ok(!fs.existsSync(path.join(p.s.run_dir, "evidence.json")), "the run head's evidence is untouched");
+});
+
 test("a check that needs apps which won't come up is skipped with up's digest, a red the environment caused", (t) => {
   const p = withApps(t, { apps: [{ name: "api", path: ".", dev: "echo 'Error: connect ECONNREFUSED 127.0.0.1:5432'; exit 1",
     health: "http://localhost:{port:api}/", checks: { test: "true", integration: "echo ran" }, needs_apps: ["integration"] }] }, {});

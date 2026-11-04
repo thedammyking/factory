@@ -1,0 +1,304 @@
+// run-stage.test.mjs — run-stage.mjs and run-state.mjs round, spawned as processes, on one ticket of a build run on a
+// throwaway project, with a fake `claude` on PATH in place of the implementer child.
+import { test } from "node:test";
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
+import { project, sh } from "./harness.mjs";
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+const PLUGIN = path.join(ROOT, "plugin"), SCRIPTS = path.join(PLUGIN, "scripts");
+const git = (cwd, ...args) => sh(cwd, "git", args);
+const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
+
+// The fake implementer child. Each call appends { argv, stdin, cwd, pid, ls } to calls.jsonl in its dir and plays the
+// next step of steps.json: it writes `files` into its cwd and commits them by name when the step has `commit`, writes
+// `write` (absolute paths, such as implementation.md) as they are, prints a stream-json init and result line for its
+// session (--session-id or --resume), the result listing each Bash command in `denied` as a permission denial, and exits
+// `exit`.
+const FAKE = `#!${process.execPath}
+const fs = require("node:fs"), path = require("node:path"), { execFileSync } = require("node:child_process");
+const dir = process.env.FAKE_CLAUDE, argv = process.argv.slice(2), stdin = fs.readFileSync(0, "utf8");
+const log = path.join(dir, "calls.jsonl"), n = fs.existsSync(log) ? fs.readFileSync(log, "utf8").trim().split("\\n").length : 0;
+fs.appendFileSync(log, JSON.stringify({ argv, stdin, cwd: process.cwd(), pid: process.pid, ls: fs.readdirSync(".") }) + "\\n");
+const step = JSON.parse(fs.readFileSync(path.join(dir, "steps.json"), "utf8"))[n] || {};
+const at = (k) => argv[argv.indexOf(k) + 1], session = argv.includes("--resume") ? at("--resume") : at("--session-id");
+for (const [f, text] of Object.entries(step.files || {})) { fs.mkdirSync(path.dirname(f), { recursive: true }); fs.writeFileSync(f, text); }
+if (step.commit) { execFileSync("git", ["add", "--", ...Object.keys(step.files)]); execFileSync("git", ["commit", "-qm", step.commit]); }
+for (const [f, text] of Object.entries(step.write || {})) fs.writeFileSync(f, text);
+console.log(JSON.stringify({ type: "system", subtype: "init", session_id: session }));
+const permission_denials = (step.denied || []).map((command) => ({ tool_name: "Bash", tool_input: { command } }));
+console.log(JSON.stringify({ type: "result", subtype: "success", session_id: session, permission_denials, modelUsage: { [at("--model")]: { inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0 } } }));
+process.exitCode = step.exit || 0;
+`;
+
+// The recipe every ticket here builds against: its setup marks the worktree, and its test passes once csv.js exists.
+const RECIPE = { setup: "echo installed > .deps", apps: [{ name: "app", type: "backend", path: ".", checks: { test: "npm test", typecheck: "CI=1 node --check index.js" } }] };
+const PACKAGE = JSON.stringify({ name: "reports", scripts: { test: "test -f csv.js" } });
+
+// A build run on a project holding `recipe`, past the ticket gate, with ticket 01 in progress and its plan ready. stage()
+// runs run-stage.mjs as the orchestrator does, from the main checkout, with the fake claude first on PATH playing the
+// steps play() sets. Every fake child still alive is killed after the test, pass or fail.
+function ticketReady(t, { recipe = RECIPE, config = {} } = {}) {
+  const p = project({ recipe, config });
+  fs.writeFileSync(path.join(p.dir, "package.json"), PACKAGE);
+  fs.writeFileSync(path.join(p.dir, "index.js"), "1\n");
+  p.git("add", "."); p.git("commit", "-qm", "product");
+  fs.appendFileSync(path.join(p.dir, ".git/info/exclude"), ".deps\n");
+  const bin = tmp("factory-bin-"), fake = tmp("factory-claude-");
+  fs.writeFileSync(path.join(bin, "claude"), FAKE, { mode: 0o755 });
+  const play = (steps) => fs.writeFileSync(path.join(fake, "steps.json"), JSON.stringify(steps));
+  play([]);
+  const env = { ...process.env, PATH: bin + path.delimiter + process.env.PATH, FAKE_CLAUDE: fake, CLAUDE_CONFIG_DIR: tmp("factory-config-") };
+  delete env.CLAUDE_CODE_SESSION_ID;
+  const node = (script, args, input = "") => spawnSync(process.execPath, [path.join(SCRIPTS, script), ...args], { cwd: p.dir, input, env, encoding: "utf8", timeout: 120_000 });
+  const s = JSON.parse(node("run-state.mjs", ["init"], "Add a CSV export\n").stdout);
+  const run = (...args) => { const r = node("run-state.mjs", [...args, "--run", s.id]); assert.equal(r.status, 0, `${args.join(" ")}: ${r.stderr}${r.stdout}`); return r; };
+  fs.writeFileSync(path.join(s.run_dir, "triage.md"), "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch: "feature/csv-export" }) + "\n```\n");
+  run("set", "route", "build");
+  run("lane");
+  for (const [stage, file] of [["research", "research.md"], ["spec", "spec.md"], ["builder-check", "builder-check.md"]]) {
+    run("dispatch", stage); fs.writeFileSync(path.join(s.run_dir, file), `# ${stage}\n`); run("done", stage);
+  }
+  run("approve", "spec", "approved");
+  run("dispatch", "tickets");
+  fs.mkdirSync(path.join(s.run_dir, "tickets", "01"), { recursive: true });
+  fs.writeFileSync(path.join(s.run_dir, "tickets", "01-csv-export.md"), "# 01: CSV export\n\nStatus: ready-for-agent\nBlocked by: none\n");
+  run("done", "tickets");
+  run("approve", "tickets", "approved");
+  run("ticket", "01", "in-progress");
+  run("dispatch", "plan:01");
+  fs.writeFileSync(path.join(s.run_dir, "tickets", "01", "plan.md"), "---\nstatus: ready\nticket: 01-csv-export\n---\n\n# Plan 01: CSV export\n");
+  run("done", "plan:01");
+  const calls = () => { const f = path.join(fake, "calls.jsonl"); return fs.existsSync(f) ? fs.readFileSync(f, "utf8").trim().split("\n").map((l) => JSON.parse(l)) : []; };
+  t.after(() => { for (const { pid } of calls()) try { process.kill(pid, "SIGKILL"); } catch {} });
+  const stage = (...args) => node("run-stage.mjs", [...args, "--run", s.id]);
+  const state = () => JSON.parse(run("get").stdout);
+  const wt = path.join(p.dir, ".factory/worktrees", `${s.id}-01`), tickets = path.join(s.run_dir, "tickets", "01");
+  return { p, s, run, stage, state, calls, play, wt, tickets, impl: path.join(tickets, "implementation.md"), branch: `factory/${s.id}/01`, node };
+}
+const flag = (argv, name) => argv[argv.indexOf(name) + 1];
+const lastLine = (r) => { assert.equal(r.status, 0, r.stderr + r.stdout); return r.stdout.trim().split("\n").at(-1); };
+// implementation.md as the implementer finishes it, with `status` and `concerns` lines (and `more` before assumptions:)
+const report = (status, { cause = "none", concerns = "- none", more = "" } = {}) => "# Implementation 01\n\n- abc1234 Add the CSV export: the ticket's one outcome\n\n"
+  + `status: ${status}\nblocked_cause: ${cause}\n${more}assumptions:\n- none\nconcerns:\n${concerns}\ndenied:\n- none\n`
+  + "assessment:\n  recommendation: merge\n  confident: true\n  reason: its tests pass.\n";
+const CSV = { files: { "csv.js": "export const csv = 1;\n" }, commit: "Add the CSV export" };
+const branches = (r) => r.p.git("branch", "--list", r.branch);
+
+test("implement cuts the ticket's worktree on factory/<run>/NN at the SHA its dispatch records, runs the recipe's setup there, and starts the implementer child with its flags", (t) => {
+  const r = ticketReady(t);
+  r.play([CSV]);
+  const head = git(r.s.worktree, "rev-parse", "HEAD");
+  const out = r.stage("implement", "01");
+  assert.equal(out.status, 0, out.stderr + out.stdout);
+  const d = r.state().dispatches.at(-1);
+  assert.deepEqual([d.stage, d.sha], ["implement:01", head], "the dispatch records the run head the ticket is cut from");
+  assert.equal(git(r.wt, "branch", "--show-current"), r.branch);
+  assert.equal(git(r.wt, "rev-parse", "HEAD~1"), head, "the child's commit sits on the recorded SHA");
+  const [call] = r.calls();
+  assert.equal(call.cwd, r.wt, "the child works in the ticket's worktree");
+  assert.ok(call.ls.includes(".deps"), "the recipe's setup ran before the child started");
+  const { argv } = call;
+  assert.ok(argv.includes("-p") && argv.includes("--strict-mcp-config") && argv.includes("--verbose"));
+  assert.ok(!argv.includes("--mcp-config") && !argv.includes("--resume"));
+  assert.deepEqual(["--agent", "--plugin-dir", "--model", "--max-turns", "--permission-mode", "--permission-prompts", "--add-dir", "--output-format"].map((k) => flag(argv, k)),
+    ["factory:implementer", PLUGIN, "sonnet", "150", "acceptEdits", "none", r.s.run_dir, "stream-json"]);
+  const gitRules = ["status", "diff", "log", "show", "add", "rm", "mv", "restore", "commit"].map((c) => `Bash(git ${c}:*)`);
+  assert.deepEqual(flag(argv, "--allowedTools").split(","), ["Bash(npm:*)", "Bash(node:*)", ...gitRules, "Bash(npm ci:*)", "Bash(npm install:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`],
+    "each check's executable, git with no push, fetch or rebase, the package manager's install and add, and verify");
+  assert.match(flag(argv, "--session-id"), /^[0-9a-f-]{36}$/);
+  assert.deepEqual([d.pid, d.session], [call.pid, flag(argv, "--session-id")], "the dispatch records the child's PID and session id");
+  assert.ok(d.log.startsWith(path.join(r.s.run_dir, "logs") + path.sep));
+  assert.match(fs.readFileSync(d.log, "utf8"), /"subtype":"init"/, "and the stream-json log it writes");
+  for (const line of [`run_dir: ${r.s.run_dir}`, `worktree: ${r.wt}`, "ticket: 01-csv-export", `plan: ${path.join(r.tickets, "plan.md")}`, `implementation: ${r.impl}`]) {
+    assert.ok(call.stdin.split("\n").includes(line), line);
+  }
+});
+
+test("a crossed cap passes run-state's BUDGET refusal through before any worktree or child, and a setup that fails takes its new worktree away again", (t) => {
+  const capped = ticketReady(t, { config: { caps: { dispatches_per_run: 5 } } });
+  const refused = capped.stage("implement", "01");
+  assert.equal(refused.status, 4);
+  assert.match(refused.stdout, /^BUDGET dispatches 5\/5: implement:01 not dispatched$/m);
+  assert.deepEqual([fs.existsSync(capped.wt), capped.calls()], [false, []]);
+
+  const failing = ticketReady(t, { recipe: { ...RECIPE, setup: "echo 'npm ERR! missing lockfile'; exit 1" } });
+  const out = failing.stage("implement", "01");
+  assert.equal(lastLine(out), "ATTENTION 01: the recipe's setup failed in the ticket's worktree");
+  assert.match(out.stdout, /npm ERR! missing lockfile\nfull output: .*setup-01\.log/);
+  assert.deepEqual([fs.existsSync(failing.wt), branches(failing), failing.calls()], [false, "", []], "the next attempt cuts it again");
+});
+
+test("verify --full judges the ticket's own worktree and keeps its evidence beside the plan, and a DONE report with green evidence there is MERGE", (t) => {
+  const recipe = { ...RECIPE, apps: [{ ...RECIPE.apps[0], checks: { ...RECIPE.apps[0].checks, where: "pwd" } }] };
+  const r = ticketReady(t, { recipe });
+  r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }]);
+  const out = r.stage("implement", "01");
+  const sha = git(r.wt, "rev-parse", "HEAD");
+  assert.equal(lastLine(out), `MERGE 01: DONE, and verify --full is green at ${sha.slice(0, 7)}`);
+  const e = JSON.parse(fs.readFileSync(path.join(r.tickets, "evidence.json"), "utf8"));
+  assert.deepEqual([e.mode, e.sha, e.green], ["full", sha, true]);
+  const where = e.checks.find((c) => c.check === "where");
+  assert.equal(where.log, path.join(r.tickets, "logs", "app-where.log"));
+  assert.equal(fs.readFileSync(where.log, "utf8"), r.wt + "\n", "the checks ran in the ticket's worktree");
+  assert.ok(!fs.existsSync(path.join(r.s.run_dir, "evidence.json")), "the run head's evidence is the merge's");
+  assert.ok(r.state().stages_done.includes("implement:01"), "a report with a status line is a done stage");
+});
+
+test("a report with no status line, a named concern and a red the ticket introduced each go round again; a red the base had too is the human's", (t) => {
+  for (const [why, step, verdict] of [
+    ["no status line", (r) => ({ ...CSV, write: { [r.impl]: "# Implementation 01\n\n- abc1234 Add the CSV export: half of it\n" } }), /^ROUND 01: implementation\.md has no status line, so the attempt is INCOMPLETE$/],
+    ["a concern", (r) => ({ ...CSV, write: { [r.impl]: report("DONE", { concerns: "- an account name holding a comma breaks the row" }) } }), /^ROUND 01: the implementer named a concern/],
+    ["introduced", (r) => ({ files: { "csv.js": "1\n", "index.js": "syntax error (\n" }, commit: "Break the index", write: { [r.impl]: report("DONE") } }), /^ROUND 01: verify --full is red at \w{7}, red_cause introduced$/],
+    ["inherited", (r) => ({ files: { "notes.txt": "1\n" }, commit: "No export yet", write: { [r.impl]: report("DONE") } }), /^ATTENTION 01: verify --full is red at \w{7}, red_cause inherited$/],
+  ]) {
+    const r = ticketReady(t);
+    r.play([step(r)]);
+    assert.match(lastLine(r.stage("implement", "01")), verdict, why);
+    assert.equal(r.state().stages_done.includes("implement:01"), why !== "no status line", why);
+  }
+});
+
+// A ticket implemented to MERGE, its child having committed csv.js.
+function green(t) {
+  const r = ticketReady(t);
+  r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }]);
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
+  return r;
+}
+
+test("merge takes only a MERGE ticket into the run branch, runs verify --full at the new head, removes the ticket's worktree and branch, and marks it done", (t) => {
+  const early = ticketReady(t);
+  const refused = early.stage("merge", "01");
+  assert.equal(refused.status, 2);
+  assert.match(refused.stderr, /ticket 01 isn't ready to merge/);
+
+  const r = green(t);
+  const ticketHead = git(r.wt, "rev-parse", "HEAD");
+  const out = r.stage("merge", "01");
+  const head = git(r.s.worktree, "rev-parse", "HEAD");
+  assert.equal(lastLine(out), `MERGED 01: at ${head.slice(0, 7)} on feature/csv-export, where verify --full is green`);
+  assert.equal(head, ticketHead, "the ticket's commits are on the run branch");
+  const e = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence.json"), "utf8"));
+  assert.deepEqual([e.sha, e.green], [head, true], "the run head's own evidence");
+  assert.ok(!fs.existsSync(r.wt), "the ticket's worktree is gone");
+  assert.equal(branches(r), "", "and so is its branch");
+  assert.match(fs.readFileSync(path.join(r.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: done$/m);
+  assert.equal(r.run("next-ticket").stdout.trim(), "DONE");
+});
+
+test("a merge that conflicts is aborted and left as it was, and a run head that goes red after merging two green sides is the human's", (t) => {
+  const conflict = green(t);
+  fs.writeFileSync(path.join(conflict.s.worktree, "csv.js"), "export const csv = 2;\n");
+  git(conflict.s.worktree, "add", "csv.js"); git(conflict.s.worktree, "commit", "-qm", "Another csv.js");
+  const before = git(conflict.s.worktree, "rev-parse", "HEAD");
+  assert.equal(lastLine(conflict.stage("merge", "01")), `ATTENTION 01: merging ${conflict.branch} into feature/csv-export conflicts in csv.js, so the merge was aborted`);
+  assert.deepEqual([git(conflict.s.worktree, "rev-parse", "HEAD"), git(conflict.s.worktree, "status", "--porcelain")], [before, ""]);
+  assert.ok(fs.existsSync(conflict.wt) && branches(conflict), "the ticket's worktree and branch are kept");
+
+  const red = green(t);  // the run branch's own change is green without csv.js, the ticket's with it
+  fs.writeFileSync(path.join(red.s.worktree, "package.json"), JSON.stringify({ name: "reports", scripts: { test: "test ! -f csv.js" } }));
+  git(red.s.worktree, "commit", "-qam", "No csv.js wanted");
+  assert.match(lastLine(red.stage("merge", "01")), /^ATTENTION 01: verify --full is red at the run head \w{7} after merging two green sides, red_cause \w+$/);
+  assert.match(fs.readFileSync(path.join(red.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: in-progress$/m, "the ticket isn't done");
+});
+
+// An attempt that commits csv.js with index.js broken by `word`, so each word fails the typecheck its own way.
+const broken = (r, word) => ({ files: { "csv.js": "1\n", "index.js": `const ${word} = ;\n` }, commit: `Try ${word}`, write: { [r.impl]: report("DONE") } });
+const round = (r) => r.node("run-state.mjs", ["round", "implement:01", "--run", r.s.id]);
+
+test("fix rounds 1 and 2 resume the child's session with the evidence's path, round 3 is a fresh child on opus told a prior implementer tried twice, and round implement refuses a fourth with ESCALATE", (t) => {
+  const r = ticketReady(t);
+  r.play(["alpha", "beta", "gamma", "delta"].map((w) => broken(r, w)));
+  const evidence = path.join(r.tickets, "evidence.json");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01: verify --full is red at \w{7}, red_cause introduced$/);
+  for (const n of [1, 2, 3]) {
+    assert.equal(lastLine(round(r)), `OK implement:01 round ${n}/3`);
+    assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  }
+  const [first, ...rest] = r.calls(), session = flag(first.argv, "--session-id");
+  assert.equal(flag(first.argv, "--model"), "sonnet");
+  for (const [i, call] of rest.slice(0, 2).entries()) {
+    assert.deepEqual([flag(call.argv, "--resume"), flag(call.argv, "--model"), call.argv.includes("--session-id")], [session, "sonnet", false], `round ${i + 1} resumes`);
+    assert.match(call.stdin, new RegExp(`^verify --full is red at \\w{7}, red_cause introduced: ${evidence} has each failing check's digest and log\\. Fix what it shows\\.`));
+    assert.ok(call.stdin.includes(`the last one is now ${path.join(r.tickets, `implementation.round${i + 1}.md`)}`), "its last report was moved aside");
+    assert.ok(!call.stdin.includes("run_dir:"), "and nothing else");
+  }
+  const third = rest[2];
+  assert.ok(!third.argv.includes("--resume"));
+  assert.notEqual(flag(third.argv, "--session-id"), session, "round 3 is a fresh child");
+  assert.equal(flag(third.argv, "--model"), "opus", "on models.implement_escalated");
+  assert.match(third.stdin, /^run_dir: /);
+  assert.match(third.stdin, /A prior implementer has worked on this ticket and tried twice to fix it; you own it now\./);
+  assert.ok(third.stdin.includes(evidence));
+  const sessions = r.state().dispatches.filter((d) => d.stage === "implement:01").map((d) => [d.round, d.session]);
+  assert.deepEqual(sessions, [[undefined, session], [1, session], [2, session], [3, flag(third.argv, "--session-id")]]);
+  const escalated = round(r);
+  assert.equal(escalated.status, 5);
+  assert.equal(escalated.stdout.trim(), "ESCALATE implement:01: rounds 3/3");
+  assert.match(fs.readFileSync(path.join(r.s.run_dir, "run.log"), "utf8"), /escalation: implement:01 rounds 3\/3\n/);
+});
+
+test("an attempt that made no commits costs no round, and the same failure twice escalates early", (t) => {
+  const r = ticketReady(t);
+  r.play([broken(r, "alpha"), { write: { [r.impl]: report("DONE") } }, { ...broken(r, "alpha"), files: { ...broken(r, "alpha").files, "notes.txt": "again\n" } }]);
+  r.stage("implement", "01");
+  assert.equal(lastLine(round(r)), "OK implement:01 round 1/3");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  assert.equal(lastLine(round(r)), "OK implement:01 round 1/3: the last attempt made no commits, so it cost no round");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
+  const same = round(r);
+  assert.equal(same.status, 5);
+  assert.equal(same.stdout.trim(), "ESCALATE implement:01: the same failure as round 1");
+  assert.equal(r.state().rounds["implement:01"].n, 1);
+});
+
+test("BLOCKED: bad_plan resets the ticket's commits for the planner's one amendment, which a fresh child implements; a second bad plan, or intent_gap, is the human's", (t) => {
+  const r = ticketReady(t);
+  const cut = git(r.s.worktree, "rev-parse", "HEAD");
+  r.play([{ ...CSV, write: { [r.impl]: report("BLOCKED", { cause: "bad_plan" }) } },
+    { files: { "notes.txt": "1\n" }, commit: "Follow the amended plan", write: { [r.impl]: report("BLOCKED", { cause: "bad_plan" }) } }]);
+  assert.equal(lastLine(r.stage("implement", "01")), "AMEND 01: BLOCKED: bad_plan, so the ticket's commits are reset and the planner amends the plan");
+  assert.equal(git(r.wt, "rev-parse", "HEAD"), cut, "the ticket's commits are gone");
+  assert.ok(!fs.existsSync(path.join(r.wt, "csv.js")));
+  assert.ok(!fs.existsSync(path.join(r.tickets, "evidence.json")), "a blocked child isn't verified");
+  r.run("dispatch", "plan:01");
+  fs.writeFileSync(path.join(r.tickets, "plan.md"), "---\nstatus: ready\nticket: 01-csv-export\n---\n\n# Plan 01: CSV export, amended\n");
+  r.run("done", "plan:01");
+  assert.equal(lastLine(r.stage("implement", "01")), "ATTENTION 01: BLOCKED: bad_plan again, after the planner's one amendment");
+  const [first, second] = r.calls();
+  assert.ok(second.argv.includes("--session-id") && !second.argv.includes("--resume"), "the amended plan gets a fresh child");
+  assert.notEqual(flag(second.argv, "--session-id"), flag(first.argv, "--session-id"));
+  assert.match(second.stdin, /\n\nImplement the plan\.\n$/);
+
+  const gap = ticketReady(t);
+  gap.play([{ ...CSV, write: { [gap.impl]: report("BLOCKED", { cause: "intent_gap" }) } }]);
+  assert.equal(lastLine(gap.stage("implement", "01")), "ATTENTION 01: BLOCKED: intent_gap, the spec leaves open what to build");
+});
+
+test("BLOCKED: environment is the human's, and every command Claude Code denied the child is copied from its result into the report", (t) => {
+  const r = ticketReady(t);
+  r.play([{ write: { [r.impl]: report("BLOCKED", { cause: "environment" }) }, denied: ["curl -sI https://registry.npmjs.org/csv", "docker compose up -d"] }]);
+  assert.equal(lastLine(r.stage("implement", "01")), "ATTENTION 01: BLOCKED: environment, see implementation.md");
+  assert.ok(fs.readFileSync(r.impl, "utf8").endsWith("\nDenied, as the child's result records it:\n"
+    + "- `Bash: curl -sI https://registry.npmjs.org/csv`\n- `Bash: docker compose up -d`\n"));
+});
+
+test("NEEDS_CONTEXT gets one researcher dispatch, whose answer the resumed child is pointed at; a second NEEDS_CONTEXT is the human's", (t) => {
+  const r = ticketReady(t);
+  const ask = (q) => ({ write: { [r.impl]: report("NEEDS_CONTEXT", { more: `question: ${q}\n` }) } });
+  r.play([ask("How does the CSV package quote a field?"), ask("And a newline?")]);
+  const context = path.join(r.tickets, "context.md");
+  assert.equal(lastLine(r.stage("implement", "01")), `RESEARCH 01: NEEDS_CONTEXT, so one researcher dispatch answers its question in ${context}`);
+  r.run("dispatch", "context:01");
+  fs.writeFileSync(context, "# How does the CSV package quote a field?\n\nIn double quotes.\n\nStatus: ok\n");
+  r.run("done", "context:01");
+  assert.equal(lastLine(r.stage("implement", "01")), "ATTENTION 01: NEEDS_CONTEXT again, after its one researcher dispatch");
+  const [first, second] = r.calls();
+  assert.equal(flag(second.argv, "--resume"), flag(first.argv, "--session-id"), "the same child, resumed");
+  assert.ok(second.stdin.startsWith(`The answer to your question is in ${context}. Carry on with the plan.`));
+});

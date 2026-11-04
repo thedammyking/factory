@@ -30,14 +30,20 @@
 //                                                `stage` an outcome (dispatch sets the working stages, abandon its own);
 //                                                a run with an override ends needs-human when set delivered, and the time
 //                                                a run waits needs-human or failed isn't counted against its minutes
-//   run-state.mjs dispatch <stage> [--agent <id> | --log <path>] -> before the agent starts: measures spend and checks the
-//                                                caps, printing `WARN 70% …` once per cap, or `BUDGET <cap> <used>/<limit>`
-//                                                and the spend by stage and exiting 4 without dispatching; then records the
-//                                                stage, the run worktree's HEAD and the time, and moves an earlier output
-//                                                aside (<name>.round<N>.md), since a dispatch with no output yet is working;
-//                                                a stage of one ticket is <stage>:<NN>, as in plan:02;
-//                                                once the agent has started, --agent attaches its id to that dispatch, or
-//                                                --log a child's stream-json log
+//   run-state.mjs dispatch <stage> [--agent <id> | --log <path> --pid <pid> --session <id>] -> before the agent starts:
+//                                                measures spend and checks the caps, printing `WARN 70% …` once per cap, or
+//                                                `BUDGET <cap> <used>/<limit>` and the spend by stage and exiting 4 without
+//                                                dispatching; then records the stage, the time and a HEAD: the ticket's
+//                                                worktree's once it has one, else the run worktree's, which a ticket's
+//                                                worktree is cut from. It moves an earlier output aside (<name>.round<N>.md),
+//                                                since a dispatch with no output yet is working; a stage of one ticket is
+//                                                <stage>:<NN>, as in plan:02. Once the agent has started, --agent attaches
+//                                                its id to that dispatch, or --log, --pid and --session a child's
+//                                                stream-json log, PID and session id
+//   run-state.mjs round implement:<NN>        -> before a fix round of ticket NN: `OK implement:NN round <n>/<cap>`, or
+//                                                `ESCALATE …` and exit 5 once caps.implement_rounds (3) are spent, or at
+//                                                once when its evidence shows the same failure as the round before. An
+//                                                attempt that made no commits on the ticket's branch costs no round
 //   run-state.mjs done <stage>                -> marks a stage done
 //   run-state.mjs spend                       -> measures spend (it takes no number) and prints each cap and each stage's spend
 //   run-state.mjs override <dispatches|minutes|tokens|post_pr> "<reason>" -> a human lifts one cap for the rest of the run,
@@ -56,7 +62,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, envLines, frontier, STATUS_LINE } from "./lib.mjs";
+import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
 const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted"];
@@ -66,14 +72,16 @@ const OUTPUT = {  // the file each stage writes in the run dir
   triage: "triage.md", answer: "answer.md", research: "research.md", spec: "spec.md", "builder-check": "builder-check.md",
   tickets: "tickets",  // a folder
 };
-const TICKET_OUTPUT = { plan: "plan.md" };  // the file a stage of one ticket, <stage>:<NN>, writes in tickets/<NN>/
+// the file a stage of one ticket, <stage>:<NN>, writes in tickets/<NN>/: the planner's plan, the implementer's report and
+// the researcher's answer to the implementer
+const TICKET_OUTPUT = { plan: "plan.md", implement: "implementation.md", context: "context.md" };
 const BEFORE_SPEC_GATE = ["triage", "research", "spec", "builder-check"];  // a build run's only stages before its spec is approved
 const TICKET_STATUSES = ["ready-for-agent", "in-progress", "done", "blocked"];
 const CREDENTIAL = /KEY|SECRET|TOKEN|PASS|PWD|PRIVATE|CREDENTIAL|AUTH|DSN/i;  // an env name whose value the snapshot withholds
 
 const argv = process.argv.slice(2);
 const cmd = argv[0];
-const args = argv.slice(1).filter((a, i, all) => !a.startsWith("--") && !["--run", "--agent", "--log"].includes(all[i - 1]));
+const args = argv.slice(1).filter((a, i, all) => !a.startsWith("--") && !["--run", "--agent", "--log", "--pid", "--session"].includes(all[i - 1]));
 const now = () => new Date().toISOString();
 
 function die(msg) { console.error(`run-state: ${msg}`); process.exit(2); }
@@ -210,9 +218,10 @@ function measure(ctx, s) {
 // waiting on the human (needs-human or failed, until the next dispatch). Once pr.json exists, tokens spent after it go to
 // their own post_pr allowance, which the tokens cap never pays for (design fix 13).
 const CAPS = { dispatches_per_run: 30, minutes_per_run: 90, minutes_per_ticket: 45, tokens_overhead: 700_000,
-  tokens_per_ticket: 700_000, tokens_per_run: 1_500_000, tokens_post_pr: 400_000 };
+  tokens_per_ticket: 700_000, tokens_per_run: 1_500_000, tokens_post_pr: 400_000, implement_rounds: 3 };
+const limits = (ctx) => ({ ...CAPS, ...readJson(path.join(ctx.MAIN, ".factory", "config.json"))?.caps });
 function caps(ctx, s) {
-  const c = { ...CAPS, ...readJson(path.join(ctx.MAIN, ".factory", "config.json"))?.caps };
+  const c = limits(ctx);
   const dir = path.join(ctx.runDir, "tickets");
   const tickets = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^\d{2}-.+\.md$/.test(f)).length : 0;
   const pr = s.spend.tokens_at_pr;
@@ -289,7 +298,7 @@ switch (cmd) {
   }
   case "dispatch": {
     const [stage] = args;
-    if (!stage) die("dispatch <stage> [--agent <id> | --log <path>]");
+    if (!stage) die("dispatch <stage> [--agent <id> | --log <path> --pid <pid> --session <id>]");
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
     if (s.route === "build" && !BEFORE_SPEC_GATE.includes(stage) && !specApproved(ctx, s)) {
@@ -299,8 +308,9 @@ switch (cmd) {
       die(`the tickets of ${ctx.id} aren't approved: /factory approve ${ctx.id} approved`);
     }
     const agent = arg("--agent"), childLog = arg("--log") && path.resolve(arg("--log"));
+    const child = childLog && { log: childLog, ...(arg("--pid") && { pid: Number(arg("--pid")) }), ...(arg("--session") && { session: arg("--session") }) };
     const last = s.dispatches.at(-1);
-    if ((agent || childLog) && last?.stage === stage && !last.agent && !last.log) Object.assign(last, agent && { agent }, childLog && { log: childLog });
+    if ((agent || child) && last?.stage === stage && !last.agent && !last.log) Object.assign(last, agent && { agent }, child);
     else {
       // A dispatch ends any wait on the human, which the minute cap doesn't count.
       if (s.waiting_since) { s.waited_ms = (s.waited_ms || 0) + Date.now() - Date.parse(s.waiting_since); delete s.waiting_since; }
@@ -322,13 +332,45 @@ switch (cmd) {
         fs.renameSync(out, out.replace(/(\.md)?$/, `.round${round}$1`));  // tickets/ moves aside whole
       }
       // orchestrator_session: the session dispatching, beside whose transcript a subagent's is written
-      const session = process.env.CLAUDE_CODE_SESSION_ID;
-      s.dispatches.push({ stage, sha: git(ctx.worktree, "rev-parse", "HEAD"), at: now(), ...(agent && { agent }), ...(childLog && { log: childLog }), ...(session && { orchestrator_session: session }) });
+      // fix: the fix round this attempt is for, as `round` counted it
+      const session = process.env.CLAUDE_CODE_SESSION_ID, wt = n && ticketWorktree(ctx.MAIN, ctx.id, n), fix = s.rounds?.[stage]?.n;
+      s.dispatches.push({ stage, sha: git(wt && fs.existsSync(wt) ? wt : ctx.worktree, "rev-parse", "HEAD"), at: now(), ...(fix && { round: fix }),
+        ...(agent && { agent }), ...child, ...(session && { orchestrator_session: session }) });
       s.stages_done = s.stages_done.filter((d) => d !== stage);
     }
     s.stage = stage;
     save(ctx.state, s);
     console.log(`dispatched ${stage} #${s.dispatches.length}${agent ? ` agent ${agent}` : ""}`);
+    break;
+  }
+  case "round": {
+    const [loop] = args, n = loop?.match(/^implement:(\d{2})$/)?.[1];
+    if (!n) die("round implement:<NN>");
+    const [ctx, s] = load();
+    if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+    const last = s.dispatches.findLast((d) => d.stage === loop);
+    if (!last) die(`${loop} hasn't been dispatched`);
+    const cap = limits(ctx).implement_rounds;
+    const r = s.rounds?.[loop] || { n: 0 }, escalate = (why) => { log(ctx.runDir, `escalation: ${loop} ${why}`); console.log(`ESCALATE ${loop}: ${why}`); process.exit(5); };
+    // An attempt counts as a round only when it produced commits: one that crashed or made nothing costs nothing.
+    // ponytail: such attempts are free and unlimited, bounded only by the run's dispatch, minute and token caps; count
+    // them in a row if a stuck child ever burns a run's budget that way.
+    let made = 0; try { made = Number(git(ctx.MAIN, "rev-list", "--count", `${last.sha}..refs/heads/${ticketBranch(ctx.id, n)}`)); } catch {}
+    if (!made) { console.log(`OK ${loop} round ${r.n}/${cap}: the last attempt made no commits, so it cost no round`); break; }
+    // The failure's signature: the checks that didn't pass and their digests, numbers masked so timings and ports don't
+    // count. The same one twice in a row means the round changed nothing.
+    // ponytail: two reds that differ only in a number (a count, an actual value) read as the same and escalate early;
+    // mask only timings and ports if that ever ends a round that was making progress.
+    const ev = readJson(path.join(ctx.runDir, "tickets", n, "evidence.json"));
+    let head = null; try { head = git(ctx.MAIN, "rev-parse", `refs/heads/${ticketBranch(ctx.id, n)}`); } catch {}
+    const signature = ev && !ev.green && ev.sha === head ? crypto.createHash("sha256").update(JSON.stringify(ev.checks.filter((c) => c.status !== "pass")
+      .map((c) => [c.app, c.check, c.status, String(c.digest).replace(/^full output: .*$/m, "").replace(/\d+/g, "#")]))).digest("hex") : null;
+    if (signature && signature === r.signature) escalate(`the same failure as round ${r.n}`);
+    if (r.n >= cap) escalate(`rounds ${r.n}/${cap}`);
+    s.rounds = { ...s.rounds, [loop]: { n: r.n + 1, cap, signature } };  // cap: run-stage starts the last round fresh
+    save(ctx.state, s);
+    log(ctx.runDir, `run: ${ctx.id} ${loop} round ${r.n + 1}/${cap}`);
+    console.log(`OK ${loop} round ${r.n + 1}/${cap}`);
     break;
   }
   case "done": {
@@ -546,5 +588,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | approve | notion | ticket | next-ticket | get | set | dispatch | done | spend | override | snapshot | abandon | status");
+  default: die("usage: run-state.mjs init | lane | approve | notion | ticket | next-ticket | get | set | dispatch | round | done | spend | override | snapshot | abandon | status");
 }

@@ -52,13 +52,20 @@ export function commitToBase(main, base, message, apply) {
   throw new Error(`3 tries couldn't move ${base} (${gitError(err)})`);
 }
 
+// A ticket's worktree, .factory/worktrees/<run>-NN/, on its local branch factory/<run>/NN (never pushed).
+export const ticketWorktree = (main, id, n) => path.join(worktreesDir(main), `${id}-${n}`);
+export const ticketBranch = (id, n) => `factory/${id}/${n}`;
+
 // The run named by --run, else the one whose worktree holds cwd. Exits 2 when neither names a run with a state.json.
+// From a ticket's worktree, ticket is its NN and tree that worktree; otherwise ticket is null and tree the run worktree.
 export function runContext() {
   const MAIN = mainRoot();
-  let id = arg("--run");
-  if (!id) {
-    const top = git(process.cwd(), "rev-parse", "--show-toplevel");
-    if (path.dirname(top) === worktreesDir(MAIN)) id = path.basename(top);
+  let id = arg("--run"), ticket = null;
+  const top = git(process.cwd(), "rev-parse", "--show-toplevel");
+  if (path.dirname(top) === worktreesDir(MAIN)) {
+    const name = path.basename(top), t = name.match(/^(.+)-(\d{2})$/);
+    if (t && !fs.existsSync(runPaths(MAIN, name).state) && fs.existsSync(runPaths(MAIN, t[1]).state) && (!id || id === t[1])) [id, ticket] = [t[1], t[2]];
+    else id ||= name;
   }
   if (!id) { console.error("no run: pass --run <id>, or run inside the run's worktree"); process.exit(2); }
   if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) { console.error(`no run ${id}`); process.exit(2); }
@@ -70,7 +77,7 @@ export function runContext() {
     console.error(ended ? `run ${id} has ended ${ended.stage}: its record is .factory/history/${id}/ on ${ended.base_branch}` : `no run ${id}`);
     process.exit(2);
   }
-  return { MAIN, id, ...paths };
+  return { MAIN, id, ...paths, ticket, tree: ticket ? top : paths.worktree };
 }
 
 // An env file's NAME=value lines as [name, value, raw]: an optional `export`, the value unquoted or else cut at a ` #`
