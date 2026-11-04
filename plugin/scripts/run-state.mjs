@@ -19,8 +19,8 @@
 //                                                the orchestrator to claim and record. Records exactly what changed, and
 //                                                logs a failure, never retried
 //   run-state.mjs unclaim [done | failed "<why>"] -> on a run ended failed or abandoned, undoes what the claim changed, once
-//   run-state.mjs comment [posted | failed "<why>"] -> after a clean snapshot at an outcome (but at the spec or ticket
-//                                                gate, which is mid-run), posts issue-comment.md, the
+//   run-state.mjs comment [posted | failed "<why>"] -> after a clean snapshot at an outcome (but at the spec gate, which
+//                                                is mid-run), posts issue-comment.md, the
 //                                                closing comment that snapshot wrote and checked, once (elsewhere prints it
 //                                                for the orchestrator to post and record); prints the run's tracker writes
 //                                                that failed
@@ -29,8 +29,9 @@
 //                                                branching model, then the request issue's key, then triage's slug, and
 //                                                the run id only when that name is taken) and records branch,
 //                                                base_branch, target_branch and base_sha. A oneshot's lane also writes its
-//                                                one ticket, tickets/01-<slug>.md, covering triage's acceptance_check, approved
-//                                                as written, so the run is one ticket everywhere else
+//                                                one ticket, tickets/01-<slug>.md, covering triage's acceptance_check, and
+//                                                records its hash as `done tickets` would, so the run is one ticket
+//                                                everywhere else
 //   run-state.mjs reroute                     -> a oneshot whose plan lists more than one product file, before it's
 //                                                implemented: its plan is done and the route becomes build, which goes on
 //                                                at research on the same branch, and the oneshot's tickets/ is kept as
@@ -43,14 +44,11 @@
 //                                                overwrite or null, title, content opening with the copy notice); pushed
 //                                                writes the page's URL into spec.md's frontmatter, keeping the approval;
 //                                                failed logs the one line a failed push leaves
-//   run-state.mjs approve tickets approved|revise -> the human's decision at the ticket gate; approved covers the cut and
-//                                                the edges of tickets/NN-slug.md as they are, and until then a build run
-//                                                dispatches nothing past the tickets
 //   run-state.mjs approve migrations          -> the human approves a maintenance run's migrations at the run head,
 //                                                recorded with who, so its merge decision there may let them through
-//   run-state.mjs ticket <NN> <status>        -> after the ticket gate, the only change to a ticket's Status line that
-//                                                keeps the approval
-//   run-state.mjs next-ticket                 -> after the ticket gate, a line per takeable ticket of lib's frontier,
+//   run-state.mjs ticket <NN> <status>        -> after `done tickets`, the only change to a ticket's Status line that
+//                                                keeps the hash it recorded
+//   run-state.mjs next-ticket                 -> after `done tickets`, a line per takeable ticket of lib's frontier,
 //                                                in-progress first: `STARTED <NN-slug>` for one that goes on, `NEXT
 //                                                <NN-slug>` (start it) while fewer than config's parallel_tickets (2) are
 //                                                started, else `WAIT <NN-slug>: <why>`, which a ticket also gets while its
@@ -104,7 +102,12 @@
 //                                                `done: …` (stages never run again), `CONTINUE <stage> …` per stage cut
 //                                                off mid-flight (none on a run stopped needs-human), verify --fast where
 //                                                they work (else on the run branch), and next-ticket's frontier
-//   run-state.mjs done <stage>                -> marks a stage done
+//   run-state.mjs done <stage>                -> marks a stage done. `done tickets`, only right after the tickets stage,
+//                                                first checks that the frontier can order the cut (each ticket
+//                                                ready-for-agent with a Blocked by line, its own number, waiting only on
+//                                                tickets before it), exiting 2 with each problem, and records the
+//                                                tickets' hash: until then, and after any change but `ticket`'s, a build
+//                                                run dispatches nothing past the tickets
 //   run-state.mjs spend                       -> measures spend (it takes no number) and prints each cap and each stage's spend
 //   run-state.mjs override <dispatches|minutes|tokens|post_pr|implement_rounds|review_rounds|ci_rounds> "<reason>" -> a
 //                                                human lifts one cap for the rest of the run (a round cap for every one
@@ -166,11 +169,12 @@ const readText = (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8") :
 const specHash = (ctx) => crypto.createHash("sha256").update(readText(path.join(ctx.runDir, "spec.md"))).digest("hex");
 const specApproved = (ctx, s) => s.approvals?.spec?.sha256 === specHash(ctx);
 const FRONTMATTER = /^---\n([\s\S]*?\n)?---(?:\n|$)/;  // spec.md's, its lines in [1]
-// The ticket gate's approval covers every ticket's name and text. `ticket` moves it along with each Status line it
-// writes, so any other change to a ticket, a status included, needs approving again.
+// The hash `done tickets` records covers every ticket's name and text. `ticket` moves it along with each Status line it
+// writes, so any other change to a ticket, a status included, is refused until the tickets are cut and checked again.
 const readTickets = (ctx) => frontier(path.join(ctx.runDir, "tickets"));
 const ticketsHash = (ctx) => crypto.createHash("sha256").update(JSON.stringify(readTickets(ctx).items.map((t) => [t.id, t.text]))).digest("hex");
-const ticketsApproved = (ctx, s) => s.approvals?.tickets?.sha256 === ticketsHash(ctx);
+const ticketsChecked = (ctx, s) => s.tickets_sha256 === ticketsHash(ctx);
+const whyUnchecked = (ctx) => `the tickets of ${ctx.id} haven't passed \`done tickets\`, or changed after it`;
 // The files a ticket's plans change, [] before it has one: each path the `## Code map` of tickets/<NN>/plan.md lists,
 // and of each plan set aside beside it (so a plan being written again still counts), any manifest or lockfile counted as
 // one file, since a new dependency touches the manifest and the lockfile.
@@ -209,8 +213,8 @@ function frontierLines(ctx, s) {
   }
   return next.map((t) => lines.get(t) ?? `STARTED ${t.id}`);
 }
-// Why a cut can't be approved: the frontier orders tickets by their Status and Blocked by lines, and a ticket waits only on
-// one numbered before it.
+// Why `done tickets` refuses a cut: the frontier orders tickets by their Status and Blocked by lines, and a ticket waits
+// only on one numbered before it.
 const ticketProblems = (items) => items.flatMap((t) => [
   t.status !== "ready-for-agent" && `${t.id} isn't \`Status: ready-for-agent\``,
   !t.blockedBy && `${t.id} has no \`Blocked by:\` line`,
@@ -451,10 +455,11 @@ function newestAttention(ctx) {
   const at = (f) => fs.statSync(path.join(ctx.runDir, f)).mtimeMs;
   return fs.readdirSync(ctx.runDir).filter((f) => /^attention-.+\.md$/.test(f) && !["attention-secret.md", "attention-snapshot.md"].includes(f)).sort((a, b) => at(b) - at(a))[0];
 }
-// Why a run hasn't ended as its request issue sees it, or null: a suspended run carries on, and one at its spec, ticket
-// or map gate is mid-run, the developer deciding in session.
+// Why a run hasn't ended as its request issue sees it, or null: a suspended run carries on, and one at its spec or map
+// gate, or asked whether to cut its tickets again, is mid-run, the developer deciding in session.
+const MID_RUN = ["attention-spec-gate.md", "attention-map-gate.md", "attention-tickets-cut.md"];
 const notEnded = (ctx, s) => !ENDINGS.includes(s.stage) ? `a run ${s.stage} hasn't ended`
-  : s.stage === "needs-human" && ["attention-spec-gate.md", "attention-ticket-gate.md", "attention-map-gate.md"].includes(newestAttention(ctx)) ? "a run at its gate hasn't ended" : null;
+  : s.stage === "needs-human" && MID_RUN.includes(newestAttention(ctx)) ? "a run waiting on a decision in session hasn't ended" : null;
 // The one comment a request issue gets when its run ends: the outcome, the PR, a charted run's map (`set map_link`), a
 // stopped run's attention item (its headline, what happened, so hold's questions reach whoever filed it, and its
 // options, never its evidence) and an answer in full, with the home directory as ~ since the tracker may be public.
@@ -555,8 +560,8 @@ switch (cmd) {
     if (s.route === "build" && !BEFORE_SPEC_GATE.includes(stage) && !specApproved(ctx, s)) {
       die(`the spec of ${ctx.id} isn't approved: /factory approve ${ctx.id} approved`);
     }
-    if (s.route === "build" && ![...BEFORE_SPEC_GATE, "tickets"].includes(stage) && !ticketsApproved(ctx, s)) {
-      die(`the tickets of ${ctx.id} aren't approved: /factory approve ${ctx.id} approved`);
+    if (s.route === "build" && ![...BEFORE_SPEC_GATE, "tickets"].includes(stage) && !ticketsChecked(ctx, s)) {
+      die(whyUnchecked(ctx));
     }
     const agent = arg("--agent"), childLog = arg("--log") && path.resolve(arg("--log"));
     const child = childLog && { log: childLog, ...(arg("--pid") && { pid: Number(arg("--pid")) }), ...(arg("--session") && { session: arg("--session") }) };
@@ -657,6 +662,14 @@ switch (cmd) {
     const [stage] = args;
     if (!stage) die("done <stage>");
     const [ctx, s] = load();
+    // A cut is checked before anything is built from it, and its hash recorded for every later command to read. Only the
+    // cut the planner just made: nothing dispatched since, so no edit made while building is ever taken in.
+    if (stage === "tickets") {
+      if (s.dispatches.at(-1)?.stage !== "tickets") die(`${ctx.id} isn't cutting its tickets: done tickets follows the tickets stage, with nothing dispatched since`);
+      const { items } = readTickets(ctx), problems = items.length ? ticketProblems(items) : ["no tickets were cut"];
+      if (problems.length) die(`the tickets of ${ctx.id} need cutting again: ${problems.join("; ")}`);
+      s.tickets_sha256 = ticketsHash(ctx);
+    }
     if (!s.stages_done.includes(stage)) s.stages_done.push(stage);
     save(ctx.state, s);
     console.log(`done ${stage}`);
@@ -692,12 +705,12 @@ switch (cmd) {
     if (!s.branch) die(`can't make ${want}-${ctx.id}: the name is taken`);
     Object.assign(s, { base_branch: base, target_branch: base, base_sha: sha });
     if (s.route === "oneshot") {
-      // The run is one ticket everywhere else (#24), cut here from triage.md and approved as written: there is no gate.
+      // The run is one ticket everywhere else (#24), cut here from triage.md and recorded as `done tickets` records a cut.
       const name = slug.slice(0, 5), dir = path.join(ctx.runDir, "tickets");
       fs.mkdirSync(dir, { recursive: true });
       fs.writeFileSync(path.join(dir, `01-${name.join("-")}.md`), `# 01: ${name.join(" ")}\n\nStatus: ready-for-agent\nBlocked by: none\n\n`
         + `The run's one ticket on the oneshot route: \`triage.md\` is its ticket and its spec.\n\n## Covers\n- [ ] acceptance: ${check}\n`);
-      s.approvals = { ...s.approvals, tickets: { sha256: ticketsHash(ctx), at: now() } };
+      s.tickets_sha256 = ticketsHash(ctx);
     }
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} on ${s.branch} from ${base} at ${sha.slice(0, 7)}`);
@@ -713,7 +726,7 @@ switch (cmd) {
     const tickets = path.join(ctx.runDir, "tickets");
     if (fs.existsSync(tickets)) fs.renameSync(tickets, path.join(ctx.runDir, "oneshot"));
     s.route = "build";
-    delete s.approvals?.tickets;
+    delete s.tickets_sha256;
     // Its plan is done, in this one write, so a resume never continues it on the build route, whose gates refuse it.
     s.stages_done = [...new Set([...s.stages_done, ...s.dispatches.map((d) => d.stage).filter((d) => d.startsWith("plan:"))])];
     save(ctx.state, s);
@@ -812,21 +825,15 @@ switch (cmd) {
       console.log(`migrations approved by ${by} at ${sha.slice(0, 7)}`);
       break;
     }
-    if (!["spec", "tickets"].includes(gate) || !["approved", "revise"].includes(decision)) die("approve spec|tickets approved | revise (a gate's abandon is abandon)");
+    if (gate !== "spec" || !["approved", "revise"].includes(decision)) die("approve spec approved | revise (a gate's abandon is abandon)");
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
-    // The gate: the spec and the builder check are done, and nothing has been dispatched since. The ticket gate follows
-    // the tickets in the same way, with the spec still approved.
-    const before = gate === "spec" ? ["spec", "builder-check"] : ["tickets"], spec = path.join(ctx.runDir, "spec.md");
-    const written = gate === "spec" ? fs.existsSync(spec) : readTickets(ctx).items.length > 0;
-    if (!before.includes(s.dispatches.at(-1)?.stage) || !before.every((d) => s.stages_done.includes(d)) || !written) {
-      die(`${ctx.id} isn't at the ${gate === "spec" ? "spec gate, which follows the builder check" : "ticket gate, which follows the tickets"}`);
+    // The gate: the spec and the builder check are done, and nothing has been dispatched since.
+    const before = ["spec", "builder-check"];
+    if (!before.includes(s.dispatches.at(-1)?.stage) || !before.every((d) => s.stages_done.includes(d)) || !fs.existsSync(path.join(ctx.runDir, "spec.md"))) {
+      die(`${ctx.id} isn't at the spec gate, which follows the builder check`);
     }
-    if (gate === "tickets" && !specApproved(ctx, s)) die(`the spec of ${ctx.id} changed after its approval`);
-    const problems = gate === "tickets" && decision === "approved" ? ticketProblems(readTickets(ctx).items) : [];
-    if (problems.length) die(`the tickets can't be approved: ${problems.join("; ")}`);
-    const hash = gate === "spec" ? specHash : ticketsHash;
-    s.approvals = { ...s.approvals, [gate]: decision === "approved" ? { sha256: hash(ctx), at: now() } : undefined };
+    s.approvals = { ...s.approvals, spec: decision === "approved" ? { sha256: specHash(ctx), at: now() } : undefined };
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} ${gate} ${decision}`);
     console.log(`${gate} ${decision}`);
@@ -837,11 +844,11 @@ switch (cmd) {
     if (!n || !TICKET_STATUSES.includes(status)) die(`ticket <NN> <${TICKET_STATUSES.join(" | ")}>`);
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
-    if (!ticketsApproved(ctx, s)) die(`the tickets of ${ctx.id} aren't approved: /factory approve ${ctx.id} approved`);
+    if (!ticketsChecked(ctx, s)) die(whyUnchecked(ctx));
     const t = readTickets(ctx).items.find((t) => t.n === n || t.id === n);
     if (!t) die(`no ticket ${n} in ${ctx.id}`);
     fs.writeFileSync(t.file, t.text.replace(STATUS_LINE, `$1${status}`));
-    s.approvals.tickets.sha256 = ticketsHash(ctx);
+    s.tickets_sha256 = ticketsHash(ctx);
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} ticket ${t.id} ${t.status} -> ${status}`);
     console.log(`ticket ${t.id} ${status}`);
@@ -849,7 +856,7 @@ switch (cmd) {
   }
   case "next-ticket": {
     const [ctx, s] = load();
-    if (!ticketsApproved(ctx, s)) die(`the tickets of ${ctx.id} aren't approved: /factory approve ${ctx.id} approved`);
+    if (!ticketsChecked(ctx, s)) die(whyUnchecked(ctx));
     for (const line of frontierLines(ctx, s)) console.log(line);
     break;
   }
@@ -1032,7 +1039,7 @@ switch (cmd) {
     }
     // The frontier, as next-ticket prints it: tickets done are already merged and stay done. In this process, since a
     // run-state child would wait on the run's lock this command holds.
-    if (ticketsApproved(ctx, s)) for (const line of frontierLines(ctx, s)) console.log(line);
+    if (ticketsChecked(ctx, s)) for (const line of frontierLines(ctx, s)) console.log(line);
     log(ctx.runDir, `run: ${ctx.id} reconciled${formerOwner ? `, taken over from session ${formerOwner}` : ""}`);
     break;
   }

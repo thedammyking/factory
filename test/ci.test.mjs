@@ -58,7 +58,7 @@ function ciReady(t, { config = {}, workflows = true } = {}) {
   for (const stage of ["research", "spec", "builder-check"]) { rs("dispatch", stage); write(s.run_dir, { [`${stage}.md`]: `# ${stage}\n` }); rs("done", stage); }
   rs("approve", "spec", "approved");
   rs("dispatch", "tickets"); write(s.run_dir, { "tickets/01-signup.md": "# 01: Signup\n\nStatus: ready-for-agent\nBlocked by: none\n" }); rs("done", "tickets");
-  rs("approve", "tickets", "approved"); rs("ticket", "01", "done");
+  rs("ticket", "01", "done");
   s.commit({ "src/signup.js": "export const signup = () => 'Welcome';\n" }, "Add the signup form");
   write(s.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 7, url: "https://github.com/o/r/pull/7", head: "feature/signup", base: "main", draft: false, labels: ["factory"], comments: [] }) });
   const head = () => s.git("rev-parse", "HEAD"), base = p.git("rev-parse", "main");

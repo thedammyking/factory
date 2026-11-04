@@ -273,7 +273,7 @@ test("a request at the map gate is mid-run, and once charted its closing comment
   rs("set", "route", "map");
   rs("set", "stage", "needs-human");
   assert.match(rs("snapshot"), /worktree kept/);
-  assert.match(rs("comment"), /^skip: a run at its gate hasn't ended$/);
+  assert.match(rs("comment"), /^skip: a run waiting on a decision in session hasn't ended$/);
   rs("set", "map_link", "https://github.com/o/r/issues/40");
   rs("set", "stage", "charted");
   assert.match(rs("snapshot"), /worktree kept until the closing comment/);

@@ -42,7 +42,7 @@ process.exitCode = step.exit || 0;
 const RECIPE = { setup: "echo installed > .deps", apps: [{ name: "app", type: "backend", path: ".", checks: { test: "npm test", typecheck: "CI=1 node --check index.js" } }] };
 const PACKAGE = JSON.stringify({ name: "reports", scripts: { test: "test -f csv.js" } });
 
-// A build run on a project holding `recipe`, past the ticket gate, with ticket 01 in progress and its plan ready. stage()
+// A build run on a project holding `recipe`, past done tickets, with ticket 01 in progress and its plan ready. stage()
 // runs run-stage.mjs as the orchestrator does, from the main checkout, with the fake claude first on PATH playing the
 // steps play() sets. Every fake child still alive is killed after the test, pass or fail. `files` are committed with the
 // product.
@@ -73,7 +73,6 @@ function ticketReady(t, { recipe = RECIPE, config = {}, files = {} } = {}) {
   fs.mkdirSync(path.join(s.run_dir, "tickets", "01"), { recursive: true });
   fs.writeFileSync(path.join(s.run_dir, "tickets", "01-csv-export.md"), "# 01: CSV export\n\nStatus: ready-for-agent\nBlocked by: none\n");
   run("done", "tickets");
-  run("approve", "tickets", "approved");
   run("ticket", "01", "in-progress");
   run("dispatch", "plan:01");
   fs.writeFileSync(path.join(s.run_dir, "tickets", "01", "plan.md"), "---\nstatus: ready\nticket: 01-csv-export\n---\n\n# Plan 01: CSV export\n");

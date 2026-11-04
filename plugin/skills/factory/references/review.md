@@ -1,6 +1,6 @@
 # Review the run
 
-The factory skill reads this at step 9 of **build**, once `next-ticket` prints `DONE`: every ticket is merged into the run branch, where `run-stage merge` left `evidence.json`. Read-only lenses judge the diff in parallel, `synthesize.mjs` turns their findings into `findings.json`, and only open P0 and P1 fixes go round, `caps.review_rounds` (2) times at most. The rounds and their cap are the scripts': never start a round that a step below doesn't name.
+The factory skill reads this at step 8 of **build**, once `next-ticket` prints `DONE`: every ticket is merged into the run branch, where `run-stage merge` left `evidence.json`. Read-only lenses judge the diff in parallel, `synthesize.mjs` turns their findings into `findings.json`, and only open P0 and P1 fixes go round, `caps.review_rounds` (2) times at most. The rounds and their cap are the scripts': never start a round that a step below doesn't name.
 
 The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<script> … --run <id>`, written out in full.
 

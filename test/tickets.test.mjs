@@ -1,4 +1,4 @@
-// tickets.test.mjs — run-state.mjs past the spec gate: the ticket gate, ticket statuses and the frontier.
+// tickets.test.mjs — run-state.mjs past the spec gate: the checks at done tickets, ticket statuses and the frontier.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -38,61 +38,65 @@ function specApproved(config) {
   assert.equal(run("approve", "spec", "approved").status, 0);
   return { p, s, run };
 }
-// The ticket gate: the tickets cut and the stage done.
-function atTicketGate(edges, config) {
+// The tickets cut, and checked as the stage is done.
+function ticketsDone(edges, config) {
   const r = specApproved(config);
   r.run("dispatch", "tickets");
   cut(r.s, edges);
-  r.run("done", "tickets");
+  const done = r.run("done", "tickets");
+  assert.equal(done.status, 0, done.stderr);
   return r;
 }
 
-test("nothing past the tickets dispatches, and no status changes, until the human approves them at the ticket gate", () => {
+test("nothing past the tickets dispatches, and no status changes, until done tickets checks them, and then the run goes on with no approval", () => {
   const { s, run } = specApproved();
-  assert.equal(run("approve", "tickets", "approved").status, 2, "no tickets yet");
   assert.equal(run("dispatch", "tickets").status, 0, "the approved spec is cut into tickets");
-  assert.equal(run("approve", "tickets", "approved").status, 2, "the planner is still cutting them");
+  const none = run("done", "tickets");
+  assert.equal(none.status, 2, "the planner is still cutting them");
+  assert.match(none.stderr, /no tickets/);
   cut(s, { "01-export-endpoint": "none", "02-export-button": "01" });
-  run("done", "tickets");
   const refused = run("dispatch", "plan:01");
   assert.equal(refused.status, 2);
-  assert.match(refused.stderr, new RegExp(`tickets of ${s.id} aren't approved: /factory approve ${s.id} approved`));
-  assert.equal(run("ticket", "01", "in-progress").status, 2, "before the gate the tickets are the planner's");
+  assert.match(refused.stderr, new RegExp(`the tickets of ${s.id} haven't passed \`done tickets\`, or changed after it`));
+  assert.equal(run("ticket", "01", "in-progress").status, 2, "before done tickets the tickets are the planner's");
   assert.equal(run("next-ticket").status, 2, "and they have no frontier");
-  assert.match(run("approve", "tickets", "maybe").stderr, /approved \| revise/);
-  const spec = path.join(s.run_dir, "spec.md");
-  fs.appendFileSync(spec, "- an edit after the approval\n");
-  assert.match(run("approve", "tickets", "approved").stderr, new RegExp(`the spec of ${s.id} changed after its approval`));
-  fs.writeFileSync(spec, "# spec\n");
-  const ok = run("approve", "tickets", "approved");
+  const ok = run("done", "tickets");
   assert.equal(ok.status, 0, ok.stderr);
-  assert.equal(ok.stdout.trim(), "tickets approved");
+  assert.equal(ok.stdout.trim(), "done tickets");
+  assert.equal(run("next-ticket").stdout.trim(), "NEXT 01-export-endpoint", "no approval");
   assert.equal(run("dispatch", "plan:01").status, 0);
-  assert.equal(run("approve", "tickets", "revise").status, 2, "past the gate the tickets are frozen");
-  assert.match(fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8"), new RegExp(`run: ${s.id} tickets approved`));
+  const gone = run("approve", "tickets", "approved");
+  assert.equal(gone.status, 2);
+  assert.match(gone.stderr, /approve spec approved \| revise/);
+  assert.doesNotMatch(gone.stderr, /tickets/, "approve tickets is no command");
 });
 
-test("only ticket's status changes keep the approval, any other edit needs approving again, and a revise cuts the tickets again beside the old ones", () => {
-  const kept = atTicketGate({ "01-export-endpoint": "none", "02-export-button": "01" });
-  assert.equal(kept.run("approve", "tickets", "approved").status, 0);
+test("only ticket's status changes keep the hash done tickets recorded, any other edit is refused, and a cut made again beside the old one is checked again", () => {
+  const kept = ticketsDone({ "01-export-endpoint": "none", "02-export-button": "01" });
   assert.equal(kept.run("ticket", "01", "in-progress").status, 0);
   assert.equal(kept.run("dispatch", "plan:01").status, 0, "run-state changed the status");
-  fs.writeFileSync(path.join(kept.s.run_dir, "tickets", "02-export-button.md"), read(kept.s, "02-export-button").replace("Status: ready-for-agent", "Status: done"));
-  assert.equal(kept.run("next-ticket").status, 2, "a Status line written by anything else");
+  const second = path.join(kept.s.run_dir, "tickets", "02-export-button.md"), cutAs = read(kept.s, "02-export-button");
+  fs.writeFileSync(second, cutAs.replace("Status: ready-for-agent", "Status: done"));
+  const edited = kept.run("next-ticket");
+  assert.equal(edited.status, 2, "a Status line written by anything else");
+  assert.match(edited.stderr, /changed after it/);
   assert.equal(kept.run("dispatch", "plan:02").status, 2);
+  fs.writeFileSync(second, cutAs);
+  assert.equal(kept.run("ticket", "01", "ready-for-agent").status, 0, "as a WAIT puts a ticket back");
+  fs.writeFileSync(second, cutAs.replace("Blocked by: 01", "Blocked by: none"));
+  const late = kept.run("done", "tickets");
+  assert.equal(late.status, 2, "a ticket planned since: done tickets never takes an edit in");
+  assert.match(late.stderr, /done tickets follows the tickets stage/);
 
-  const { s, run } = atTicketGate({ "01-export-endpoint": "none", "02-export-button": "01" });
-  assert.equal(run("approve", "tickets", "approved").status, 0);
+  const { s, run } = ticketsDone({ "01-export-endpoint": "none", "02-export-button": "01" });
   fs.writeFileSync(path.join(s.run_dir, "tickets", "02-export-button.md"), read(s, "02-export-button").replace("Blocked by: 01", "Blocked by: none"));
-  assert.equal(run("dispatch", "plan:01").status, 2, "the approval covers the cut and the edges as the human read them");
-  assert.equal(run("approve", "tickets", "revise").status, 0);
+  assert.equal(run("dispatch", "plan:01").status, 2, "the hash covers the cut and the edges as done tickets checked them");
   assert.equal(run("dispatch", "tickets").status, 0, "the planner cuts them again");
   assert.ok(!fs.existsSync(path.join(s.run_dir, "tickets")), "a dispatch with no output yet is working");
   assert.match(fs.readFileSync(path.join(s.run_dir, "tickets.round1", "02-export-button.md"), "utf8"), /Blocked by: none/);
   cut(s, { "01-export": "none" });
-  run("done", "tickets");
-  assert.equal(run("dispatch", "plan:01").status, 2, "a revise clears the approval");
-  assert.equal(run("approve", "tickets", "approved").status, 0);
+  assert.equal(run("dispatch", "plan:01").status, 2, "a new cut isn't built from until done tickets checks it");
+  assert.equal(run("done", "tickets").status, 0);
   assert.equal(run("dispatch", "plan:01").status, 0);
   fs.mkdirSync(path.join(s.run_dir, "tickets", "01"));
   fs.writeFileSync(path.join(s.run_dir, "tickets", "01", "plan.md"), "---\nstatus: open_questions\n---\n");
@@ -103,9 +107,11 @@ test("only ticket's status changes keep the approval, any other edit needs appro
 });
 
 test("ticket <NN> <status> rewrites only that ticket's Status line, bold or not, and logs it; an unknown ticket or status is refused", () => {
-  const { s, run } = atTicketGate({ "01-export-endpoint": "none" });
+  const { s, run } = specApproved();
+  run("dispatch", "tickets");
+  cut(s, { "01-export-endpoint": "none" });
   fs.writeFileSync(path.join(s.run_dir, "tickets", "02-export-button.md"), "# export-button\n\n**Status:** ready-for-agent\n**Blocked by:** 01\n\nStatus: a line in the body\n");
-  assert.equal(run("approve", "tickets", "approved").status, 0, "the bold form is a ticket too");
+  assert.equal(run("done", "tickets").status, 0, "the bold form is a ticket too");
   const before = read(s, "01-export-endpoint");
   const r = run("ticket", "01", "in-progress");
   assert.equal(r.status, 0, r.stderr);
@@ -122,8 +128,7 @@ test("ticket <NN> <status> rewrites only that ticket's Status line, bold or not,
 });
 
 test("next-ticket lists the started tickets, then starts takeable ones while fewer than parallel_tickets (2) are started, then DONE once all are done, else BLOCKED with what each open one waits on", () => {
-  const { run } = atTicketGate({ "01-export-endpoint": "none", "02-export-button": "01", "03-file-name": "none", "04-empty-state": "2, #3", "05-help-text": "none" });
-  assert.equal(run("approve", "tickets", "approved").status, 0);
+  const { run } = ticketsDone({ "01-export-endpoint": "none", "02-export-button": "01", "03-file-name": "none", "04-empty-state": "2, #3", "05-help-text": "none" });
   const next = () => { const r = run("next-ticket"); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
   assert.equal(next(), "NEXT 01-export-endpoint\nNEXT 03-file-name\nWAIT 05-help-text: parallel_tickets is 2", "two at once, in order");
   run("ticket", "03", "in-progress");
@@ -142,8 +147,7 @@ test("next-ticket lists the started tickets, then starts takeable ones while few
   run("ticket", "04", "done");
   assert.equal(next(), "DONE");
 
-  const one = atTicketGate({ "01-export-endpoint": "none", "02-file-name": "none" }, { parallel_tickets: 1 });
-  assert.equal(one.run("approve", "tickets", "approved").status, 0);
+  const one = ticketsDone({ "01-export-endpoint": "none", "02-file-name": "none" }, { parallel_tickets: 1 });
   assert.equal(one.run("next-ticket").stdout.trim(), "NEXT 01-export-endpoint\nWAIT 02-file-name: parallel_tickets is 1", "one at a time when the config says so");
 });
 
@@ -155,8 +159,7 @@ const plan = (s, n, files) => {
 };
 
 test("two tickets whose plans' code maps share a file never run at once, the one implementing or else planned first going on, and a manifest or lockfile counts as every one", () => {
-  const { s, run } = atTicketGate({ "01-export-endpoint": "none", "02-export-button": "none", "03-file-name": "none", "04-help-text": "none" });
-  assert.equal(run("approve", "tickets", "approved").status, 0);
+  const { s, run } = ticketsDone({ "01-export-endpoint": "none", "02-export-button": "none", "03-file-name": "none", "04-help-text": "none" });
   const next = () => run("next-ticket").stdout.trim();
   const planned = (n, files) => { run("dispatch", `plan:${n}`); plan(s, n, files); run("done", `plan:${n}`); };  // as the orchestrator plans one
   for (const n of ["01", "02"]) run("ticket", n, "in-progress");
@@ -190,8 +193,9 @@ test("two tickets whose plans' code maps share a file never run at once, the one
   assert.equal(next(), "STARTED 01-export-endpoint\nSTARTED 04-help-text");
 });
 
-test("the ticket gate refuses tickets the frontier can't order: a missing Status or Blocked by line, a shared number, or a wait on a later ticket", () => {
+test("done tickets refuses tickets the frontier can't order, a cycle, a missing Status or Blocked by line, a shared number or a wait on a later ticket, and marks nothing done", () => {
   for (const [why, write, problem] of [
+    ["a cycle", (s) => cut(s, { "01-endpoint": "02", "02-button": "01" }), /01-endpoint waits on 02, which doesn't come before it/],
     ["a later blocker", (s) => cut(s, { "01-endpoint": "none", "02-button": "03", "03-name": "none" }), /02-button waits on 03/],
     ["a missing blocker", (s) => cut(s, { "01-endpoint": "none", "02-button": "05" }), /02-button waits on 05/],
     ["a shared number", (s) => cut(s, { "01-endpoint": "none", "01-button": "none" }), /01-button shares its number/],
@@ -201,10 +205,11 @@ test("the ticket gate refuses tickets the frontier can't order: a missing Status
     const { s, run } = specApproved();
     run("dispatch", "tickets");
     write(s);
-    run("done", "tickets");
-    const r = run("approve", "tickets", "approved");
+    const r = run("done", "tickets");
     assert.equal(r.status, 2, why);
-    assert.match(r.stderr, problem, why);
-    assert.equal(run("approve", "tickets", "revise").status, 0, `${why}: the human can still send them back`);
+    assert.match(r.stderr, new RegExp(`the tickets of ${s.id} need cutting again: .*${problem.source}`), why);
+    assert.ok(!JSON.parse(run("get").stdout).stages_done.includes("tickets"), `${why}: the stage isn't done`);
+    assert.equal(run("next-ticket").status, 2, `${why}: nothing is built from them`);
+    assert.equal(run("dispatch", "tickets").status, 0, `${why}: the planner cuts them again`);
   }
 });

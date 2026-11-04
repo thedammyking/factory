@@ -74,7 +74,7 @@ test("reroute switches a oneshot to build at research, on the same branch and wo
   assert.ok(!fs.existsSync(path.join(s.run_dir, "tickets")), "the oneshot's ticket is no ticket of the build");
   assert.ok(fs.existsSync(path.join(s.run_dir, "oneshot", "01-cart-total.md")) && fs.existsSync(path.join(s.run_dir, "oneshot", "01", "plan.md")), "kept beside them");
   assert.match(fs.readFileSync(path.join(s.run_dir, "run.log"), "utf8"), new RegExp(`run: ${s.id} rerouted from oneshot to build\\n`));
-  assert.equal(run("next-ticket").status, 2, "its tickets are the planner's, at the ticket gate");
+  assert.equal(run("next-ticket").status, 2, "its tickets are the planner's, checked at done tickets");
   const resumed = ok("reconcile");
   assert.match(resumed, /^done: plan:01$/m, "a stop now resumes at research: the oneshot's plan is done");
   assert.doesNotMatch(resumed, /^CONTINUE /m);

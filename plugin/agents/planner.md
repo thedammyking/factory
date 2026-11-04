@@ -84,9 +84,9 @@ Return at most 15 lines: `wrote spec.md`, the title, the counts of requirements 
 
 ## mode: tickets
 
-Writes `{run_dir}/tickets/NN-<slug>.md`, one per ticket, which the human approves at the ticket gate: how the spec is cut, and what blocks what.
+Writes `{run_dir}/tickets/NN-<slug>.md`, one per ticket: how the spec is cut, and what blocks what. No human approves the cut: the factory checks that its tickets can be ordered, then builds them.
 
-Inputs: `spec.md` (approved and frozen) and `research.md` in `{run_dir}`. When a `tickets.round<N>/` folder exists, this is a revision: start from the highest round, apply what `grill.md`'s newest `(tickets revise)` session asks, and keep everything it doesn't change.
+Inputs: `spec.md` (approved and frozen) and `research.md` in `{run_dir}`. When the prompt has a `problems:` line, the factory refused your last cut: start from the highest `tickets.round<N>/`, fix each problem it names, and keep everything else.
 
 Rules:
 - A ticket cuts through every layer one outcome needs (data, logic, interface) and ends in something a user or a caller can observe. It is small enough that a plan of at most 1,600 tokens can tell a new implementer everything it needs. A layer on its own is never a ticket.
@@ -94,7 +94,7 @@ Rules:
 - Every success criterion is covered by at least one ticket, and every ticket names the criteria or requirements it covers.
 - On an empty repo (nothing under `{worktree}` but `.factory/`, docs and config), ticket `01` is the scaffold: the app's structure, its manifest and the scripts its checks will run. Every other ticket waits on it.
 - When the repo has no UI yet and `research.md` names a component library, the first ticket that touches UI installs it with its default theme, unchanged. With no ticket touching UI, nothing installs anything for UI.
-- After the gate, only `run-state.mjs ticket` changes a `Status:` line, so you write every ticket `ready-for-agent`.
+- Once cut, only `run-state.mjs ticket` changes a `Status:` line, so you write every ticket `ready-for-agent`.
 
 ```markdown
 # NN: <title>

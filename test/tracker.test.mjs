@@ -285,14 +285,14 @@ test("the closing comment waits for a clean snapshot: one that stops on a secret
   assert.match(history(t, ".factory/log.md"), new RegExp(`run: ${s.id} commented on #12`), "the next snapshot keeps the comment's log line");
 });
 
-test("a run at its spec or ticket gate is mid-run and comments nothing; another stop's comment shows the home directory as ~", () => {
+test("a run at its spec gate, or asked whether to cut its tickets again, is mid-run and comments nothing; another stop's comment shows the home directory as ~", () => {
   const t = setup(), s = started(t, "#12");
   routed(t, s);
-  for (const gate of ["spec-gate", "ticket-gate"]) {
-    write(s.run_dir, { [`attention-${gate}.md`]: HOLD.replace(/^# .*/, `# Approve the ${gate}`) });
+  for (const item of ["spec-gate", "tickets-cut"]) {
+    write(s.run_dir, { [`attention-${item}.md`]: HOLD.replace(/^# .*/, `# Decide at ${item}`) });
     ok(t, s, ["set", "stage", "needs-human"]);
     assert.equal(snapshot(t, s).status, 0);
-    assert.match(ok(t, s, ["comment"]), /^skip: a run at its gate hasn't ended$/, gate);
+    assert.match(ok(t, s, ["comment"]), /^skip: a run waiting on a decision in session hasn't ended$/, item);
   }
   assert.ok(!fs.existsSync(path.join(s.run_dir, "issue-comment.md")));
   const plugin = path.join(os.homedir(), ".claude/plugins/factory/scripts/run-state.mjs");

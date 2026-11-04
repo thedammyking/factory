@@ -67,7 +67,7 @@ function adding(t, p, ms) {
   return new Promise((resolve) => c.on("close", resolve));
 }
 
-// Build run `s` (as init printed it) past the ticket gate, with each of `tickets` (NN -> the files its child commits,
+// Build run `s` (as init printed it) past done tickets, with each of `tickets` (NN -> the files its child commits,
 // which its plan's code map lists, unless `map` names others) in progress and planned.
 function planned(x, s, tickets, map = {}) {
   const run = (...args) => { const r = x.node("run-state.mjs", [...args, "--run", s.id]); assert.equal(r.status, 0, `${args.join(" ")}: ${r.stderr}${r.stdout}`); return r; };
@@ -81,7 +81,6 @@ function planned(x, s, tickets, map = {}) {
   fs.mkdirSync(path.join(s.run_dir, "tickets"));
   for (const n of Object.keys(tickets)) fs.writeFileSync(path.join(s.run_dir, "tickets", `${n}-part.md`), `# ${n}: part\n\nStatus: ready-for-agent\nBlocked by: none\n`);
   run("done", "tickets");
-  run("approve", "tickets", "approved");
   for (const [n, files] of Object.entries(tickets)) {
     run("ticket", n, "in-progress");
     run("dispatch", `plan:${n}`);

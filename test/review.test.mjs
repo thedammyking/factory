@@ -34,7 +34,7 @@ console.log(JSON.stringify({ type: "result", subtype: "success", session_id: ses
 const RECIPE = { apps: [{ name: "app", type: "backend", path: ".", checks: { test: "test ! -f broken.js" } }] };
 const SPEC = "---\nsurface: operate\n---\n\n# Orders\n\n## Success criteria\n- **SC-001** (profile: default, live-safe: yes): `/orders` lists the orders.\n";
 
-// A build run on a throwaway project past its ticket gate, its one ticket done and merged into the run branch as the
+// A build run on a throwaway project past done tickets, its one ticket done and merged into the run branch as the
 // commit that adds src/a.js and src/b.js. node(script, args) runs a plugin script from the main checkout with the fake
 // claude first on PATH, playing the steps play() sets; every fake child is killed after the test, pass or fail.
 function reviewReady(t) {
@@ -60,7 +60,6 @@ function reviewReady(t) {
   run("dispatch", "tickets");
   write(s.run_dir, { "tickets/01-orders.md": "# 01: Orders\n\nStatus: ready-for-agent\nBlocked by: none\n" });
   run("done", "tickets");
-  run("approve", "tickets", "approved");
   run("ticket", "01", "done");
   write(s.worktree, { "src/a.js": "export const a = 1;\n", "src/b.js": "export const b = 2;\n" });
   git(s.worktree, "add", "src"); git(s.worktree, "commit", "-qm", "Add the orders page");
