@@ -92,3 +92,5 @@ On the same version and date:
 - `implementer-red-pinned` lost `committed` in 2 of 3 runs, and `qa-wrong-value` lost `records-fail` in every run: the git failure and fact 2 above. The scaffolds now point the shell at the real git, and `records-fail` is gone.
 
 The second run, with those fixes, cost $2.39. Twelve cases scored 1 in every run, `implementer-red-pinned` and `qa-wrong-value` among them. `retro-repeated-failure` missed `proposes-lesson` in 1 of 3 runs, after 3 of 3 in the first run, and that run's workspace wasn't kept. Fifteen more runs with `--keep-temp` all passed, each lesson line naming cents, `Math.round` or `applyRate`, so the miss, 1 in 21 runs, wasn't reproduced and its cause isn't known. The next release run that misses it should keep its workspaces.
+
+The third run, with `--keep-temp`, cost $2.32, and all thirteen cases scored 1 in every run. It is the committed `evals/results/0.1.0/aggregate-result.json`.

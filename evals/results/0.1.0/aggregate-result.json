@@ -1,0 +1,2388 @@
+{
+  "schemaVersion": 1,
+  "claudeVersion": "2.1.317",
+  "startedAt": "2026-11-04T09:48:01.184Z",
+  "durationSeconds": 289,
+  "costUsd": 2.32240618,
+  "partial": false,
+  "suite": {
+    "root": "/Users/oluwadamilola/Workspace/Personal/factory",
+    "ablation": "none",
+    "modelOverride": "claude-haiku-5-5",
+    "judgeModel": "claude-haiku-5-5",
+    "threshold": 1,
+    "concurrency": 4,
+    "plugins": [
+      {
+        "name": "factory",
+        "path": "/Users/oluwadamilola/Workspace/Personal/factory/plugin"
+      }
+    ]
+  },
+  "cases": [
+    {
+      "name": "builder-check-uncheckable",
+      "dir": "evals/builder-check-uncheckable",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:builder-check agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: HEAD\n\nThen reply with every line the agent returned, exactly as it returned them, and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 600,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:builder-check"
+          }
+        },
+        {
+          "name": "file-names-sc-003",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/builder-check.md"
+            },
+            "pattern": "\\*\\*SC-003\\*\\*",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "names-sc-003",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": "last_message",
+            "pattern": "SC-003",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.026856539999999995,
+            "judgeCostUsd": 0,
+            "durationSeconds": 20,
+            "startedAt": "2026-11-04T09:48:01.239Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-f3BUHO/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "file-names-sc-003",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \\*\\*SC-003\\*\\*",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "names-sc-003",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched SC-003",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.03000542,
+            "judgeCostUsd": 0,
+            "durationSeconds": 19,
+            "startedAt": "2026-11-04T09:48:01.239Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-NjoToh/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "file-names-sc-003",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \\*\\*SC-003\\*\\*",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "names-sc-003",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched SC-003",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.02765099,
+            "judgeCostUsd": 0,
+            "durationSeconds": 23,
+            "startedAt": "2026-11-04T09:48:01.239Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-IKgmq5/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "file-names-sc-003",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \\*\\*SC-003\\*\\*",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "names-sc-003",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched SC-003",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "implementer-red-pinned",
+      "dir": "evals/implementer-red-pinned",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:implementer agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/worktrees/r1/.factory/runs/r1\nworktree: .factory/worktrees/r1-01\nticket: 01-csv-of-matching-rows\nplan: .factory/worktrees/r1/.factory/runs/r1/tickets/01/plan.md\nimplementation: .factory/worktrees/r1/.factory/runs/r1/tickets/01/implementation.md\n\nImplement the plan.\n\nThen run this with Bash, exactly as written, and reply with its output and nothing else:\n\n(cd .factory/worktrees/r1-01 && node --test --test-reporter=tap) > test-run.txt 2>&1; tail -n 8 test-run.txt",
+      "runsPerCase": 3,
+      "timeoutSeconds": 1800,
+      "maxTurns": 15,
+      "graders": [
+        {
+          "name": "committed",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".git/logs/refs/heads/factory/r1/01"
+            },
+            "pattern": "\\tcommit: ",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:implementer"
+          }
+        },
+        {
+          "name": "pinned-not-edited",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Edit",
+            "input_match": "e2e/r1-01-csv-export",
+            "min": 0,
+            "max": 0
+          }
+        },
+        {
+          "name": "pinned-not-written",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Write",
+            "input_match": "e2e/r1-01-csv-export",
+            "min": 0,
+            "max": 0
+          }
+        },
+        {
+          "name": "pinned-passes",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": "test-run.txt"
+            },
+            "pattern": "^ok \\d+ - \\[r1\\] SC-001",
+            "flags": "m",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "pinned-unchanged",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/worktrees/r1-01/e2e/r1-01-csv-export.test.mjs"
+            },
+            "pattern": "^// Pinned by the factory from \\.factory/history/r1/spec\\.md, SC-001\\.\\nimport \\{ test \\} from \"node:test\";\\nimport assert from \"node:assert/strict\";\\nimport \\{ reportsCsv \\} from \"\\.\\./src/reports\\.js\";\\n\\nconst rows = Array\\.from\\(\\{ length: 120 \\}, \\(_, i\\) => \\(\\{ date: \"2026-11-01\", account: `A-\\$\\{i\\}`, amount: i, status: i % 2 \\? \"paid\" : \"open\" \\}\\)\\);\\n\\ntest\\(\"\\[r1\\] SC-001: exporting with the status filter paid gives a header line and 60 data lines, each ending ,paid\", \\(\\) => \\{\\n  const lines = reportsCsv\\(rows, \\{ status: \"paid\" \\}\\)\\.trimEnd\\(\\)\\.split\\(\"\\\\n\"\\);\\n  assert\\.equal\\(lines\\[0\\], \"date,account,amount,status\"\\);\\n  assert\\.equal\\(lines\\.length, 61\\);\\n  assert\\.ok\\(lines\\.slice\\(1\\)\\.every\\(\\(line\\) => line\\.endsWith\\(\",paid\"\\)\\)\\);\\n\\}\\);\\n$",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "tests-pass",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": "test-run.txt"
+            },
+            "pattern": "^# fail 0$",
+            "flags": "m",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 3,
+            "costUsd": 0.07120491999999999,
+            "judgeCostUsd": 0,
+            "durationSeconds": 37,
+            "startedAt": "2026-11-04T09:48:01.240Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-ENAqmb/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "committed",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \\tcommit: ",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-not-edited",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Edit called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-not-written",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Write called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-passes",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^ok \\d+ - \\[r1\\] SC-001",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-unchanged",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^// Pinned by the factory from \\.factory/history/r1/spec\\.md, SC-001\\.\\nimport \\{ test \\} from \"node:test\";\\nimport assert from \"node:assert/strict\";\\nimport \\{ reportsCsv \\} from \"\\.\\./src/reports\\.js\";\\n\\nconst rows = Array\\.from\\(\\{ length: 120 \\}, \\(_, i\\) => \\(\\{ date: \"2026-11-01\", account: `A-\\$\\{i\\}`, amount: i, status: i % 2 \\? \"paid\" : \"open\" \\}\\)\\);\\n\\ntest\\(\"\\[r1\\] SC-001: exporting with the status filter paid gives a header line and 60 data lines, each ending ,paid\", \\(\\) => \\{\\n  const lines = reportsCsv\\(rows, \\{ status: \"paid\" \\}\\)\\.trimEnd\\(\\)\\.split\\(\"\\\\n\"\\);\\n  assert\\.equal\\(lines\\[0\\], \"date,account,amount,status\"\\);\\n  assert\\.equal\\(lines\\.length, 61\\);\\n  assert\\.ok\\(lines\\.slice\\(1\\)\\.every\\(\\(line\\) => line\\.endsWith\\(\",paid\"\\)\\)\\);\\n\\}\\);\\n$",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "tests-pass",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^# fail 0$",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 3,
+            "costUsd": 0.05687646,
+            "judgeCostUsd": 0,
+            "durationSeconds": 31,
+            "startedAt": "2026-11-04T09:48:20.636Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-LdOpOs/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "committed",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \\tcommit: ",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-not-edited",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Edit called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-not-written",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Write called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-passes",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^ok \\d+ - \\[r1\\] SC-001",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-unchanged",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^// Pinned by the factory from \\.factory/history/r1/spec\\.md, SC-001\\.\\nimport \\{ test \\} from \"node:test\";\\nimport assert from \"node:assert/strict\";\\nimport \\{ reportsCsv \\} from \"\\.\\./src/reports\\.js\";\\n\\nconst rows = Array\\.from\\(\\{ length: 120 \\}, \\(_, i\\) => \\(\\{ date: \"2026-11-01\", account: `A-\\$\\{i\\}`, amount: i, status: i % 2 \\? \"paid\" : \"open\" \\}\\)\\);\\n\\ntest\\(\"\\[r1\\] SC-001: exporting with the status filter paid gives a header line and 60 data lines, each ending ,paid\", \\(\\) => \\{\\n  const lines = reportsCsv\\(rows, \\{ status: \"paid\" \\}\\)\\.trimEnd\\(\\)\\.split\\(\"\\\\n\"\\);\\n  assert\\.equal\\(lines\\[0\\], \"date,account,amount,status\"\\);\\n  assert\\.equal\\(lines\\.length, 61\\);\\n  assert\\.ok\\(lines\\.slice\\(1\\)\\.every\\(\\(line\\) => line\\.endsWith\\(\",paid\"\\)\\)\\);\\n\\}\\);\\n$",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "tests-pass",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^# fail 0$",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 3,
+            "costUsd": 0.058456200000000014,
+            "judgeCostUsd": 0,
+            "durationSeconds": 33,
+            "startedAt": "2026-11-04T09:48:21.465Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-a3JJKK/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "committed",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \\tcommit: ",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-not-edited",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Edit called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-not-written",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Write called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-passes",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^ok \\d+ - \\[r1\\] SC-001",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-unchanged",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^// Pinned by the factory from \\.factory/history/r1/spec\\.md, SC-001\\.\\nimport \\{ test \\} from \"node:test\";\\nimport assert from \"node:assert/strict\";\\nimport \\{ reportsCsv \\} from \"\\.\\./src/reports\\.js\";\\n\\nconst rows = Array\\.from\\(\\{ length: 120 \\}, \\(_, i\\) => \\(\\{ date: \"2026-11-01\", account: `A-\\$\\{i\\}`, amount: i, status: i % 2 \\? \"paid\" : \"open\" \\}\\)\\);\\n\\ntest\\(\"\\[r1\\] SC-001: exporting with the status filter paid gives a header line and 60 data lines, each ending ,paid\", \\(\\) => \\{\\n  const lines = reportsCsv\\(rows, \\{ status: \"paid\" \\}\\)\\.trimEnd\\(\\)\\.split\\(\"\\\\n\"\\);\\n  assert\\.equal\\(lines\\[0\\], \"date,account,amount,status\"\\);\\n  assert\\.equal\\(lines\\.length, 61\\);\\n  assert\\.ok\\(lines\\.slice\\(1\\)\\.every\\(\\(line\\) => line\\.endsWith\\(\",paid\"\\)\\)\\);\\n\\}\\);\\n$",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "tests-pass",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^# fail 0$",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "planner-plan-test-first",
+      "dir": "evals/planner-plan-test-first",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:planner agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: HEAD\nmode: plan\nticket: 01-csv-of-matching-rows\n\nThen reply with every line the agent returned, exactly as it returned them, and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 900,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:planner"
+          }
+        },
+        {
+          "name": "failing-test-first",
+          "type": "llm",
+          "weight": 1,
+          "graderMarkdown": "The text is an implementation plan for one ticket.\n\nPASS if, in its tasks, a test of the new behaviour is written and run, and fails, before the code that makes it pass is changed.\nFAIL if a task changes the code before any test of it is written, if no task names a test, or if the plan never says the test fails first.",
+          "config": {
+            "criteria": "The text is an implementation plan for one ticket.\n\nPASS if, in its tasks, a test of the new behaviour is written and run, and fails, before the code that makes it pass is changed.\nFAIL if a task changes the code before any test of it is written, if no task names a test, or if the plan never says the test fails first.",
+            "focus": {
+              "source": "file",
+              "path": ".factory/runs/r1/tickets/01/plan.md"
+            }
+          }
+        },
+        {
+          "name": "names-real-path",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/tickets/01/plan.md"
+            },
+            "pattern": "src/reports\\.js|test/reports\\.test\\.js",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "plan-exists",
+          "type": "file_exists",
+          "weight": 1,
+          "config": {
+            "path": ".factory/runs/r1/tickets/01/plan.md",
+            "exists": true
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.16005579,
+            "judgeCostUsd": 0.0008433,
+            "durationSeconds": 47,
+            "startedAt": "2026-11-04T09:48:24.494Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-nMHeVC/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "failing-test-first",
+                "passed": true,
+                "weight": 1,
+                "explanation": "judge votes: PASS PASS PASS",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  true,
+                  true,
+                  true
+                ],
+                "evidence": "---\nstatus: ready\nticket: 01-csv-of-matching-rows\ncontext:\n  - src/reports.js\n  - test/reports.test.js\n  - package.json\n---\n\n# Plan 01: CSV of every matching row\n\n<frozen-after-approval>\nFinance staff reconcile the monthly reports by copying the reports table by hand. They get a CSV of exactly the rows their filters match, so reconciling takes minutes instead of an hour.\n</frozen-after-approval>\n\n## Code map\n- `src/reports.js` (change): pull the status filter out of `reportRows` into an exported `matchingRows(rows, { status })`, have `reportRows` page its result, and add the exported `reportsCsv(rows, { status })`.\n- `test/reports-csv.test.js` (create): unit tests for `matchingRows` and `reportsCsv`.\n\nNo new dependency. `test/reports.test.js` is not edited: it must keep passing unchanged, which proves the table's paging didn't move.\n\n## Interfaces\n- Consumes: `reportRows(rows, { status, page = 1, perPage = 50 } = {})` at `src/reports.js:1`, whose filter is `status ? rows.filter((r) => r.status === status) : rows` at `src/reports.js:2`. A row is `{ date, account, amount, status }` (see `test/reports.test.js:5`).\n- Produces:\n  - `matchingRows(rows, { status } = {})` → array: every row whose `status` equals `status`, in input order. With no `status`, every row. No paging. `reportRows` must call this, so the table and the export share one filter (the spec's implementation decision).\n  - `reportsCsv(rows, { status } = {})` → string: the CSV of `matchingRows(rows, { status })`. Ticket 02 will import it from `src/reports.js` for the download.\n\n## CSV format (exact)\n- First line: `date,account,amount,status` (FR-002).\n- Then one line per matching row, in input order, fields in the order date, account, amount, status (FR-001). Each value is `String(value)`; `null`/`undefined` becomes the empty string.\n- A field containing `,`, `\"`, `\\r` or `\\n` is wrapped in double quotes, with each `\"` inside doubled (RFC 4180). Any other field is written bare. This answers research's risk of an account name holding a comma.\n- Lines are separated by `\\n`, and the text ends with a single `\\n`. So `csv.split(\"\\n\")` gives the header, the data lines, then one empty string.\n- No matching rows: the text is just `date,account,amount,status\\n`.\n\n## Tasks\nWrite `test/reports-csv.test.js` first, building the same 120-row fixture as `test/reports.test.js:5` (odd `i` are `paid`, even are `open`). Import `{ matchingRows, reportsCsv }` from `../src/reports.js`. Run `node --test`, and see the new tests fail because the exports don't exist yet. Only then change `src/reports.js`.\n\n1. **Given** the 120 rows **When** `matchingRows(rows, { status: \"paid\" })` is called **Then** it returns 60 rows, all `paid`, in the input order (the first is `A-1`, the last `A-119`). Also, with no status it returns all 120. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n2. **Given** `reportRows` now delegates to `matchingRows` **When** `node --test` runs **Then** the existing `reportRows pages the matching rows` test in `test/reports.test.js` still passes (50, then 10). Test: the existing `test/reports.test.js`, unchanged.\n3. **Given** the 120 rows **When** `reportsCsv(rows, { status: \"paid\" })` is called **Then** it ends with `\\n`. Then, split on `\\n` with the trailing empty string dropped, it gives 61 lines: line 0 is `date,account,amount,status`, and each of the 60 others ends with `,paid`. Line 1 is `2026-11-01,A-1,1,paid` and line 60 is `2026-11-01,A-119,119,paid`. This is SC-001, FR-001 and FR-002. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n4. **Given** the rows `{ date: \"2026-11-02\", account: \"Acme, Inc.\", amount: 5, status: \"paid\" }` and `{ date: \"2026-11-03\", account: 'Say \"hi\"', amount: 6, status: \"paid\" }` **When** `reportsCsv` is called with `{ status: \"paid\" }` **Then** the data lines are exactly `2026-11-02,\"Acme, Inc.\",5,paid` and `2026-11-03,\"Say \"\"hi\"\"\",6,paid`. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n5. **Given** the 120 rows **When** `reportsCsv(rows, { status: \"void\" })` is called **Then** it returns exactly `date,account,amount,status\\n`. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n\n## Verification\n- `node --test` → exit code 0. All tests in `test/reports.test.js` and `test/reports-csv.test.js` pass, and none are skipped or fail.\n\n## Open questions\n- none\n"
+              },
+              {
+                "name": "names-real-path",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched src/reports\\.js|test/reports\\.test\\.js",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "plan-exists",
+                "passed": true,
+                "weight": 1,
+                "explanation": ".factory/runs/r1/tickets/01/plan.md exists as expected",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.13612921,
+            "judgeCostUsd": 0.0006920999999999997,
+            "durationSeconds": 49,
+            "startedAt": "2026-11-04T09:48:38.164Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-fQC3LO/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "failing-test-first",
+                "passed": true,
+                "weight": 1,
+                "explanation": "judge votes: PASS PASS PASS",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  true,
+                  true,
+                  true
+                ],
+                "evidence": "---\nstatus: ready\nticket: 01-csv-of-matching-rows\ncontext:\n  - src/reports.js\n  - test/reports.test.js\n  - package.json\n---\n\n# Plan 01: CSV of every matching row\n\n<frozen-after-approval>\nFinance staff reconcile the monthly reports by copying the reports table by hand. They get a CSV of exactly the rows their filters match, so reconciling takes minutes instead of an hour.\n</frozen-after-approval>\n\n## Code map\n- `src/reports.js` (change): extract the status filter into an exported `matchingRows(rows, { status })`, make `reportRows` page over it, and add the exported `reportsCsv(rows, { status })`.\n- `test/reports-csv.test.js` (create): unit tests for `reportsCsv` and `matchingRows`.\n\nNo new dependency. `package.json` is unchanged.\n\n## Interfaces\n- Consumes: `reportRows(rows, { status, page = 1, perPage = 50 } = {})` at `src/reports.js:1`. Today it filters by `r.status === status` when `status` is truthy (all rows otherwise), then slices one page. Each row has the shape `{ date, account, amount, status }` (see the fixture at `test/reports.test.js:5`).\n- Produces:\n  - `matchingRows(rows, { status } = {})` → the array of rows the table's filter matches, in input order, with no paging. `reportRows` must call it, so the table and the export share one filter (spec: \"The CSV is built from the same filter the table uses\").\n  - `reportsCsv(rows, { status } = {})` → a string. Ticket 02 serves this string as the download.\n\n## CSV format (fixed by this plan)\n- Line 1 is exactly `date,account,amount,status` (FR-002).\n- Then one line for each row of `matchingRows(rows, { status })`, in that order, with the fields `date,account,amount,status` in that order (FR-001). Never page or truncate. The spec's anti-goal is an export that drops the rows past the first page.\n- Lines are joined with `\\n`, and there is no trailing newline. So `csv.split(\"\\n\")` gives exactly 1 + N elements.\n- Each field is converted with `String(value)`. `null`/`undefined` become the empty string.\n- Escaping (RFC 4180, from the research risk \"an account name holding a comma\"): a field that contains `,`, `\"`, `\\r` or `\\n` is wrapped in double quotes, and each `\"` inside it is doubled. Any other field is written as it is. So `paid` stays `paid` and lines still end `,paid`.\n- With no matching rows, the result is the header line alone.\n\n## Tasks\n1. **Given** the 120-row fixture (60 rows `paid`, 60 `open`, the same as `test/reports.test.js:5`) **When** `reportsCsv(rows, { status: \"paid\" })` is called **Then** splitting on `\\n` gives 61 lines. Line 0 is `date,account,amount,status`, and each of the 60 data lines ends with `,paid`. The data lines follow input order: the first is `2026-11-01,A-1,1,paid` and the last is `2026-11-01,A-119,119,paid` (SC-001, FR-001, FR-002). Test first: `test/reports-csv.test.js`, failing (the import of `reportsCsv` is missing) before `src/reports.js` changes.\n2. **Given** the same fixture **When** `reportsCsv(rows)` is called with no status **Then** it has 121 lines, which proves that nothing is paged at 50. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n3. **Given** a row `{ date: \"2026-11-02\", account: \"Smith, \\\"J\\\"\", amount: 5, status: \"paid\" }` **When** `reportsCsv([row], { status: \"paid\" })` is called **Then** line 1 is `2026-11-02,\"Smith, \"\"J\"\"\",5,paid`. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n4. **Given** rows of which none has the status `void` **When** `reportsCsv(rows, { status: \"void\" })` is called **Then** the result is exactly `date,account,amount,status`. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n5. **Given** the fixture **When** `matchingRows(rows, { status: \"paid\" })` is called **Then** it returns 60 rows, every one `paid`. The existing test `reportRows pages the matching rows` in `test/reports.test.js` still passes unchanged (50, then 10). Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes. Then refactor `reportRows` to slice `matchingRows(...)` and rerun the whole suite.\n\nWrite all the tests in `test/reports-csv.test.js` first, run `node --test` and watch them fail, then change `src/reports.js`. Don't edit `test/reports.test.js`. Nothing goes under `e2e/` (pinned).\n\n## Verification\n- `node --test` → every test passes, `reportRows pages the matching rows` included, and the new file shows 5 passing tests (or more) with 0 failures.\n- `node -e 'import(\"./src/reports.js\").then(m=>console.log(typeof m.reportsCsv, typeof m.matchingRows))'` → prints `function function`.\n\n## Open questions\n- none\n"
+              },
+              {
+                "name": "names-real-path",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched src/reports\\.js|test/reports\\.test\\.js",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "plan-exists",
+                "passed": true,
+                "weight": 1,
+                "explanation": ".factory/runs/r1/tickets/01/plan.md exists as expected",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.129617,
+            "judgeCostUsd": 0.0008682,
+            "durationSeconds": 48,
+            "startedAt": "2026-11-04T09:48:52.057Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-LYaTEG/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "failing-test-first",
+                "passed": true,
+                "weight": 1,
+                "explanation": "judge votes: PASS PASS PASS",
+                "withOnly": false,
+                "scored": true,
+                "judgeVotes": [
+                  true,
+                  true,
+                  true
+                ],
+                "evidence": "---\nstatus: ready\nticket: 01-csv-of-matching-rows\ncontext:\n  - src/reports.js\n  - test/reports.test.js\n  - package.json\n---\n\n# Plan 01: CSV of every matching row\n\n<frozen-after-approval>\nFinance staff reconcile the monthly reports by copying the reports table by hand. They get a CSV of exactly the rows their filters match, so reconciling takes minutes instead of an hour.\n</frozen-after-approval>\n\n## Code map\n- `src/reports.js` (change): pull the status filter out of `reportRows` into one function used by both `reportRows` and a new exported `reportsCsv(rows, { status })`, which applies that filter with no paging and returns the CSV text.\n- `test/reports-csv.test.js` (create): unit tests for `reportsCsv`, run by `node --test`.\n\nNo new dependency. `package.json` and the existing `test/reports.test.js` stay unchanged.\n\n## Interfaces\n- Consumes: `reportRows(rows, { status, page = 1, perPage = 50 } = {})` at `src/reports.js:1`, whose filter (`status ? rows.filter((r) => r.status === status) : rows`, `src/reports.js:2`) is the table's filter. Rows are objects `{ date, account, amount, status }`, as built in `test/reports.test.js:5`.\n- Produces: `export function reportsCsv(rows, { status } = {})` in `src/reports.js`, returning a string. Ticket 02 imports it from `src/reports.js` and serves the string as the download.\n\n## Format of the CSV\n- First line is exactly `date,account,amount,status` (FR-002).\n- Then one line per matching row, in the input order (the table's order), the fields in the order date, account, amount, status (FR-001).\n- Lines are joined with `\\n`. There is no trailing newline, so `csv.split(\"\\n\")` gives the header plus one entry per row.\n- Each field is turned into a string with `String(value)`. A `null` or `undefined` field becomes an empty string.\n- Quoting follows RFC 4180, because an account name can hold a comma (research risk). A field that contains `,`, `\"`, `\\r` or `\\n` is wrapped in double quotes, with each `\"` inside it doubled. All other fields are written unquoted, so `paid` stays `paid`.\n- With no `status`, every row is exported, the same as `reportRows`.\n\n## Tasks\nWrite `test/reports-csv.test.js` first. Build the same 120-row fixture as `test/reports.test.js:5` (60 `paid`, 60 `open`) and import `reportsCsv` from `../src/reports.js`. Run `node --test` and see the new tests fail, because `reportsCsv` is not exported yet. Then change `src/reports.js`.\n\n1. **Given** the 120 rows, 60 of them `paid`, **When** `reportsCsv(rows, { status: \"paid\" })` is called, **Then** splitting the result on `\"\\n\"` gives 61 lines. The first is `date,account,amount,status`. Each of the other 60 ends with `,paid`. Covers SC-001, FR-001, FR-002. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n2. **Given** the same rows, **When** `reportsCsv(rows, { status: \"paid\" })` is called, **Then** the data lines, in order, equal the matching rows formatted `date,account,amount,status` (for example, the first is `2026-11-01,A-1,1,paid` and the last is `2026-11-01,A-119,119,paid`). This proves the export reaches past the first page of 50 and keeps the table's order. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n3. **Given** the same rows, **When** `reportsCsv(rows)` is called with no status, **Then** there are 121 lines. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n4. **Given** one row `{ date: \"2026-11-01\", account: \"Acme, Inc. \\\"EU\\\"\", amount: 5, status: \"paid\" }`, **When** `reportsCsv([row], {})` is called, **Then** its data line is `2026-11-01,\"Acme, Inc. \"\"EU\"\"\",5,paid`. Test first: `test/reports-csv.test.js`, failing before `src/reports.js` changes.\n5. **Given** the shared filter is pulled out of `reportRows`, **When** the existing suite runs, **Then** `test/reports.test.js` still passes: 50 rows on page 1 and 10 on page 2 for `paid`. This needs no new test. The existing one proves it.\n\n## Verification\n- `node --test` → every test passes, including the existing `reportRows pages the matching rows` and the four new `reportsCsv` tests, with 0 failures.\n- `node -e 'import(\"./src/reports.js\").then(m => console.log(typeof m.reportsCsv, typeof m.reportRows))'` → prints `function function`.\n\n## Open questions\n- none\n"
+              },
+              {
+                "name": "names-real-path",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched src/reports\\.js|test/reports\\.test\\.js",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "plan-exists",
+                "passed": true,
+                "weight": 1,
+                "explanation": ".factory/runs/r1/tickets/01/plan.md exists as expected",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "qa-wrong-value",
+      "dir": "evals/qa-wrong-value",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:qa agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/worktrees/r1/.factory/runs/r1\nworktree: .factory/worktrees/r1-01\nticket: 01-cart-total\nevidence: .factory/worktrees/r1/.factory/runs/r1/tickets/01/evidence.json\n\nThen reply with every line the agent returned, exactly as it returned them, and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 1800,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:qa"
+          }
+        },
+        {
+          "name": "holds-spec-value",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/worktrees/r1-01/e2e/r1-01-cart-total.test.mjs"
+            },
+            "pattern": "^(?![^\\n]*SC-001)[^\\n]*\\b4250\\b",
+            "flags": "m",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "not-the-observed-value",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/worktrees/r1-01/e2e/r1-01-cart-total.test.mjs"
+            },
+            "pattern": "^(?![\\s\\S]*\\b2750\\b)",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "pinned-as-named",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/worktrees/r1-01/e2e/r1-01-cart-total.test.mjs"
+            },
+            "pattern": "^// Pinned by the factory from \\.factory/history/r1/spec\\.md\\.\\n[\\s\\S]*\\btest\\(\\s*[\"'`]\\[r1\\] SC-001: ",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.06736444999999999,
+            "judgeCostUsd": 0,
+            "durationSeconds": 23,
+            "startedAt": "2026-11-04T09:48:54.728Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-tNvzJn/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "holds-spec-value",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![^\\n]*SC-001)[^\\n]*\\b4250\\b",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "not-the-observed-value",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*\\b2750\\b)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-as-named",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^// Pinned by the factory from \\.factory/history/r1/spec\\.md\\.\\n[\\s\\S]*\\btest\\(\\s*[\"'`]\\[r1\\] SC-001: ",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.05372941,
+            "judgeCostUsd": 0,
+            "durationSeconds": 27,
+            "startedAt": "2026-11-04T09:49:11.383Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-Urq93O/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "holds-spec-value",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![^\\n]*SC-001)[^\\n]*\\b4250\\b",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "not-the-observed-value",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*\\b2750\\b)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-as-named",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^// Pinned by the factory from \\.factory/history/r1/spec\\.md\\.\\n[\\s\\S]*\\btest\\(\\s*[\"'`]\\[r1\\] SC-001: ",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.052823959999999996,
+            "judgeCostUsd": 0,
+            "durationSeconds": 28,
+            "startedAt": "2026-11-04T09:49:17.710Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-h82gA6/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "holds-spec-value",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![^\\n]*SC-001)[^\\n]*\\b4250\\b",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "not-the-observed-value",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*\\b2750\\b)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "pinned-as-named",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^// Pinned by the factory from \\.factory/history/r1/spec\\.md\\.\\n[\\s\\S]*\\btest\\(\\s*[\"'`]\\[r1\\] SC-001: ",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "researcher-local-doc",
+      "dir": "evals/researcher-local-doc",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:researcher agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: HEAD\n\nThen reply with the agent's first line and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 600,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "cites-doc",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/answer.md"
+            },
+            "pattern": "docs/auth\\.md",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:researcher"
+          }
+        },
+        {
+          "name": "no-web-fetch",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "WebFetch",
+            "min": 0,
+            "max": 0
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.057917289999999996,
+            "judgeCostUsd": 0,
+            "durationSeconds": 28,
+            "startedAt": "2026-11-04T09:49:27.218Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-OmbP6K/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "cites-doc",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched docs/auth\\.md",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "no-web-fetch",
+                "passed": true,
+                "weight": 1,
+                "explanation": "WebFetch called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.04130559,
+            "judgeCostUsd": 0,
+            "durationSeconds": 33,
+            "startedAt": "2026-11-04T09:49:38.062Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-5XvjMM/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "cites-doc",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched docs/auth\\.md",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "no-web-fetch",
+                "passed": true,
+                "weight": 1,
+                "explanation": "WebFetch called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.04474172,
+            "judgeCostUsd": 0,
+            "durationSeconds": 23,
+            "startedAt": "2026-11-04T09:49:40.416Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-XBqlur/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "cites-doc",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched docs/auth\\.md",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "no-web-fetch",
+                "passed": true,
+                "weight": 1,
+                "explanation": "WebFetch called 0x (expected 0..0)",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "retro-repeated-failure",
+      "dir": "evals/retro-repeated-failure",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:retro agent in the foreground with exactly this prompt, and wait for it to finish:\n\nretro: .factory/runs/retro/retro.md\nrecord: .factory/runs/retro/record.txt\nworktree: .\nbase: main\n\nThen reply with every line the agent returned, exactly as it returned them, and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 900,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:retro"
+          }
+        },
+        {
+          "name": "nothing-of-the-factory-said",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": "last_message",
+            "pattern": "^(?![\\s\\S]*(golden[ -]tasks?|\\bevals?\\b|factory('s)?( own)? (tests?|checks?)|tests? (of|for) the factory))",
+            "flags": "i",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "nothing-of-the-factory",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/retro/retro.md"
+            },
+            "pattern": "^(?![\\s\\S]*(golden[ -]tasks?|\\bevals?\\b|factory('s)?( own)? (tests?|checks?)|tests? (of|for) the factory))",
+            "flags": "i",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "proposes-lesson",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/retro/retro.md"
+            },
+            "pattern": "^## [1-3]\\. [^\\n]*\\n(?:(?!^## )[\\s\\S])*?^- kind: lesson[ \\t]*\\n(?:(?!^## )[\\s\\S])*?^```[a-z]*\\n[^\\n]*\\b(cents?|rounding|Math\\.round|applyRate|money\\.js|floats?|floating|integers?)\\b",
+            "flags": "mi",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.058890889999999994,
+            "judgeCostUsd": 0,
+            "durationSeconds": 21,
+            "startedAt": "2026-11-04T09:49:46.082Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-MsVoyJ/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "nothing-of-the-factory-said",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*(golden[ -]tasks?|\\bevals?\\b|factory('s)?( own)? (tests?|checks?)|tests? (of|for) the factory))",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "nothing-of-the-factory",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*(golden[ -]tasks?|\\bevals?\\b|factory('s)?( own)? (tests?|checks?)|tests? (of|for) the factory))",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "proposes-lesson",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^## [1-3]\\. [^\\n]*\\n(?:(?!^## )[\\s\\S])*?^- kind: lesson[ \\t]*\\n(?:(?!^## )[\\s\\S])*?^```[a-z]*\\n[^\\n]*\\b(cents?|rounding|Math\\.round|applyRate|money\\.js|floats?|floating|integers?)\\b",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.04925528999999999,
+            "judgeCostUsd": 0,
+            "durationSeconds": 28,
+            "startedAt": "2026-11-04T09:49:55.646Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-d9n6v4/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "nothing-of-the-factory-said",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*(golden[ -]tasks?|\\bevals?\\b|factory('s)?( own)? (tests?|checks?)|tests? (of|for) the factory))",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "nothing-of-the-factory",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*(golden[ -]tasks?|\\bevals?\\b|factory('s)?( own)? (tests?|checks?)|tests? (of|for) the factory))",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "proposes-lesson",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^## [1-3]\\. [^\\n]*\\n(?:(?!^## )[\\s\\S])*?^- kind: lesson[ \\t]*\\n(?:(?!^## )[\\s\\S])*?^```[a-z]*\\n[^\\n]*\\b(cents?|rounding|Math\\.round|applyRate|money\\.js|floats?|floating|integers?)\\b",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.05794013,
+            "judgeCostUsd": 0,
+            "durationSeconds": 32,
+            "startedAt": "2026-11-04T09:50:02.982Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-mydaBR/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "nothing-of-the-factory-said",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*(golden[ -]tasks?|\\bevals?\\b|factory('s)?( own)? (tests?|checks?)|tests? (of|for) the factory))",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "nothing-of-the-factory",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^(?![\\s\\S]*(golden[ -]tasks?|\\bevals?\\b|factory('s)?( own)? (tests?|checks?)|tests? (of|for) the factory))",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "proposes-lesson",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^## [1-3]\\. [^\\n]*\\n(?:(?!^## )[\\s\\S])*?^- kind: lesson[ \\t]*\\n(?:(?!^## )[\\s\\S])*?^```[a-z]*\\n[^\\n]*\\b(cents?|rounding|Math\\.round|applyRate|money\\.js|floats?|floating|integers?)\\b",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "reviewer-code-dropped-error",
+      "dir": "evals/reviewer-code-dropped-error",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:reviewer-code agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: main\n\nThen reply with every line the agent returned, exactly as it returned them, and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 900,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:reviewer-code"
+          }
+        },
+        {
+          "name": "p0-or-p1-at-checkout",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/review-code.md"
+            },
+            "pattern": "- id: code-\\d+\\n[ \\t]+severity: P[01]\\b[^\\n]*(?:\\n[ \\t]+[^\\n]*)*?\\n[ \\t]+location: [^\\n]*src/checkout\\.js",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.13570651,
+            "judgeCostUsd": 0,
+            "durationSeconds": 36,
+            "startedAt": "2026-11-04T09:50:06.602Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-dHj6zI/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "p0-or-p1-at-checkout",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: code-\\d+\\n[ \\t]+severity: P[01]\\b[^\\n]*(?:\\n[ \\t]+[^\\n]*)*?\\n[ \\t]+location: [^\\n]*src/checkout\\.js",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.10838789,
+            "judgeCostUsd": 0,
+            "durationSeconds": 35,
+            "startedAt": "2026-11-04T09:50:11.518Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-Ik6xV9/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "p0-or-p1-at-checkout",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: code-\\d+\\n[ \\t]+severity: P[01]\\b[^\\n]*(?:\\n[ \\t]+[^\\n]*)*?\\n[ \\t]+location: [^\\n]*src/checkout\\.js",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.10549771,
+            "judgeCostUsd": 0,
+            "durationSeconds": 35,
+            "startedAt": "2026-11-04T09:50:23.791Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-TQdnYt/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "p0-or-p1-at-checkout",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: code-\\d+\\n[ \\t]+severity: P[01]\\b[^\\n]*(?:\\n[ \\t]+[^\\n]*)*?\\n[ \\t]+location: [^\\n]*src/checkout\\.js",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "reviewer-security-sql-template",
+      "dir": "evals/reviewer-security-sql-template",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:reviewer-security agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: main\n\nThen reply with every line the agent returned, exactly as it returned them, and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 900,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:reviewer-security"
+          }
+        },
+        {
+          "name": "p0-or-p1-with-cwe",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/review-security.md"
+            },
+            "pattern": "- id: security-\\d+\\n[ \\t]+severity: P[01]\\b[^\\n]*(?:\\n[ \\t]+[^\\n]*)*?\\n[ \\t]+cwe: CWE-\\d+",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.04755555,
+            "judgeCostUsd": 0,
+            "durationSeconds": 36,
+            "startedAt": "2026-11-04T09:50:35.194Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-WYVKBS/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "p0-or-p1-with-cwe",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: security-\\d+\\n[ \\t]+severity: P[01]\\b[^\\n]*(?:\\n[ \\t]+[^\\n]*)*?\\n[ \\t]+cwe: CWE-\\d+",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.054209480000000004,
+            "judgeCostUsd": 0,
+            "durationSeconds": 38,
+            "startedAt": "2026-11-04T09:50:42.201Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-3biUBL/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "p0-or-p1-with-cwe",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: security-\\d+\\n[ \\t]+severity: P[01]\\b[^\\n]*(?:\\n[ \\t]+[^\\n]*)*?\\n[ \\t]+cwe: CWE-\\d+",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.0303571,
+            "judgeCostUsd": 0,
+            "durationSeconds": 17,
+            "startedAt": "2026-11-04T09:50:46.351Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-kmCjo5/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "p0-or-p1-with-cwe",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: security-\\d+\\n[ \\t]+severity: P[01]\\b[^\\n]*(?:\\n[ \\t]+[^\\n]*)*?\\n[ \\t]+cwe: CWE-\\d+",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "reviewer-ui-overflow",
+      "dir": "evals/reviewer-ui-overflow",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:reviewer-ui agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: main\n\nThen reply with every line the agent returned, exactly as it returned them, and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 900,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:reviewer-ui"
+          }
+        },
+        {
+          "name": "finding-at-390",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/review-ui.md"
+            },
+            "pattern": "- id: ui-\\d+\\n[ \\t]+severity: P[01]\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+(?:location|evidence): [^\\n]*01-invoice-390-(?:light|dark)\\.png",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "not-recapture",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/review-ui.md"
+            },
+            "pattern": "^disposition: (?:fix|rebuild)$",
+            "flags": "m",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.08219404000000001,
+            "judgeCostUsd": 0,
+            "durationSeconds": 33,
+            "startedAt": "2026-11-04T09:50:59.150Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-2392Wp/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "finding-at-390",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: ui-\\d+\\n[ \\t]+severity: P[01]\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+(?:location|evidence): [^\\n]*01-invoice-390-(?:light|dark)\\.png",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "not-recapture",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^disposition: (?:fix|rebuild)$",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.057534930000000005,
+            "judgeCostUsd": 0,
+            "durationSeconds": 40,
+            "startedAt": "2026-11-04T09:51:03.356Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-nsah4v/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "finding-at-390",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: ui-\\d+\\n[ \\t]+severity: P[01]\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+(?:location|evidence): [^\\n]*01-invoice-390-(?:light|dark)\\.png",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "not-recapture",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^disposition: (?:fix|rebuild)$",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.06415315,
+            "judgeCostUsd": 0,
+            "durationSeconds": 27,
+            "startedAt": "2026-11-04T09:51:10.819Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-NfIAT0/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "finding-at-390",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched - id: ui-\\d+\\n[ \\t]+severity: P[01]\\n(?:[ \\t]+[^\\n]*\\n)*?[ \\t]+(?:location|evidence): [^\\n]*01-invoice-390-(?:light|dark)\\.png",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "not-recapture",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched ^disposition: (?:fix|rebuild)$",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "triager-ambiguous",
+      "dir": "evals/triager-ambiguous",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:triager agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: HEAD\n\nThen reply with the agent's first line and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 600,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "contract",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/triage.md"
+            },
+            "pattern": "\"contract\"\\s*:\\s*\"NEEDS_CLARIFICATION\"",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:triager"
+          }
+        },
+        {
+          "name": "questions",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/triage.md"
+            },
+            "pattern": "\"questions\"\\s*:\\s*\\[\\s*\"(?:[^\"\\\\]|\\\\.)*\"(?:\\s*,\\s*\"(?:[^\"\\\\]|\\\\.)*\"){0,2}\\s*\\]",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "route",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/triage.md"
+            },
+            "pattern": "\"route\"\\s*:\\s*\"hold\"",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.038610160000000004,
+            "judgeCostUsd": 0,
+            "durationSeconds": 20,
+            "startedAt": "2026-11-04T09:51:19.783Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-shewqg/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "contract",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"contract\"\\s*:\\s*\"NEEDS_CLARIFICATION\"",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "questions",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"questions\"\\s*:\\s*\\[\\s*\"(?:[^\"\\\\]|\\\\.)*\"(?:\\s*,\\s*\"(?:[^\"\\\\]|\\\\.)*\"){0,2}\\s*\\]",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"hold\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.03559305000000001,
+            "judgeCostUsd": 0,
+            "durationSeconds": 24,
+            "startedAt": "2026-11-04T09:51:32.189Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-U1Gcmb/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "contract",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"contract\"\\s*:\\s*\"NEEDS_CLARIFICATION\"",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "questions",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"questions\"\\s*:\\s*\\[\\s*\"(?:[^\"\\\\]|\\\\.)*\"(?:\\s*,\\s*\"(?:[^\"\\\\]|\\\\.)*\"){0,2}\\s*\\]",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"hold\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.03662527,
+            "judgeCostUsd": 0,
+            "durationSeconds": 21,
+            "startedAt": "2026-11-04T09:51:37.955Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-iUFHZ4/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "contract",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"contract\"\\s*:\\s*\"NEEDS_CLARIFICATION\"",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "questions",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"questions\"\\s*:\\s*\\[\\s*\"(?:[^\"\\\\]|\\\\.)*\"(?:\\s*,\\s*\"(?:[^\"\\\\]|\\\\.)*\"){0,2}\\s*\\]",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"hold\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "triager-crm",
+      "dir": "evals/triager-crm",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:triager agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: HEAD\n\nThen reply with the agent's first line and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 600,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:triager"
+          }
+        },
+        {
+          "name": "route",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/triage.md"
+            },
+            "pattern": "\"route\"\\s*:\\s*\"map\"",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.03662173,
+            "judgeCostUsd": 0,
+            "durationSeconds": 38,
+            "startedAt": "2026-11-04T09:51:39.331Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-y0Wdsz/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"map\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.03273887,
+            "judgeCostUsd": 0,
+            "durationSeconds": 14,
+            "startedAt": "2026-11-04T09:51:43.045Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-0BqOql/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"map\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.03312756,
+            "judgeCostUsd": 0,
+            "durationSeconds": 17,
+            "startedAt": "2026-11-04T09:51:56.439Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-fJWGha/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"map\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "triager-not-oneshot",
+      "dir": "evals/triager-not-oneshot",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:triager agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: HEAD\n\nThen reply with the agent's first line and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 600,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:triager"
+          }
+        },
+        {
+          "name": "route",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/triage.md"
+            },
+            "pattern": "\"route\"\\s*:\\s*\"build\"",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.04078778,
+            "judgeCostUsd": 0,
+            "durationSeconds": 25,
+            "startedAt": "2026-11-04T09:51:57.369Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-LXDbxX/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"build\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.041722680000000005,
+            "judgeCostUsd": 0,
+            "durationSeconds": 23,
+            "startedAt": "2026-11-04T09:51:59.358Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-SeolpQ/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"build\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.0416496,
+            "judgeCostUsd": 0,
+            "durationSeconds": 34,
+            "startedAt": "2026-11-04T09:52:13.558Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-jx2s19/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"build\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    },
+    {
+      "name": "triager-one-file-bug",
+      "dir": "evals/triager-one-file-bug",
+      "source": "mixed",
+      "promptMarkdown": "Dispatch the factory:triager agent in the foreground with exactly this prompt, and wait for it to finish:\n\nrun_dir: .factory/runs/r1\nworktree: .\nbase_sha: HEAD\n\nThen reply with the agent's first line and nothing else.",
+      "runsPerCase": 3,
+      "timeoutSeconds": 600,
+      "maxTurns": 10,
+      "graders": [
+        {
+          "name": "contract",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/triage.md"
+            },
+            "pattern": "\"contract\"\\s*:\\s*\"READY\"",
+            "flags": "",
+            "match": "contains"
+          }
+        },
+        {
+          "name": "dispatched",
+          "type": "tool_used",
+          "weight": 1,
+          "config": {
+            "tool": "Agent",
+            "input_match": "factory:triager"
+          }
+        },
+        {
+          "name": "route",
+          "type": "regex",
+          "weight": 1,
+          "config": {
+            "target": {
+              "source": "file",
+              "path": ".factory/runs/r1/triage.md"
+            },
+            "pattern": "\"route\"\\s*:\\s*\"oneshot\"",
+            "flags": "",
+            "match": "contains"
+          }
+        }
+      ],
+      "arms": {
+        "with": [
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.03848838,
+            "judgeCostUsd": 0,
+            "durationSeconds": 19,
+            "startedAt": "2026-11-04T09:52:16.968Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-nSaPGf/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "contract",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"contract\"\\s*:\\s*\"READY\"",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"oneshot\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.03988803999999999,
+            "judgeCostUsd": 0,
+            "durationSeconds": 28,
+            "startedAt": "2026-11-04T09:52:21.892Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-CEugik/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "contract",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"contract\"\\s*:\\s*\"READY\"",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"oneshot\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          },
+          {
+            "score": 1,
+            "passed": true,
+            "turns": 2,
+            "costUsd": 0.04013543999999999,
+            "judgeCostUsd": 0,
+            "durationSeconds": 22,
+            "startedAt": "2026-11-04T09:52:21.982Z",
+            "error": null,
+            "tracePath": "/private/tmp/e-ZYpDKw/out/trace.jsonl",
+            "skippedPaidGraders": false,
+            "graders": [
+              {
+                "name": "contract",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"contract\"\\s*:\\s*\"READY\"",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "dispatched",
+                "passed": true,
+                "weight": 1,
+                "explanation": "Agent called 1x (expected 1..∞)",
+                "withOnly": false,
+                "scored": true
+              },
+              {
+                "name": "route",
+                "passed": true,
+                "weight": 1,
+                "explanation": "matched \"route\"\\s*:\\s*\"oneshot\"",
+                "withOnly": false,
+                "scored": true
+              }
+            ]
+          }
+        ]
+      },
+      "aggregates": {
+        "score": 1,
+        "passRate": 1
+      }
+    }
+  ],
+  "aggregates": {
+    "casesTotal": 13,
+    "casesPassed": 13,
+    "overallScore": 1,
+    "overallPassRate": 1
+  }
+}
