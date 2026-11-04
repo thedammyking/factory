@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 // pr-render.mjs [--merged <sha>] — renders the run's PR from its files, for no tokens (design fix 10). Takes --run <id>, or
 // derives the run from the run worktree it runs in.
-//   pr.md        the title and body: the spec's goal, each criterion's full text with qa's result (a oneshot's one
-//                criterion its acceptance check), the evidence table, Needs a decision (open asks and P0s, and the
-//                facts a needs-human decision failed), the findings, the security capabilities, each implementer's
-//                assumptions and assessment verbatim, up to six captures, the pinned tests qa superseded or repaired,
-//                the spec's Anti-goals, the Spec line (the Notion page in its frontmatter, else where the snapshot puts
-//                it, or a oneshot's triage.md), the request issue's closing reference (Closes #12, Fixes ENG-123) for
-//                the tracker's own GitHub link, and Verify in 2 minutes: the local commands, then a step per criterion
-//                opening its route, a bare path and never the path half of a URL (design fix 26).
+//   pr.md        the title and body: the spec's title and goal (a oneshot's acceptance check and triage's rationale),
+//                each criterion's full text with qa's result (a oneshot's one criterion its acceptance check), the
+//                evidence table, Needs a decision (open asks and P0s, and the facts a needs-human decision failed), the
+//                findings, the security capabilities, each implementer's assumptions and assessment verbatim, up to six
+//                captures, the pinned tests qa superseded or repaired, the spec's Anti-goals, the Spec line (the Notion
+//                page in its frontmatter, else where the snapshot puts it, or a oneshot's triage.md), the request
+//                issue's closing reference (Closes #12, Fixes ENG-123) for the tracker's own GitHub link, and Verify in 2
+//                minutes: each app's preview that preview.json has ready at the head, the local commands, then a step
+//                per criterion opening its route, a bare path and never the path half of a URL (design fix 26).
 //   comment.md   the decision comment, when there is one: "Merged at <sha>" with --merged, "Would merge (trial)" for a
 //                merge decision, the attention item for a needs-human one (written as attention-merge.md too), and the
 //                newest attention item of a run stopped needs-human or failed with no decision. Removed when there's
@@ -18,7 +19,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, runContext, shellQuote as q, attentionItem } from "./lib.mjs";
+import { readJson, arg, git, runContext, shellQuote as q, attentionItem } from "./lib.mjs";
 
 const merged = arg("--merged");
 if (merged !== null && !/^[0-9a-f]{7,40}$/.test(merged)) { console.error("pr-render: --merged takes the merge's SHA"); process.exit(2); }
@@ -32,13 +33,15 @@ const list = (items) => items.length ? items.join("\n") : "- none";
 
 const spec = read("spec.md"), fm = spec.match(/^---\n([\s\S]*?)\n---/)?.[1] ?? "", body = spec.replace(/^---\n[\s\S]*?\n---\n/, "");
 const section = (h) => body.match(new RegExp(`^## ${h}[ \\t]*\\n([\\s\\S]*?)(?=^## |(?![\\s\\S]))`, "m"))?.[1].trim() ?? "";
-const title = body.match(/^# (.+)$/m)?.[1].trim() ?? ctx.id;
-// A oneshot has no spec: its one criterion is triage's acceptance check, which qa walks as `acceptance` (#24).
+// A oneshot has no spec: its one criterion is triage's acceptance check, which qa walks as `acceptance` (#24), and it
+// titles the PR, whose Goal is triage's rationale.
 // ponytail: merge-decision's triage.md parse, copied; share it from lib once the parallel edits have landed.
 const triage = (() => { try { return JSON.parse([...read("triage.md").matchAll(/```json\s*\n([\s\S]*?)\n```/g)].at(-1)[1]); } catch { return {}; } })();
 const oneshot = s.route === "oneshot";
 const criteria = oneshot ? [{ id: "acceptance", text: String(triage.acceptance_check ?? "").replace(/\s+/g, " ").trim() }]
   : [...body.matchAll(/^- \*\*(SC-\d{3})\*\*(?: \([^)]*\))?:[ \t]*(.+)$/gm)].map(([, id, text]) => ({ id, text: text.trim() }));
+const title = (oneshot ? criteria[0].text : body.match(/^# (.+)$/m)?.[1].trim()) || ctx.id;
+const goal = oneshot ? read("triage.md").split(/^```json/m)[0].trim() : section("Goal");
 const tickets = fs.existsSync(path.join(dir, "tickets")) ? fs.readdirSync(path.join(dir, "tickets")).filter((f) => /^\d{2}-.+\.md$/.test(f)).sort().map((f) => f.slice(0, -3)) : [];
 const walks = tickets.map((t) => json(`tickets/${t.slice(0, 2)}/qa.json`)).filter(Boolean);
 const result = (id) => [...new Set(walks.flatMap((w) => w.criteria || []).filter((c) => c.id === id).map((c) => c.reason ? `${c.status} (${c.reason})` : c.status))].join(" / ") || "not walked";
@@ -50,6 +53,9 @@ const asks = findings.filter((f) => f.status === "open" && (f.action === "ask" |
 // A criterion's route: its first bare path once every URL (a scheme's, or protocol-relative) is taken out.
 const route = (text) => text.replace(/(?:[a-z][a-z\d+.-]*:)?\/\/[^\s`'")]*/gi, " ").match(/(?:^|[\s`'"(])(\/[^\s`'"),;]*)/)?.[1];
 const port = (t) => String(t ?? "").replace(/\{port:[^}]+\}/g, "<port>");
+// Each app's preview that preview.mjs found ready at the head; one of an earlier head isn't this PR's.
+const head = git(ctx.worktree, "rev-parse", "HEAD");
+const previews = Object.entries(json("preview.json")?.apps || {}).filter(([, a]) => a.status === "ready" && a.sha === head && a.url);
 const reports = [...tickets.map((t) => [`Ticket ${t}`, `tickets/${t.slice(0, 2)}/implementation.md`]), ["Review fix", "review-fix.md"], ["CI fix", "ci-fix.md"]]
   .map(([name, f]) => [name, read(f)]).filter(([, text]) => text).map(([name, text]) => {
     const last = (re) => [...text.matchAll(re)].at(-1)?.[0].trimEnd() ?? "";
@@ -63,7 +69,7 @@ const notion = fm.match(/^notion:[ \t]*(\S+)/m)?.[1];
 
 const md = `# ${title}
 
-${section("Goal")}
+${goal}
 
 Run \`${ctx.id}\`: \`${s.branch}\` into \`${s.target_branch}\`.
 
@@ -107,7 +113,7 @@ ${section("Anti-goals") || "- none in the spec"}
 Spec: ${notion ?? `\`${history}/${oneshot ? "triage" : "spec"}.md\``}
 ${s.request_issue?.closing ? `\n${s.request_issue.closing}\n` : ""}
 ## Verify in 2 minutes
-Locally:
+${previews.length ? `On the preview of \`${short(head)}\`:\n${previews.map(([n, a]) => `- ${n}: ${a.url}`).join("\n")}\n\n` : ""}Locally:
 
 \`\`\`sh
 ${[`git fetch origin ${q(s.branch)} && git checkout ${q(s.branch)}`, ...(recipe.setup ? [recipe.setup] : []),

@@ -349,6 +349,19 @@ test("on a oneshot, the criteria table and Verify in 2 minutes are rendered from
   assert.match(pr, new RegExp(`^Spec: \`\\.factory/history/${r.s.id}/triage\\.md\`$`, "m"), "its triage stands in for the spec");
 });
 
+test("a oneshot's PR is titled with its acceptance check and its Goal is triage's rationale, as a build's are the spec's title and Goal", () => {
+  const r = ready({ base: { ".factory/touch-rules.json": RULES } });
+  oneshot(r);
+  write(r.s.run_dir, { "triage.md": "The signup page never says Welcome.\nOne product file, so a oneshot.\n\n```json\n"
+    + JSON.stringify({ type: "bug", size: "s", route: "oneshot", acceptance_check: CHECK }) + "\n```\n" });
+  const { pr } = render(r);
+  assert.equal(pr.split("\n")[0], `# ${CHECK}`, "not the run id");
+  assert.ok(pr.startsWith(`# ${CHECK}\n\nThe signup page never says Welcome.\nOne product file, so a oneshot.\n\nRun \``), pr.slice(0, 300));
+  fs.rmSync(path.join(r.s.run_dir, "pr.json"));
+  assert.equal(open(r).status, 0);
+  assert.equal(flag(posts(r, "POST repos/o/r/pulls$")[0], "-f")[0], `title=${CHECK}`);
+});
+
 test("migrations need a maintenance run and `run-state approve migrations`, which records who approved", () => {
   const r = ready();
   r.put("touches.json", { touches: r.touches(["migrations"]) });
@@ -436,6 +449,22 @@ test("fix 26: Verify in 2 minutes gives each criterion a bare-path route, never 
   assert.match(verify, /^1\. SC-001: open `\/signup`; /m);
   assert.match(verify, /^2\. SC-002: open `\/`; /m);
   assert.doesNotMatch(verify, /open `\/\/|open `\/collect/);
+});
+
+test("Verify in 2 minutes names each ready preview of the head, before the local commands; a stale, unready or missing one is never named", () => {
+  const recipe = { ...RECIPE, apps: [...RECIPE.apps, { name: "api", type: "backend", path: "." }, { name: "docs", type: "web", path: "." }] };
+  const r = ready({ recipe }), app = (status, more = {}) => ({ mode: "github-deployment", touched: true, status, sha: r.head(), ...more });
+  const verify = () => section(render(r).pr, "Verify in 2 minutes");
+  assert.match(verify(), /^Locally:\n/, "no preview.json: nothing about a preview");
+  r.json("preview.json", { run: r.s.id, sha: r.head(), apps: {
+    app: app("ready", { url: "https://signup-git-feature.vercel.app", deployment: 5 }), api: app("ready", { mode: "fixed", url: "https://api.staging.test" }),
+    docs: app("timeout", { reason: "no deployment" }),
+  } });
+  assert.ok(verify().startsWith(`On the preview of \`${r.head().slice(0, 7)}\`:\n- app: https://signup-git-feature.vercel.app\n- api: https://api.staging.test\n\nLocally:\n`), verify());
+  assert.match(verify(), /^1\. SC-001: open `\/signup`; /m, "the steps keep their bare routes, for either");
+  r.s.commit({ "src/more.js": "x\n" }, "a commit since the preview was read");
+  assert.match(verify(), /^Locally:\n/, "a preview of another head isn't this PR's");
+  assert.doesNotMatch(verify(), /vercel\.app|staging\.test/);
 });
 
 test("the decision comment: Would merge (trial), Merged at <sha>, or the attention item, which merge-decision's failing facts fill", () => {

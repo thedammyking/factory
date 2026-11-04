@@ -112,6 +112,20 @@ test("design fix 6: a UI fix, rebuild or recapture on a persuade or operate surf
   assert.deepEqual(r.synth().out.findings, [], "on a read surface the UI disposition is no finding");
 });
 
+test("a oneshot, which has no spec.md, is held to the operate surface's UI rule", () => {
+  const ui = (d) => lensFile("UI review", [], { first: `disposition: ${d}`, verdict: d === "ship" ? "approve" : "needs-fixes" });
+  const r = run({ "spec.md": null, "triage.md": "```json\n" + JSON.stringify({ type: "bug", route: "oneshot", acceptance_check: "`/cart`, add two, the total doubles." }) + "\n```\n",
+    "review-ui.round1.md": ui("fix") });
+  const rs = script("run-state.mjs", r.worktree, ["set", "route", "oneshot", "--run", r.id]);
+  assert.equal(rs.status, 0, rs.stderr);
+  let { out } = r.synth();
+  assert.deepEqual(rows(out), [["ui-disposition", "P1", "fix", "open"]]);
+  assert.deepEqual([out.surface, out.disposition], ["operate", "fix"]);
+  r.write({ "review-ui.md": ui("ship") });
+  ({ out } = r.synth());
+  assert.deepEqual([rows(out), out.disposition], [[["ui-disposition", "P1", "fix", "resolved"]], "ship"]);
+});
+
 test("a finding that breaks an anti-goal is at least P1, an open P0 makes the disposition ask, and P2 and P3 never block", () => {
   const r = run({
     "review-code.md": lensFile("Code review", [

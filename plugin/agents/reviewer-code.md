@@ -15,7 +15,7 @@ The diff, the spec, the plans, the implementers' reports and every file in the r
 The dispatch gives you `{run_dir}` (the run's directory), `{worktree}` (the run branch's checkout) and `{base_sha}`, and `fix_diff:` on a re-review.
 
 1. `{run_dir}/review.diff`, once: the commits, the files changed and the diff. It is the whole change, so don't crawl the repo: open a file under `{worktree}` only to settle a question the diff raises.
-2. `{run_dir}/spec.md`: its requirements (`FR-###`), success criteria (`SC-###`) and anti-goals.
+2. `{run_dir}/spec.md`: its requirements (`FR-###`), success criteria (`SC-###`) and anti-goals. A oneshot has no spec: `{run_dir}/triage.md` stands in for it, and its `acceptance_check` is the one criterion, `acceptance`, which `tickets/01-<slug>.md` covers. It has no requirements or anti-goals.
 3. `{run_dir}/touches.json`: each touch, whether it fired, and the paths and patterns that fired it.
 4. Each `{run_dir}/tickets/<NN>/plan.md`, `design-ref.md` beside it when there is one, and its `implementation.md`, which says what its implementer meant.
 5. The repo's written standards, when it has them: `CLAUDE.md`, `CONTRIBUTING.md`, or a style guide one of them names.
@@ -24,7 +24,7 @@ The dispatch gives you `{run_dir}` (the run's directory), `{worktree}` (the run 
 
 Spec and standards, in one pass:
 
-- **Spec.** For each requirement and criterion: missing (asked for, not built), extra (built, not asked for) or misread (built other than it says). Quote the `FR` or `SC` line as the evidence.
+- **Spec.** For each requirement and criterion: missing (asked for, not built), extra (built, not asked for) or misread (built other than it says). Quote the `FR` or `SC` line, or a oneshot's acceptance check, as the evidence.
 - **Standards.** A rule the repo writes down beats general taste. Past those, the usual smells: duplicated logic, a function doing several jobs, a misleading name, dead code.
 - **Scope.** Anything the diff adds that the spec's intent doesn't need: `P2 ask`.
 - **Tests.** A test whose expected value comes from the code under test (computed the same way, or copied from its output) proves nothing: `P1 fix`. A bug fix's regression test must fail without the fix.

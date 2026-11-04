@@ -11,14 +11,15 @@
 //     four letters or more, at least 0.15) or they name the same CWE (design fix 3), and a resolved finding joins only
 //     resolved ones. The group takes its most severe member's severity and words, and any ask makes it an ask. A
 //     finding whose claim, evidence or fix names an anti-goal is at least P1.
-//   - On a persuade or operate surface (spec.md's frontmatter), a UI lens whose latest disposition isn't ship is an open
-//     P1 fix, ui-disposition, which only a later UI round saying ship resolves (design fix 6).
+//   - On a persuade or operate surface (spec.md's frontmatter; a oneshot's is operate), a UI lens whose latest
+//     disposition isn't ship is an open P1 fix, ui-disposition, which only a later UI round saying ship resolves (design
+//     fix 6).
 //   - A group is resolved when every member is; otherwise it's open as a P0, a P1 or an ask, pr as a P2 and deferred as
 //     a P3. The disposition is ask with any open P0 or ask, fix with an open P1 fix, and ship otherwise.
 // Prints the disposition and counts, then each open finding.
 import fs from "node:fs";
 import path from "node:path";
-import { runContext } from "./lib.mjs";
+import { readJson, runContext } from "./lib.mjs";
 
 const LENSES = ["code", "ui", "security", "human"], RANK = ["P0", "P1", "P2", "P3"];
 const ctx = runContext(), dir = ctx.runDir;
@@ -79,8 +80,10 @@ const findings = groups.map(({ members: ms }, i) => {
     severity, action, status, location: top.location, claim: top.claim, evidence: top.evidence, fix: top.fix, cwe: top.cwe || ms.find((m) => m.cwe)?.cwe || "", rules };
 });
 
-// The latest UI round decides: an earlier round's ship never closes a newer round's fix.
-const fm = read("spec.md").match(/^---\n([\s\S]*?)\n---/)?.[1] || "", surface = fm.match(/^surface:[ \t]*(\w+)/m)?.[1] || null, ui = uiRounds.at(-1) ?? null;
+// The latest UI round decides: an earlier round's ship never closes a newer round's fix. A oneshot has no spec to name
+// its surface, and its acceptance check is someone using the app: operate.
+const fm = read("spec.md").match(/^---\n([\s\S]*?)\n---/)?.[1] || "", ui = uiRounds.at(-1) ?? null;
+const surface = fm.match(/^surface:[ \t]*(\w+)/m)?.[1] || (readJson(ctx.state)?.route === "oneshot" ? "operate" : null);
 if (["persuade", "operate"].includes(surface) && uiRounds.some((d) => d !== "ship")) findings.push({
   id: "ui-disposition", members: ["ui-disposition"], lens: ["ui"], severity: "P1", action: "fix", status: ui === "ship" ? "resolved" : "open",
   location: "captures/", claim: `The UI lens's disposition is ${ui} on a ${surface} surface`, evidence: "review-ui.md",

@@ -17,7 +17,7 @@ The dispatch gives you `{run_dir}` (the run's directory), `{worktree}` (the run 
 1. `{run_dir}/review.diff`, once. Open a file under `{worktree}` only to follow a call the diff makes across a boundary: a guard, a query helper, a middleware.
 2. `{run_dir}/touches.json`: each touch, whether it fired, and the paths and patterns that fired it.
 3. `{run_dir}/security.json`: each capability's status (`secrets`, `vulnerabilities`, `sast`) and `items`, the scanners' hits since the run's base; `new_dependencies`, each new package with its install scripts, maintainers and licence.
-4. `{run_dir}/spec.md`: who the users are and what each may see.
+4. `{run_dir}/spec.md`: who the users are and what each may see. A oneshot has no spec: `{run_dir}/triage.md` and its `acceptance_check` stand in for it.
 
 ## Trace
 
