@@ -2,7 +2,7 @@
 name: setup-factory
 description: Sets this project up for the factory. Detects its apps, checks and settings, proves every command, shows one proposal and writes .factory/ only on approval. /setup-factory
 disable-model-invocation: true
-allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*)
+allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(gh auth status)
 ---
 
 # setup-factory
@@ -17,7 +17,7 @@ Ask each question with `AskUserQuestion`, one question a call: 2 to 4 options, t
 
 ## Detection
 
-1. Read your own tool list for the MCP servers the factory uses: Linear, Notion, Figma and Mobbin. A server is visible when a tool's name starts with `mcp__` and names it, such as `mcp__linear__…`, `mcp__claude_ai_Linear__…` or `mcp__plugin_<plugin>_linear__…`. Deferred tools count. Never run `claude mcp list`.
+1. Read your own tool list for the MCP servers the factory uses: Linear, Notion, Figma and Mobbin. A server is visible when a tool's name starts with `mcp__` and names it, such as `mcp__linear__…`, `mcp__claude_ai_Linear__…` or `mcp__plugin_<plugin>_linear__…`, and that tool isn't its sign-in tool (`…__authenticate`): a server whose only tool is its sign-in isn't signed in, so it isn't visible. Deferred tools count. Never run `claude mcp list`.
 2. Run `setup-factory detect --mcp <the visible servers, comma-separated, lowercase>`, leaving `--mcp` out when none are.
    - Exit 1: a prerequisite is missing (a GitHub remote, a signed-in `gh`). Print its lines as they are and stop. Nothing was written.
    - Exit 0: it printed the proposal as JSON. Keep its `tracker`, `existing`, `disagreements` and `auth`; don't print the JSON.
@@ -28,7 +28,7 @@ A repo with no `package.json` is empty, and setup starts it. The proposal record
 
 ## A. Tracker
 
-Always ask "Which tracker holds your request issues and maps?", with `github` (GitHub Issues on this repo), `linear`, `local` (files under `.factory/`) and `other` (one you describe), the recommendation from `tracker` first. `linear`'s trade-off is that Linear moves an issue when its PR opens and merges only through Linear's GitHub integration, which setup can't check.
+Always ask "Which tracker holds your request issues and maps?", with `github` (GitHub Issues on this repo), `linear`, `local` (files under `.factory/`) and `other` (one you describe), the recommendation from `tracker` first, unless it's `linear` and Linear wasn't visible in **Detection**: then `github` is first. `linear`'s trade-off is that Linear moves an issue when its PR opens and merges only through Linear's GitHub integration, which setup can't check.
 
 When the answer is `other`, ask how the tracker does each of these, by a command or by an MCP server's tools: what a reference to one of its issues looks like and how to read its title and body; how to claim an issue (what that changes, such as its state or assignee) and how to undo it; the closing reference a PR body carries for it, if any; how to comment on an issue; how to file one with a title, a body and you as its assignee; how to file one as a sub-issue of another, blocked by others; and how to close one as completed or as not planned. Write each one the human described as one bullet, in their facts and your words: `- **Read a reference**: …`, `- **Claim**: …` (the undo in the same bullet), `- **Closing reference**: …`, `- **Comment**: …`, `- **File**: …`, `- **Spec comment**: as **Comment**`, `- **File tickets**: …`, `- **Close ticket**: …`. Leave out any they can't describe: a run skips it (with none, record `- None described.`). In the same question, ask how it would hold a map for `/wayfinder`: an issue whose child issues are its tickets, one ticket blocking another, the map's open, unblocked, unclaimed children in order, claiming one, resolving one (its answer, then closing it, or closing it as out of scope) and reading a closed one. Write those after the run operations, under a `## Wayfinding operations` line, as `- **Map**: …`, `- **Decision ticket**: …`, `- **Blocking**: …`, `- **Frontier**: …`, `- **Claim**: …`, `- **Resolve**: …` and `- **Read a closed decision ticket**: …`; with none described, leave that heading out, and wayfinder won't chart on this tracker. The options are `Runs and maps` (Recommended), `Runs only` (wayfinder won't chart on it) and `Neither` (a run skips every operation), the descriptions coming in the notes or through Other. Record them on stdin through a quoted heredoc, as in **D**: `setup-factory set tracker_doc`. On a re-run whose tracker is `other`, the kept `.factory/tracker.md` stands unless the human describes the tracker again.
 
@@ -87,6 +87,15 @@ Only when detect's recipe has an app of type `mobile`; otherwise go to **E**.
 The mobile app's `app_id` and `build` come from its `app.json`, and the proposal marks the build a guess: no proof runs it, so a run's first `run-apps up` is its proof. Once a device is recorded, apply registers the Maestro MCP server that `qa` drives the device through, at local scope: this project's alone, on this machine alone.
 
 ## E. Proposal
+
+First test each integration setup records, with one read each, so a broken one is found now rather than mid-run:
+
+- the tracker answered in **A**: `gh auth status` for `github`, and listing the teams through the Linear MCP for `linear`;
+- `notion`, when the proposal has a `notion_parent`, set in **B** or kept on a re-run: fetching that page through the Notion MCP;
+- `figma`, when visible in **Detection**: its `whoami`;
+- `mobbin`, when visible: one search.
+
+Record each result with `setup-factory set integration <name> ok`, or `setup-factory set integration <name> broken "<why, in one line>"` when the read fails or is refused, or the server isn't visible. A broken one is still written: apply's closing notes say what to do about it.
 
 1. Run `setup-factory apply --dry-run --tracker <answer>` and print its output as it is. It holds a table of every detected value with its source and marked guesses, the kept values detection disagrees with, what `.factory/env.local` sets (names, and each URL's host), the installs, and each file's diff.
 2. Ask "Apply this?", with `Apply` (Recommended) and `Not now` (nothing is written but `.factory/env.local`). The human may correct any value through Other or an option's notes: record it with `setup-factory set` as in **D**, using the field the table names (a list or object as JSON), run `setup-factory prove <app>.<name>` when it was a command, and show the proposal again.

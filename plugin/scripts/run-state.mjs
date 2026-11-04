@@ -58,7 +58,8 @@
 //   run-state.mjs notion [pushed <url> | failed "<why>"] -> an approved spec's Notion copy, which the orchestrator pushes
 //                                                through the Notion MCP: prints `skip: …` when the config names no Notion
 //                                                parent page (docs repo), else the page as JSON (parent, the page to
-//                                                overwrite or null, title, content opening with the copy notice); pushed
+//                                                overwrite or null, title, content opening with the copy notice and
+//                                                without the <frozen-after-approval> tags); pushed
 //                                                writes the page's URL into spec.md's frontmatter, keeping the approval;
 //                                                failed logs the one line a failed push leaves
 //   run-state.mjs approve migrations          -> the human approves a maintenance run's migrations at the run head,
@@ -1078,7 +1079,8 @@ switch (cmd) {
     if (what) die("notion [pushed <url> | failed \"<why>\"]");
     const config = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {});
     if (config.docs !== "notion" || !config.notion_parent) { console.log("skip: .factory/config.json names no Notion parent page"); break; }
-    const text = readText(path.join(ctx.runDir, "spec.md")), body = text.replace(FRONTMATTER, "").replace(/^\n+/, "");
+    // the factory's own tags go, the intent between them stays
+    const body = specText(ctx).replace(/^<\/?frozen-after-approval>\n/gm, "");
     const title = body.match(/^# (.+)$/m)?.[1].trim();
     console.log(JSON.stringify({
       parent: config.notion_parent, page: s.notion_page ?? null, title: title ? `${title} (${ctx.id})` : ctx.id,

@@ -31,7 +31,8 @@
 //                                              null drops the field. notion_parent takes a Notion page's URL and keeps its
 //                                              ID, setting docs notion, or null for docs repo. tracker_doc takes the other
 //                                              tracker's run operations, which apply writes into .factory/tracker.md.
-//                                              grill takes one or all, how the grill asks
+//                                              grill takes one or all, how the grill asks. integration <name> ok |
+//                                              broken "<why>" records an integration's test for apply's closing notes.
 //   setup-factory.mjs apply [--tracker <t>] [--dry-run] -> --dry-run prints the proposal: every detected value with its
 //                                              source, guesses marked, and each file's diff. Without it, refuses a command
 //                                              that wasn't proven, then writes .factory/, the .gitignore entries and the
@@ -87,6 +88,12 @@ const AUTH = [
 const SCANNERS = [["gitleaks", "gitleaks"], ["audit", null], ["osv", "osv-scanner"], ["semgrep", "semgrep"]];
 const PREFIXES = { feature: "feature/", bugfix: "bugfix/", hotfix: "hotfix/" };
 const TRACKERS = ["github", "linear", "local", "other"];
+// each integration setup tests, with what to do when its test fails
+const INTEGRATIONS = {
+  github: "sign in with `gh auth login`", linear: "connect Linear with `/mcp`",
+  notion: "share the parent page with the Notion connection, or sign it in to the page's workspace with `/mcp`",
+  figma: "connect Figma with `/mcp`", mobbin: "connect Mobbin with `/mcp`",
+};
 // other's tracker doc: the run operations the human described, under the heading a run follows
 const TRACKER_DOC = (ops) => "# Tracker\n\nThis project's own tracker, as described at setup. A run started from one of its issues follows **Run operations**, "
   + "as the factory skill's `references/tracker.md` says; an operation not described here is skipped.\n\n## Run operations\n\n" + ops.trim() + "\n";
@@ -426,6 +433,7 @@ function closingNotes(P, tracker) {
       ? ["`develop` isn't the default branch, so GitHub won't close a request issue from a PR into it: make `develop` the default branch, or close request issues by hand."] : []),
     ...Object.entries(P.scanners).filter(([, on]) => !on).map(([bin]) => `${bin} isn't installed, so its scan is skipped: \`brew install ${bin}\`.`),
     ...(!P.recipe.apps.length ? ["The recipe has no apps yet: the first run's scaffold ticket fills it."] : []),
+    ...Object.entries(P.integrations || {}).filter(([, r]) => !r.ok).map(([name, r]) => `\`${name}\` failed its test (${r.why}): ${INTEGRATIONS[name]}.`),
   ];
 }
 
@@ -884,6 +892,18 @@ switch (cmd) {
     }
     // B. Specs: the grill asks one question a call, or the whole frontier in as few calls as it can
     if (field === "grill" && !["one", "all"].includes(value)) die(`grill is one or all, not ${raw}`);
+    // E. Proposal: the one read that tested each integration, which apply's closing notes report; the choice is written
+    // either way
+    if (field === "integration") {
+      const [, name, status, why] = args;
+      if (!INTEGRATIONS[name]) die(`integration is one of ${Object.keys(INTEGRATIONS).join(" | ")}`);
+      if (!["ok", "broken"].includes(status)) die(`set integration ${name} ok | broken "<why>"`);
+      if (status === "broken" && !why) die(`set integration ${name} broken "<why>": say why, in one line`);
+      (P.integrations ||= {})[name] = status === "ok" ? { ok: true } : { ok: false, why };
+      save(P);
+      console.log(`set integration ${name} ${status}`);
+      break;
+    }
     if (!["apps", "pinned", "preview", "env", "smoke"].includes(keys[0]) && !(keys[0] in P.config)) die(`${field} isn't a field setup writes`);
     let node = keys[0] in P.config ? P.config : P.recipe;
     for (const [i, k] of keys.slice(0, -1).entries()) {

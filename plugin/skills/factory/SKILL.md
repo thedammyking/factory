@@ -3,7 +3,7 @@ name: factory
 description: Carries a request through the factory as a run. /factory <request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run> | retro
 disable-model-invocation: true
 argument-hint: "<request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run> | retro"
-allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*)
+allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(gh auth status)
 ---
 
 # factory
@@ -25,6 +25,8 @@ Arguments: `$ARGUMENTS`
 When a command names no run, run `run-state status`. If exactly one run is listed, it's that one. If several are, ask which (see **Questions**), one option per run, up to four, the newest first and recommended. The human types another's id through Other. If none are, say there is no run to act on.
 
 ## New run
+
+When the run will use the tracker (`tracker` in `.factory/config.json` isn't `local`) or Notion (`docs` is `notion`), first read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/integrations.md` and test them as it says.
 
 1. Start the run. A request `map <map> <N>` starts from entry N of a map's run list: follow **From a run list** in `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/map.md` instead. When `tracker` in `.factory/config.json` isn't `local`, see **Request issue** first: a request that is an issue's reference starts from that issue. Otherwise pass the request exactly as given, on stdin through a quoted heredoc, so no shell parses it. If a line of the request is exactly `FACTORY_REQUEST`, pick another delimiter that no line of it matches.
 
@@ -114,7 +116,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/build.md` and follow it. I
 
 ## Notion push
 
-Every `run-state approve spec approved` that succeeds is followed at once by `run-state notion --run <id>`, before the step after it. A `skip:` line means there's nothing to push. Otherwise it prints the page as JSON: with the Notion MCP's tools in this session, replace the title and content of the page at `page` with `title` and `content`, or, when `page` is null, create a child page of `parent` with them. Then run `run-state notion pushed <the page's URL> --run <id>`. If no Notion tool is visible, or a call fails or is refused, run `run-state notion failed "<why, in one line>" --run <id>` instead. Never retry it, and never let it stop the run. Only the spec is pushed, and nothing is read back from Notion.
+Every `run-state approve spec approved` that succeeds is followed at once by `run-state notion --run <id>`, before the step after it. A `skip:` line means there's nothing to push. Otherwise it prints the page as JSON: with the Notion MCP's tools in this session, replace the title and content of the page at `page` with `title` and `content`, or, when `page` is null, create a child page of `parent` with them. Then run `run-state notion pushed <the page's URL> --run <id>`. If no Notion tool but its sign-in (`…__authenticate`) is visible, or a call fails or is refused, run `run-state notion failed "<why, in one line>" --run <id>` instead. Never retry it, and never let it stop the run. Only the spec is pushed, and nothing is read back from Notion.
 
 ## Answers
 

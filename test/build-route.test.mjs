@@ -208,6 +208,14 @@ test("only an approved spec is pushed: a child page of notion_parent titled with
   });
 });
 
+test("the page leaves out the factory's <frozen-after-approval> tags and keeps the intent between them", () => {
+  const p = project({ config: NOTION });
+  const [s, run] = atGate(p);
+  fs.writeFileSync(path.join(s.run_dir, "spec.md"), "---\nsurface: operate\n---\n\n# CSV export\n\n<frozen-after-approval>\nExport the report as a CSV.\n</frozen-after-approval>\n\n## Goal\nA CSV.\n");
+  assert.equal(run("approve", "spec", "approved").status, 0);
+  assert.equal(JSON.parse(run("notion").stdout).content, `${NOTICE(s.id)}\n\n# CSV export\n\nExport the report as a CSV.\n\n## Goal\nA CSV.\n`);
+});
+
 test("the page's URL goes into the spec's frontmatter without undoing its approval, and a re-approval overwrites the same page", () => {
   const p = project({ config: NOTION });
   const [s, run] = atGate(p);

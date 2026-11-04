@@ -229,6 +229,26 @@ test("section B: a fresh config grills one question at a time, and set grill tak
   assert.match(run(p, f, ["apply", "--dry-run"]).stdout, /^\+  "grill": "all",$/m);
 });
 
+test("set integration records each integration's test, ok or broken with why, and refuses anything else", () => {
+  const p = shop();
+  const f = fakes();
+  const d = detect(p, f, ["--mcp", "notion"]);
+  for (const [args, why] of [[["jira", "ok"], /integration is one of github \| linear \| notion \| figma \| mobbin/],
+    [["notion", "fine"], /ok \| broken/], [["notion", "broken"], /broken "<why>"/]]) {
+    const r = run(p, f, ["set", "integration", ...args]);
+    assert.equal(r.status, 2, args.join(" "));
+    assert.match(r.stderr, why);
+  }
+  let r = run(p, f, ["set", "integration", "github", "ok"]);
+  assert.equal(r.status, 0, r.stderr);
+  r = run(p, f, ["set", "integration", "notion", "broken", "404 object_not_found"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(r.stdout, /^set integration notion broken$/m);
+  assert.deepEqual(proposal(d).integrations, { github: { ok: true }, notion: { ok: false, why: "404 object_not_found" } });
+  assert.equal(run(p, f, ["set", "integration", "notion", "ok"]).status, 0, "a test passed again");
+  assert.deepEqual(proposal(d).integrations.notion, { ok: true });
+});
+
 test("prove runs every check, dev command and health route once and records wall-clock seconds, writing nothing in the project", () => {
   const p = shop();
   const f = fakes();
@@ -406,6 +426,23 @@ test("section A: `other` writes the run operations the human described into .fac
   assert.ok(doc.endsWith(`## Run operations\n\n${ops}`), doc);
   setUp(p, f);
   assert.match(apply(p, f, ["--tracker", "other"]), /nothing to write/, "a re-run keeps the described tracker");
+});
+
+test("apply writes the choice of a broken integration all the same, and its closing notes say what to do about each one broken", () => {
+  const p = shop();
+  const f = fakes();
+  setUp(p, f, ["--mcp", "notion,figma,mobbin"]);
+  assert.equal(run(p, f, ["set", "notion_parent", "https://www.notion.so/acme/Specs-0123456789abcdef0123456789abcdef"]).status, 0);
+  for (const args of [["github", "ok"], ["notion", "broken", "404 object_not_found"], ["figma", "broken", "only its authenticate tool"], ["mobbin", "ok"]]) {
+    const r = run(p, f, ["set", "integration", ...args]);
+    assert.equal(r.status, 0, r.stderr);
+  }
+  const out = apply(p, f);
+  assert.equal(JSON.parse(read(p, ".factory/config.json")).docs, "notion");
+  const notes = out.slice(out.indexOf("## Closing notes"));
+  assert.match(notes, /^- `notion` failed its test \(404 object_not_found\): share the parent page with the Notion connection, or sign it in to the page's workspace with `\/mcp`\.$/m);
+  assert.match(notes, /^- `figma` failed its test \(only its authenticate tool\): connect Figma with `\/mcp`\.$/m);
+  assert.doesNotMatch(notes, /`github`|`mobbin`/, "an integration whose test passed has no note");
 });
 
 const write = (p, f, body) => {
