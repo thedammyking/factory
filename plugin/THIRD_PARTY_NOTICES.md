@@ -54,3 +54,6 @@ SOFTWARE.
 - [coleam00/Archon](https://github.com/coleam00/Archon) (MIT): the implementer's standing rules (code over prose, a commit per outcome staged by name, checking only what changed, installs from the lockfile) and the `red_cause` vocabulary that decides whether a red costs a round.
 - [wshobson/agents](https://github.com/wshobson/agents) (MIT): ship-mate's rule that the same failure twice escalates at once.
 - [bmad-code-org/bmad-method](https://github.com/bmad-code-org/bmad-method) (MIT): an intent block frozen once the human approves it.
+- [elayadesign/ai-design-skills](https://github.com/elayadesign/ai-design-skills) (MIT): `ui-craft`'s content honesty with visible placeholders, the states every control and data view has, motion on `transform` and `opacity` with a reduced-motion fallback, the 390 px check, nested radii, and state never shown by color alone.
+- [pbakaus/impeccable](https://github.com/pbakaus/impeccable) (Apache-2.0): the operate-surface checks `ui-craft`'s floor grew from.
+- [emilkowalski/skills](https://github.com/emilkowalski/skills) (MIT): `ui-craft`'s motion limits, ease-out within 300 ms and never from `scale(0)`.

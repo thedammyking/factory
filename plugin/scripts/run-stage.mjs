@@ -134,7 +134,7 @@ const program = (c) => String(c ?? "").trim().split(/\s+/).find((w) => !/^[A-Za-
 const programs = (recipe.apps || []).flatMap((a) => Object.values(a.checks || {}).map((c) => program(typeof c === "string" ? c : c?.cmd))).filter(Boolean);
 const allowed = [...new Set([...programs.map((p) => `Bash(${p}:*)`), ...GIT.map((c) => `Bash(git ${c}:*)`),
   ...[...programs, program(recipe.setup)].filter((p) => INSTALL[p]).flatMap((p) => INSTALL[p].map((c) => `Bash(${p} ${c}:*)`)),
-  `Bash(node ${path.join(HERE, "verify.mjs")}:*)`])];
+  `Bash(node ${path.join(HERE, "verify.mjs")}:*)`, "Skill(factory:ui-craft)"])];  // Skill asks first, and a plan with UI states loads this one
 
 // What the child is told: the plan for a fresh child, else what its last attempt left to do.
 function message() {

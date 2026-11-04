@@ -108,8 +108,8 @@ test("implement cuts the ticket's worktree on factory/<run>/NN at the SHA its di
   assert.deepEqual(["--agent", "--plugin-dir", "--model", "--max-turns", "--permission-mode", "--permission-prompts", "--add-dir", "--output-format"].map((k) => flag(argv, k)),
     ["factory:implementer", PLUGIN, "sonnet", "150", "acceptEdits", "none", r.s.run_dir, "stream-json"]);
   const gitRules = ["status", "diff", "log", "show", "add", "rm", "mv", "restore", "commit"].map((c) => `Bash(git ${c}:*)`);
-  assert.deepEqual(flag(argv, "--allowedTools").split(","), ["Bash(npm:*)", "Bash(node:*)", ...gitRules, "Bash(npm ci:*)", "Bash(npm install:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`],
-    "each check's executable, git with no push, fetch or rebase, the package manager's install and add, and verify");
+  assert.deepEqual(flag(argv, "--allowedTools").split(","), ["Bash(npm:*)", "Bash(node:*)", ...gitRules, "Bash(npm ci:*)", "Bash(npm install:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
+    "each check's executable, git with no push, fetch or rebase, the package manager's install and add, verify, and the craft floor");
   assert.match(flag(argv, "--session-id"), /^[0-9a-f-]{36}$/);
   assert.deepEqual([d.pid, d.session], [call.pid, flag(argv, "--session-id")], "the dispatch records the child's PID and session id");
   assert.ok(d.log.startsWith(path.join(r.s.run_dir, "logs") + path.sep));
