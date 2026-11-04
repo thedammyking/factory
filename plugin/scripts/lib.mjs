@@ -124,3 +124,26 @@ export function frontier(dir) {
     ...open.filter((t) => t.status === "ready-for-agent" && (t.blockedBy || []).every((b) => done.has(b)))];
   return { items, open, next, done };
 }
+
+// A run's diff, the one review sees: from the merge base of its HEAD and the base it recorded at init (never HEAD~1),
+// over PRODUCT, everything but the factory's bookkeeping (the recipe and the rest of .factory/ stay in view). git's
+// excludes beat its includes, so the bookkeeping goes path by path. LOCKFILES keeps lockfiles out of a diff's content.
+export const PRODUCT = [".", ...[".factory/runs", ".factory/worktrees", ".factory/history", ".factory/maps", ".factory/log.md"].map((p) => `:(exclude)${p}`)];
+export const LOCKFILES = ["pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lock", "bun.lockb"].map((f) => `:(exclude,glob)**/${f}`);
+export const runBase = (ctx) => git(ctx.worktree, "merge-base", "HEAD", readJson(ctx.state).base_sha);
+// Every path the run's diff changes, and each file's added lines, lockfiles left out: only lines inside a hunk, so no
+// header is ever one. A header's path ends in a tab when it holds a space, and is C-quoted when it holds a quote.
+export function runDiff(ctx) {
+  const base = runBase(ctx);
+  const out = (...a) => execFileSync("git", ["-c", "core.quotePath=false", ...a], { cwd: ctx.worktree, encoding: "utf8", maxBuffer: 1 << 28 });
+  const files = out("diff", "--name-only", "--no-renames", base, "HEAD", "--", ...PRODUCT).split("\n").filter(Boolean);
+  const added = {};
+  let file, hunk = false;
+  for (const l of out("diff", "-U0", "--no-color", "--no-ext-diff", "--no-textconv", "--no-prefix", base, "HEAD", "--", ...PRODUCT, ...LOCKFILES).split("\n")) {
+    if (l.startsWith("diff --git ")) hunk = false;
+    else if (!hunk && l.startsWith("+++ ")) { file = l.slice(4).replace(/\t$/, ""); if (file.startsWith('"')) try { file = JSON.parse(file); } catch {} }
+    else if (l.startsWith("@@")) hunk = true;
+    else if (hunk && l.startsWith("+")) (added[file] ||= []).push(l.slice(1));
+  }
+  return { base, files, added };
+}

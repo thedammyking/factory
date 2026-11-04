@@ -16,6 +16,7 @@
 //                                              URL answers, and the checks that need apps while they're up; records each
 //                                              one's wall-clock seconds in the proposal; exits 1 when any failed. A check
 //                                              { cmd, env: [names] } needing a name .factory/env.local lacks is skipped.
+//                                              With semgrep on, it proves the project rules too, as `semgrep`.
 //   setup-factory.mjs set <field> [<value>]  -> sets one field of the proposal to the value, or to stdin without one;
 //                                              null drops the field. notion_parent takes a Notion page's URL and keeps its
 //                                              ID, setting docs notion, or null for docs repo
@@ -77,6 +78,10 @@ const VALUE_FILES = [".env.local", ".env.development", ".env"];
 const DEV_SCRIPTS = ["dev", "start:dev", "start"];
 // the dev server's port when nothing sets one, by dependency
 const DEV_PORTS = [["next", 3000], ["nuxt", 3000], ["astro", 4321], ["vite", 5173], ["@sveltejs/kit", 5173], ["@nestjs/core", 3000]];
+// With semgrep on, the starter project rules are written to SEMGREP, and proven to find something in PLANTED.
+const SEMGREP = ".factory/semgrep/project.yaml";
+const PLANTED = 'app.post("/users", async (req, res) => res.json(await prisma.user.create({ data: req.body })));\napp.set("trust proxy", true);\n';
+const semgrepOn = (P) => !!P.config.security?.includes("semgrep");
 
 const onPath = (bin) => (process.env.PATH || "").split(path.delimiter).some((d) => {
   try { fs.accessSync(path.join(d, bin), fs.constants.X_OK); return true; } catch { return false; }
@@ -420,6 +425,7 @@ function plan(P, tracker) {
     [".factory/index.md", now(".factory/index.md") ?? template("index.md").replace("{apps}", () => recipe.apps.map((a) => `- \`${a.name}\` (${a.type}): \`${a.path}\``).join("\n"))],
     [".factory/log.md", now(".factory/log.md") ?? "# Log\n"],
     [".factory/lessons.md", now(".factory/lessons.md") ?? "# Lessons\n"],
+    ...(semgrepOn(P) ? [[SEMGREP, now(SEMGREP) ?? template("semgrep/starter.yaml")]] : []),
     [".gitignore", missing.length ? `${ignore}${ignore && !ignore.endsWith("\n") ? "\n" : ""}${missing.join("\n")}\n` : ignore],
     ["CLAUDE.md", !claude ? block : marked.test(claude) ? claude.replace(marked, () => block) : `${claude}${claude.endsWith("\n") ? "" : "\n"}\n${block}`],
   ].map(([f, after]) => [f, now(f), after]);
@@ -552,6 +558,24 @@ async function prove(P, only) {
     stopGroups(sig);
     await Promise.race([Promise.all(up.map((u) => u.exit)), new Promise((r) => setTimeout(r, 5000).unref())]);
   }
+  // The project rules (kept ones, else the starter) are proven like a command: nothing found in the project's tree, and
+  // something in a planted file.
+  if (semgrepOn(P) && want("semgrep")) {
+    const t0 = Date.now(), rules = exists(P.root, SEMGREP) ? path.join(P.root, SEMGREP) : path.join(TEMPLATES, "semgrep/starter.yaml");
+    const planted = fs.mkdtempSync(path.join(os.tmpdir(), "factory-planted-"));
+    fs.writeFileSync(path.join(planted, "planted.ts"), PLANTED);
+    const scan = (cwd, target) => {
+      const r = run("semgrep", ["scan", "--config", rules, "--metrics=off", "--disable-version-check", "--quiet", "--json", "--exclude", ".factory", target], { cwd, env, timeout: CHECK_WAIT });
+      try { return { hits: JSON.parse(r.stdout).results, r }; } catch { return { r }; }
+    };
+    const tree = scan(P.root, "."), plant = scan(planted, path.join(planted, "planted.ts"));
+    fs.rmSync(planted, { recursive: true });
+    const broken = [tree, plant].find((s) => !s.hits);
+    // semgrep names a rule after the directory it was loaded from; the id is the last part
+    record("semgrep", `semgrep --config ${SEMGREP}`, !broken && !tree.hits.length && plant.hits.length > 0, t0, broken
+      ? lastLines(`${broken.r.stdout}${broken.r.stderr}${broken.r.error?.message ?? ""}`)
+      : tree.hits.length ? tree.hits.map((h) => `  ${h.check_id.split(".").pop()} ${h.path}:${h.start?.line}`).join("\n") : "  nothing found in the planted file");
+  }
   groups.clear();
   save(P);
   return failed;
@@ -621,6 +645,7 @@ switch (cmd) {
     const files = plan(P, tracker);
     if (argv.includes("--dry-run")) { printProposal(P, tracker, files); break; }
     const unproven = commands(P.recipe).filter(([key, command]) => !proven(P, key, command));
+    if (semgrepOn(P) && !proven(P, "semgrep", `semgrep --config ${SEMGREP}`)) unproven.push(["semgrep", `semgrep --config ${SEMGREP}`]);
     if (unproven.length) {
       console.error(`setup-factory: not proven: ${unproven.map(([key, command]) => `${key} (\`${command}\`)`).join(", ")}; run \`setup-factory.mjs prove\` first`);
       process.exit(1);

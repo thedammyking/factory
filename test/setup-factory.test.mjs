@@ -603,3 +603,61 @@ test("the proposal lists what env.local sets by name, a URL by its host, and wha
   assert.match(out, /^\| `env\.STRIPE_SECRET_KEY` \| `Stripe's secret key, in test mode` \| apps\/web\/\.env\.example \|$/m);
   noValue(out, "the proposal");
 });
+
+const STARTER = fs.readFileSync(path.resolve(path.dirname(SCRIPT), "../templates/semgrep/starter.yaml"), "utf8");
+// A fake semgrep finding `tree` in the project's tree and `planted` in the planted file.
+const semgrep = (tree, planted) => ({ semgrep: [
+  { match: /factory-planted-/, file: canned(`planted-${Math.random()}`, { results: planted, errors: [] }) },
+  { match: /^scan /, file: canned(`tree-${Math.random()}`, { results: tree, errors: [] }) },
+] });
+const HIT = { check_id: "factory.semgrep.factory-mass-assignment", path: "src/users.ts", start: { line: 3 } };
+
+test("with semgrep installed, prove runs the starter rules over the project's tree and a planted file, and apply writes them to .factory/semgrep/", () => {
+  const p = shop();
+  const f = fakes(semgrep([], [HIT]));
+  const d = setUp(p, f);
+  assert.deepEqual(d.config.security, ["audit", "semgrep"]);
+  const proof = proposal(d).proof.semgrep;
+  assert.deepEqual([proof.status, proof.cmd], ["pass", "semgrep --config .factory/semgrep/project.yaml"]);
+  const calls = f.calls("semgrep");
+  assert.deepEqual(calls.map((c) => path.basename(c.at(-1))), [".", "planted.ts"], "the project's tree, then the planted file");
+  for (const c of calls) assert.ok(c.includes("--metrics=off") && c[c.indexOf("--config") + 1].endsWith("templates/semgrep/starter.yaml"), c.join(" "));
+  assert.match(apply(p, f, ["--dry-run"]), /^\+\+\+ b\/\.factory\/semgrep\/project\.yaml$/m);
+  apply(p, f);
+  assert.equal(read(p, ".factory/semgrep/project.yaml"), STARTER);
+  assert.doesNotMatch(STARTER, /track\(/, "no analytics rule");
+  write(p, ".factory/semgrep/project.yaml", `${STARTER}  - id: from-a-retro\n`);
+  setUp(p, f);
+  assert.match(apply(p, f), /nothing to write/, "kept rules are never rewritten");
+});
+
+test("a starter rule that fires on the project's tree, or none on the planted file, fails the proof, and apply refuses", () => {
+  const p = shop();
+  let f = fakes(semgrep([HIT], [HIT]));
+  detect(p, f);
+  let r = run(p, f, ["prove", "semgrep"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^fail +semgrep .*\n  factory-mass-assignment src\/users\.ts:3$/m);
+  r = run(p, f, ["apply"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stderr, /not proven: .*semgrep \(`semgrep --config \.factory\/semgrep\/project\.yaml`\)/);
+
+  f = fakes(semgrep([], []));
+  r = run(p, f, ["prove", "semgrep"]);
+  assert.equal(r.status, 1);
+  assert.match(r.stdout, /^fail +semgrep .*\n  nothing found in the planted file$/m);
+  untouched(p);
+});
+
+// semgrep on its own in a directory of its own, so no other installed tool reaches detection
+const realSemgrep = process.env.PATH.split(path.delimiter).map((d) => path.join(d, "semgrep")).find((f) => fs.existsSync(f));
+test("the real semgrep proves the starter rules on a project", { skip: !realSemgrep && "semgrep isn't installed" }, () => {
+  const p = shop();
+  const f = fakes(), only = scratch("factory-semgrep-");
+  fs.symlinkSync(realSemgrep, path.join(only, "semgrep"));
+  f.env.PATH = [only, f.env.PATH].join(path.delimiter);
+  detect(p, f);
+  const r = run(p, f, ["prove", "semgrep"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^pass +semgrep /m);
+});

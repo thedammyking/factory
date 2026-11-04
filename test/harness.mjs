@@ -5,6 +5,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 
 const tmp = (prefix) => fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), prefix)));
 export const sh = (cwd, cmd, args) => { const r = spawnSync(cmd, args, { cwd, encoding: "utf8" }); assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
@@ -69,4 +70,30 @@ export function bareRemote(p) {
   p.git("remote", "add", "origin", dir);
   p.git("push", "-q", "-u", "origin", "main");
   return dir;
+}
+
+const SCRIPTS = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts");
+// One of the plugin's scripts, spawned with node.
+export const script = (name, cwd, args = [], { input = "", env = process.env } = {}) =>
+  spawnSync(process.execPath, [path.join(SCRIPTS, name), ...args], { cwd, input, env, encoding: "utf8" });
+
+// Writes files (path -> text, null removes) under dir.
+export function write(dir, files) {
+  for (const [f, text] of Object.entries(files)) {
+    const at = path.join(dir, f);
+    if (text === null) fs.rmSync(at, { force: true });
+    else { fs.mkdirSync(path.dirname(at), { recursive: true }); fs.writeFileSync(at, text); }
+  }
+}
+
+// A run on project p started as the orchestrator starts one, after `files` are committed on main, with its worktree on
+// a feature branch. commit(files, message) writes files there and commits them on that branch.
+export function startRun(p, files = {}) {
+  if (Object.keys(files).length) { write(p.dir, files); p.git("add", "-A"); p.git("commit", "-qm", "product"); }
+  const r = script("run-state.mjs", p.dir, ["init"], { input: "Add a signup form\n" });
+  assert.equal(r.status, 0, r.stderr);
+  const s = JSON.parse(r.stdout), git = (...args) => sh(s.worktree, "git", args);
+  git("checkout", "-qb", "feature/signup");
+  const commit = (changes, message = "change") => { write(s.worktree, changes); git("add", "-A"); git("commit", "-qm", message); };
+  return { ...s, git, commit };
 }

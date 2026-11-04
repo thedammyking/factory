@@ -1,0 +1,83 @@
+# Starter project rules: when semgrep is installed, /setup-factory writes this file to .factory/semgrep/project.yaml and
+# proves it (nothing found in the project's tree, something in a planted file), and retro-apply appends accepted rules
+# under `rules:`. Every run's security scan runs them and any new hit fails SAST, so every rule here must be precise;
+# anything that needs judgement belongs in the security lens. Each rule covers a shape the registry packs
+# (p/owasp-top-ten, p/nodejs, p/typescript, p/javascript) were shown to miss.
+rules:
+  - id: factory-mass-assignment
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      The whole request body reaches a database write, so a caller can set any column it names (role, owner, tenant,
+      price). Parse it through an allowlist (a zod schema, a DTO with whitelist) and write only the parsed fields.
+    metadata:
+      cwe: "CWE-915: Improperly Controlled Modification of Dynamically-Determined Object Attributes"
+    patterns:
+      - pattern-either: &db-writes
+          - pattern: '$DB.$MODEL.$OP({..., data: $BODY, ...})'
+          - pattern: '$DB.$MODEL.upsert({..., create: $BODY, ...})'
+          - pattern: '$DB.$MODEL.upsert({..., update: $BODY, ...})'
+          - pattern: $DB.insert($TABLE).values($BODY)
+          - pattern: $DB.update($TABLE).set($BODY)
+          - patterns:
+              - pattern-either:
+                  - pattern: $MODEL.$WRITE($BODY, ...)
+                  - pattern: $MODEL.$WRITE($FILTER, $BODY, ...)
+              - metavariable-regex:
+                  metavariable: $WRITE
+                  regex: ^(create|insert|insertMany|save|build|update|updateOne|updateMany|findByIdAndUpdate|findOneAndUpdate)$
+          - patterns:
+              - pattern: Object.assign($ENTITY, $BODY)
+              - pattern-not: Object.assign({...}, ...)
+      - metavariable-regex:
+          metavariable: $BODY
+          regex: (?s)^((req|request|ctx\.request)\.body|\{.*\.\.\.\s*(req|request|ctx\.request)\.body\b.*\}|Object\.fromEntries\(\s*\w*[Ff]orm\w*\s*\))$
+
+  - id: factory-mass-assignment-parsed-body
+    languages: [typescript, javascript]
+    severity: ERROR
+    message: >-
+      The parsed request body reaches a database write whole, so a caller can set any column it names (role, owner,
+      tenant, price). Parse it through an allowlist (a zod schema) and write only the parsed fields.
+    metadata:
+      cwe: "CWE-915: Improperly Controlled Modification of Dynamically-Determined Object Attributes"
+    patterns:
+      - pattern-inside: |
+          $BODY = await $REQ.json();
+          ...
+      - metavariable-regex:
+          metavariable: $REQ
+          regex: ^(req|request|c\.req)$
+      - pattern-either: *db-writes
+
+  - id: factory-trust-proxy-all
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      Trusting every proxy makes the client's own X-Forwarded-For the request IP, so req.ip, and every rate limit or
+      lockout keyed on it, is whatever the caller sends. Trust the real hop count (e.g. 1) or the proxies' addresses.
+    metadata:
+      cwe: "CWE-348: Use of Less Trusted Source"
+    pattern-either:
+      - pattern: $APP.set("trust proxy", true)
+      - pattern: $APP.enable("trust proxy")
+      - pattern: '$FACTORY({..., trustProxy: true, ...})'
+
+  - id: factory-stack-trace-in-response
+    languages: [typescript, javascript]
+    severity: WARNING
+    message: >-
+      An error's stack trace is sent to the client, which shows file paths, library versions and code structure. Log it
+      on the server and send a generic message, with a request id if support needs one.
+    metadata:
+      cwe: "CWE-209: Generation of Error Message Containing Sensitive Information"
+    patterns:
+      - pattern-either:
+          - patterns:
+              - pattern-inside: $RES.$SEND(...)
+              - metavariable-regex:
+                  metavariable: $SEND
+                  regex: ^(send|json|end|render)$
+          - pattern-inside: new Response(...)
+      - pattern: $ERR.stack
+      - pattern-not-inside: "$COND ? $A : $B"

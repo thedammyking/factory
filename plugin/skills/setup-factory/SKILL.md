@@ -58,6 +58,7 @@ A script copies the dev environment, so no value ever reaches the chat. Never re
      The field is `apps.<app>.checks.<name>` for a check and `apps.<app>.dev` for a dev command.
    - A dropped check is `set apps.<app>.checks.<name> null`, then `set apps.<app>.needs_apps '<the JSON list without it>'` when it was listed there. A dropped dev command is `set apps.<app>.dev null` and `set apps.<app>.health null`.
    - A check that fails for want of a variable left not available in **C** keeps its command and gains the names it needs, the same way, as `{"cmd": "<the command>", "env": ["<NAME>"]}`. The proof and every run then skip it rather than fail it: its line reads `skipped`.
+   - A `semgrep` line is the starter project rules: it lists what they found in the project's tree, or says they found nothing in a planted file. The fix is in that code, or going without project rules, which leaves every run's SAST `missing`: `set security '<the JSON list without "semgrep">'`. Prove it again with `setup-factory prove semgrep`.
 
    Then run `setup-factory prove <app>.<name>` for each command changed, and repeat until nothing fails. Never change a command the human didn't answer for.
 
