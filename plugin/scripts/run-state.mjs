@@ -62,6 +62,8 @@
 //   run-state.mjs round review                -> before a review fix round: `OK review round <n>/<cap>`, or `ESCALATE …`
 //                                                and exit 5 once caps.review_rounds (2) are spent. An attempt that made no
 //                                                commits on the run branch costs no round
+//   run-state.mjs round ci                    -> the same before a CI fix round, ci-fix, under caps.ci_rounds (1)
+//                                                (design fix 14)
 //   run-state.mjs archive-review <lens>       -> moves review-<lens>.md (code, ui or security) aside as
 //                                                review-<lens>.round<N>.md, N one past the highest round there, so every
 //                                                round is kept for synthesize; dispatching review-<lens> does it first
@@ -107,6 +109,7 @@ const OUTPUT = {  // the file each stage writes in the run dir
   triage: "triage.md", answer: "answer.md", research: "research.md", spec: "spec.md", "builder-check": "builder-check.md",
   tickets: "tickets",  // a folder
   "review-fix": "review-fix.md",  // the implementer's report on a review fix round
+  "ci-fix": "ci-fix.md",  // and on a CI fix round
 };
 // the file a stage of one ticket, <stage>:<NN>, writes in tickets/<NN>/: the planner's plan, the implementer's report,
 // the researcher's answer to the implementer and qa's walk
@@ -319,7 +322,7 @@ function logOf(s, d) {
 // Once pr.json exists, tokens spent after it go to their own post_pr allowance, which the tokens cap never pays for
 // (design fix 13).
 const CAPS = { dispatches_per_run: 30, minutes_per_run: 90, minutes_per_ticket: 45, tokens_overhead: 700_000,
-  tokens_per_ticket: 700_000, tokens_per_run: 1_500_000, tokens_post_pr: 400_000, implement_rounds: 3, review_rounds: 2 };
+  tokens_per_ticket: 700_000, tokens_per_run: 1_500_000, tokens_post_pr: 400_000, implement_rounds: 3, review_rounds: 2, ci_rounds: 1 };
 const limits = (ctx) => ({ ...CAPS, ...readJson(path.join(ctx.MAIN, ".factory", "config.json"))?.caps });
 function caps(ctx, s) {
   const c = limits(ctx);
@@ -449,24 +452,24 @@ switch (cmd) {
     break;
   }
   case "round": {
-    const [loop] = args, n = loop?.match(/^implement:(\d{2})$/)?.[1];
-    if (loop === "review") {
-      // A review fix round is counted before it starts, under the stage it's for, review-fix, the first review not being
-      // one. A round counted since the last attempt is the next attempt's, and an attempt that made no commits on the run
-      // branch cost nothing, so neither is counted again.
+    const [loop] = args, n = loop?.match(/^implement:(\d{2})$/)?.[1], fix = { review: "review-fix", ci: "ci-fix" }[loop];
+    if (fix) {
+      // A review or CI fix round is counted before it starts, under the stage it's for, review-fix or ci-fix (a review, or
+      // a read of CI, is never one). A round counted since the last attempt is the next attempt's, and an attempt that made
+      // no commits on the run branch cost nothing, so neither is counted again.
       const [ctx, s] = load();
       if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
-      const cap = limits(ctx).review_rounds, r = s.rounds?.["review-fix"]?.n || 0, last = s.dispatches.findLast((d) => d.stage === "review-fix");
-      if (r > (last?.round || 0)) { console.log(`OK review round ${r}/${cap}`); break; }
-      if (last && git(ctx.worktree, "rev-list", "--count", `${last.sha}..HEAD`) === "0") { console.log(`OK review round ${r}/${cap}: the last attempt made no commits, so it cost no round`); break; }
-      if (r >= cap) { log(ctx.runDir, `escalation: review rounds ${r}/${cap}`); console.log(`ESCALATE review: rounds ${r}/${cap}`); process.exit(5); }
-      s.rounds = { ...s.rounds, "review-fix": { n: r + 1, cap } };
+      const cap = limits(ctx)[`${loop}_rounds`], r = s.rounds?.[fix]?.n || 0, last = s.dispatches.findLast((d) => d.stage === fix);
+      if (r > (last?.round || 0)) { console.log(`OK ${loop} round ${r}/${cap}`); break; }
+      if (last && git(ctx.worktree, "rev-list", "--count", `${last.sha}..HEAD`) === "0") { console.log(`OK ${loop} round ${r}/${cap}: the last attempt made no commits, so it cost no round`); break; }
+      if (r >= cap) { log(ctx.runDir, `escalation: ${loop} rounds ${r}/${cap}`); console.log(`ESCALATE ${loop}: rounds ${r}/${cap}`); process.exit(5); }
+      s.rounds = { ...s.rounds, [fix]: { n: r + 1, cap } };
       save(ctx.state, s);
-      log(ctx.runDir, `run: ${ctx.id} review round ${r + 1}/${cap}`);
-      console.log(`OK review round ${r + 1}/${cap}`);
+      log(ctx.runDir, `run: ${ctx.id} ${loop} round ${r + 1}/${cap}`);
+      console.log(`OK ${loop} round ${r + 1}/${cap}`);
       break;
     }
-    if (!n) die("round implement:<NN> | review");
+    if (!n) die("round implement:<NN> | review | ci");
     const [ctx, s] = load();
     if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
     const last = s.dispatches.findLast((d) => d.stage === loop);
@@ -788,7 +791,7 @@ switch (cmd) {
     const how = (d, log = logOf(s, d)) => /^review/.test(d.stage) ? "fresh, a cut-off review is re-run fresh, never resumed"
       : /^implement:/.test(d.stage) ? `its child ${atUsageLimit(log) ? "stopped at the usage limit" : "was cut off"}`
       : s.stage === "failed" ? "fresh, its output was judged incomplete"
-      : events(log).some((e) => e.type === "assistant") ? `resume agent ${d.agent}${atUsageLimit(log) ? ", stopped at the usage limit" : ""}` : "fresh";
+      : d.agent && events(log).some((e) => e.type === "assistant") ? `resume agent ${d.agent}${atUsageLimit(log) ? ", stopped at the usage limit" : ""}` : "fresh";
     for (const d of cutOff) console.log(`CONTINUE ${d.stage} from ${d.sha.slice(0, 7)}: ${how(d)}`);
     // Known state, not the last agent's claim: the fast checks where the continued implementers work, else on the run
     // branch, which a run gets at its lane.

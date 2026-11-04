@@ -49,7 +49,7 @@ const asks = findings.filter((f) => f.status === "open" && (f.action === "ask" |
 // A criterion's route: its first bare path once every URL (a scheme's, or protocol-relative) is taken out.
 const route = (text) => text.replace(/(?:[a-z][a-z\d+.-]*:)?\/\/[^\s`'")]*/gi, " ").match(/(?:^|[\s`'"(])(\/[^\s`'"),;]*)/)?.[1];
 const port = (t) => String(t ?? "").replace(/\{port:[^}]+\}/g, "<port>");
-const reports = [...tickets.map((t) => [`Ticket ${t}`, `tickets/${t.slice(0, 2)}/implementation.md`]), ["Review fix", "review-fix.md"]]
+const reports = [...tickets.map((t) => [`Ticket ${t}`, `tickets/${t.slice(0, 2)}/implementation.md`]), ["Review fix", "review-fix.md"], ["CI fix", "ci-fix.md"]]
   .map(([name, f]) => [name, read(f)]).filter(([, text]) => text).map(([name, text]) => {
     const last = (re) => [...text.matchAll(re)].at(-1)?.[0].trimEnd() ?? "";
     return `### ${name}\n\n\`\`\`text\n${[last(/^assumptions:[ \t]*\n(?:- .*(?:\n|$))+/gm), last(/^assessment:[ \t]*\n(?:[ \t]+\S.*(?:\n|$))+/gm)].filter(Boolean).join("\n") || "no assumptions or assessment"}\n\`\`\``;

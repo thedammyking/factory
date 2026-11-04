@@ -209,13 +209,14 @@ export function liveBase(cwd, branch) {
 export function githubRepo(cwd) {
   try { return git(cwd, "config", "--get", "remote.origin.url").match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)?.[1] ?? null; } catch { return null; }
 }
-// One REST call, `gh api <args>` (never GraphQL): { ok, json, message }, message being GitHub's own words on a refusal (its
-// message, then each error's), else gh's, else why gh didn't start.
+// One REST call, `gh api <args>` (never GraphQL): { ok, json, text, message }, text being the body as it came (a job's log
+// isn't JSON) and message GitHub's own words on a refusal (its message, then each error's), else gh's, else why gh didn't
+// start.
 export function ghApi(...args) {
-  const r = spawnSync("gh", ["api", ...args], { encoding: "utf8" });
+  const r = spawnSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
   let json = null; try { json = JSON.parse(r.stdout); } catch {}
   const message = [json?.message, ...(json?.errors || []).map((e) => e.message ?? e)].filter(Boolean).join(": ") || (r.stderr || "").trim() || r.error?.message || "";
-  return { ok: r.status === 0, json, message };
+  return { ok: r.status === 0, json, text: r.stdout ?? "", message };
 }
 // A value as one shell word, for a command a human pastes: as it is when plain, else single-quoted.
 export const shellQuote = (v) => /^[\w./@:+=~-]+$/.test(String(v)) ? String(v) : `'${String(v).replaceAll("'", "'\\''")}'`;

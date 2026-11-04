@@ -39,6 +39,10 @@
 //        ROUND            a red introduced or incomplete, or a report with no status line, for another round
 //        SUSPENDED        the child stopped at the usage limit: nothing is judged, and it costs no round
 //        ATTENTION        for the human: no commits, BLOCKED or NEEDS_CONTEXT, a red inherited or environment, no evidence
+//   run-stage.mjs ci-fix -> one CI fix round, once `run-state round ci` has counted it and ci-watch read CI as ours: the
+//      round's plan, ci-plan.md, names the failing steps and has logs/ci-failure.log and ci.json as its context, and the
+//      child fixes the run branch as review-fix's does, its report ci-fix.md. The verdicts are review-fix's, but for
+//        PUSH             commits made and the evidence green: pr-open pushes them, and CI is read again
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -48,7 +52,7 @@ import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ti
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
-if (cmd !== "review-fix" && (!["implement", "merge", "verify"].includes(cmd) || !/^\d{2}$/.test(n || ""))) { console.error("run-stage: usage: run-stage.mjs implement | merge | verify <NN> | review-fix --run <id>"); process.exit(2); }
+if (!["review-fix", "ci-fix"].includes(cmd) && (!["implement", "merge", "verify"].includes(cmd) || !/^\d{2}$/.test(n || ""))) { console.error("run-stage: usage: run-stage.mjs implement | merge | verify <NN> | review-fix | ci-fix --run <id>"); process.exit(2); }
 const ctx = runContext(), stage = `implement:${n}`;
 const wt = ticketWorktree(ctx.MAIN, ctx.id, n), branch = ticketBranch(ctx.id, n), dir = path.join(ctx.runDir, "tickets", n);
 const IMPL = path.join(dir, "implementation.md"), EVIDENCE = path.join(dir, "evidence.json");
@@ -136,29 +140,36 @@ if (cmd === "verify") {
   say(...verdict(state()));
 }
 
-if (cmd === "review-fix") {
-  const FIXES = path.join(ctx.runDir, "fixes.md"), REPORT = path.join(ctx.runDir, "review-fix.md"), RUN_EV = path.join(ctx.runDir, "evidence.json");
+if (["review-fix", "ci-fix"].includes(cmd)) {
+  const review = cmd === "review-fix", CI = path.join(ctx.runDir, "ci.json"), CI_LOG = path.join(ctx.runDir, "logs", "ci-failure.log");
+  const FIXES = path.join(ctx.runDir, review ? "fixes.md" : "ci-plan.md"), REPORT = path.join(ctx.runDir, `${cmd}.md`), RUN_EV = path.join(ctx.runDir, "evidence.json");
   const end = (word, why) => { console.log(`${word}: ${why}`); process.exit(0); };
-  const synthesis = readJson(path.join(ctx.runDir, "findings.json"));
-  if (synthesis?.disposition !== "fix") die(`findings.json's disposition is ${synthesis?.disposition ?? "missing"}, and only fix starts a review fix round`);
+  const synthesis = review && readJson(path.join(ctx.runDir, "findings.json")), ci = !review && readJson(CI);
+  if (review && synthesis?.disposition !== "fix") die(`findings.json's disposition is ${synthesis?.disposition ?? "missing"}, and only fix starts a review fix round`);
+  if (!review && ci?.cause !== "ours") die(`ci.json's cause is ${ci?.cause ?? "missing"}, and only ours starts a CI fix round`);
   // Only P0 and P1 fixes loop: a P2 goes to the PR, a P3 to deferred.md, and an ask to the human.
-  const fixes = synthesis.findings.filter((f) => f.status === "open" && ["P0", "P1"].includes(f.severity) && f.action === "fix");
+  const fixes = review ? synthesis.findings.filter((f) => f.status === "open" && ["P0", "P1"].includes(f.severity) && f.action === "fix") : [];
   const lenses = [...new Set(fixes.flatMap((f) => f.lens))];
   // the latest attempt whose session resumes: one cut off before a message or a result left none
-  const s = state(), tries = s.dispatches.filter((d) => d.stage === "review-fix"), last = tries.findLast((d) => d.session && events(d.log).some((e) => ["assistant", "result"].includes(e.type)));
+  const s = state(), tries = s.dispatches.filter((d) => d.stage === cmd), last = tries.findLast((d) => d.session && events(d.log).some((e) => ["assistant", "result"].includes(e.type)));
   const statusOf = (file) => [...(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "").matchAll(/^status:[ \t]*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)[ \t]*$/gm)].at(-1)?.[1] || null;
-  const was = readJson(RUN_EV), moved = fs.existsSync(REPORT) && path.join(ctx.runDir, `review-fix.round${tries.length}.md`);
+  const was = readJson(RUN_EV), moved = fs.existsSync(REPORT) && path.join(ctx.runDir, `${cmd}.round${tries.length}.md`);
   const red = last && was && !was.green && was.sha === git(ctx.worktree, "rev-parse", "HEAD")
     && `verify --full is red at ${was.sha.slice(0, 7)}, red_cause ${was.red_cause}: ${RUN_EV} has each failing check's digest and log. Fix what it shows first. `;
   // fixes.md is the round's plan, with the files its findings sit in as its context (at most 8, as a plan's). It carries
   // each lens's claim and fix, never its evidence: a quote from the diff, which the implementer would take as the plan's.
+  // ci-plan.md has the failing jobs' log and ci.json as its context, which are all a CI fix goes on.
   const files = [...new Set(fixes.map((f) => f.location.replaceAll("`", "").match(/^\s*([^\s:]+)/)?.[1]))].filter((f) => f && fs.existsSync(path.join(ctx.worktree, f)));
-  fs.writeFileSync(FIXES, `---\nstatus: ready\nticket: review-fix\ncontext:\n${files.slice(0, 8).map((f) => `  - ${f}\n`).join("")}---\n\n`
-    + `# Review fixes, round ${s.rounds?.["review-fix"]?.n ?? tries.length + 1}\n\nThe run's review found these to fix. Fix each where its location says, with a test first where it's about behaviour, `
+  const verification = `\n## Verification\n- \`node ${path.join(HERE, "verify.mjs")} --fast\` from the worktree → green\n`, nth = s.rounds?.[cmd]?.n ?? tries.length + 1;
+  fs.writeFileSync(FIXES, review ? `---\nstatus: ready\nticket: review-fix\ncontext:\n${files.slice(0, 8).map((f) => `  - ${f}\n`).join("")}---\n\n`
+    + `# Review fixes, round ${nth}\n\nThe run's review found these to fix. Fix each where its location says, with a test first where it's about behaviour, `
     + `and change nothing else. Each lens's file beside this one (review-<lens>.md) holds its findings in full.\n\n## Findings\n`
-    + fixes.map((f) => `- **${f.id}** (${[f.severity, ...f.lens, f.cwe].filter(Boolean).join(", ")}) \`${f.location}\`: ${f.claim}${f.fix ? `\n  Fix: ${f.fix}` : ""}\n`).join("")
-    + `\n## Verification\n- \`node ${path.join(HERE, "verify.mjs")} --fast\` from the worktree → green\n`);
-  const d = runState("dispatch", "review-fix");
+    + fixes.map((f) => `- **${f.id}** (${[f.severity, ...f.lens, f.cwe].filter(Boolean).join(", ")}) \`${f.location}\`: ${f.claim}${f.fix ? `\n  Fix: ${f.fix}` : ""}\n`).join("") + verification
+    : `---\nstatus: ready\nticket: ci-fix\ncontext:\n  - ${CI_LOG}\n  - ${CI}\n---\n\n# CI fix, round ${nth}\n\n`
+    + `CI on the run's PR is red at \`${ci.sha.slice(0, 7)}\`, failing at ${(ci.failing || []).map((f) => `\`${f}\``).join(", ")}: not the base's red, and not a flake its re-run cleared. `
+    + `${CI_LOG} holds each failing job's whole log. Find the root cause in what the failing step printed, fix it in the product code with a test first `
+    + "where it's about behaviour, and change nothing else. CI's workflows are locked: never make a step pass by changing what it runs.\n" + verification);
+  const d = runState("dispatch", cmd);
   process.stdout.write(d.stdout);
   if (d.status) { process.stderr.write(d.stderr); process.exit(d.status); }
   const from = state().dispatches.at(-1).sha;
@@ -172,8 +183,9 @@ if (cmd === "review-fix") {
     ...[...programs, program(recipe.setup)].filter((p) => INSTALL[p]).flatMap((p) => INSTALL[p].map((c) => `Bash(${p} ${c}:*)`)),
     `Bash(node ${path.join(HERE, "verify.mjs")}:*)`, "Skill(factory:ui-craft)"])];
   const again = moved ? ` Then write ${REPORT} again from the top: the last one is now ${moved}.` : "";
-  const message = last ? `${red || ""}The review left open what ${FIXES} now lists: fix each finding there.${again}` : "The run's review found what the plan lists. Fix each finding, and nothing else.";
-  const session = last ? last.session : crypto.randomUUID(), log = path.join(ctx.runDir, "logs", `review-fix.${tries.length + 1}.jsonl`);
+  const message = review ? (last ? `${red || ""}The review left open what ${FIXES} now lists: fix each finding there.${again}` : "The run's review found what the plan lists. Fix each finding, and nothing else.")
+    : last ? `${red || ""}CI is still red, as ${FIXES} now says: fix it.${again}` : "CI on the run's PR is red where the plan says. Fix that, and nothing else.";
+  const session = last ? last.session : crypto.randomUUID(), log = path.join(ctx.runDir, "logs", `${cmd}.${tries.length + 1}.jsonl`);
   fs.mkdirSync(path.dirname(log), { recursive: true });
   const fd = fs.openSync(log, "w");
   const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", config.models?.implement || "sonnet", "--max-turns", String(MAX_TURNS),
@@ -183,9 +195,9 @@ if (cmd === "review-fix") {
   fs.closeSync(fd);
   const exited = new Promise((resolve) => { child.on("error", resolve); child.on("close", () => resolve(null)); });
   if (!child.pid) end("ATTENTION", `claude couldn't start: ${(await exited)?.message}`);
-  const lines = [`run_dir: ${ctx.runDir}`, `worktree: ${ctx.worktree}`, "ticket: review-fix", `plan: ${FIXES}`, `implementation: ${REPORT}`];
+  const lines = [`run_dir: ${ctx.runDir}`, `worktree: ${ctx.worktree}`, `ticket: ${cmd}`, `plan: ${FIXES}`, `implementation: ${REPORT}`];
   child.stdin.end(last ? `${message}\n` : `${lines.join("\n")}\n\n${message}\n`);
-  told(runState("dispatch", "review-fix", "--log", log, "--pid", String(child.pid), "--session", session));
+  told(runState("dispatch", cmd, "--log", log, "--pid", String(child.pid), "--session", session));
   await exited;
 
   const denials = fs.readFileSync(log, "utf8").split("\n").flatMap((l) => { try { const e = JSON.parse(l); return e.type === "result" ? e.permission_denials || [] : []; } catch { return []; } });
@@ -193,13 +205,14 @@ if (cmd === "review-fix") {
   if (atUsageLimit(log)) end("SUSPENDED", "the child stopped at the usage limit, which costs no round");
   const status = statusOf(REPORT);
   if (!["BLOCKED", "NEEDS_CONTEXT"].includes(status)) console.log(node("verify.mjs", ["--full", "--run", ctx.id], { cwd: ctx.MAIN }).stdout.split("\n")[0]);
-  if (status) told(runState("done", "review-fix"));
+  if (status) told(runState("done", cmd));
   const sha = git(ctx.worktree, "rev-parse", "HEAD"), made = Number(git(ctx.worktree, "rev-list", "--count", `${from}..HEAD`)), ev = readJson(RUN_EV);
   if (["BLOCKED", "NEEDS_CONTEXT"].includes(status)) end("ATTENTION", `${status}, see ${REPORT}`);
-  if (!made) end("ATTENTION", "the fix round made no commits, so its findings stand");
+  if (!made) end("ATTENTION", `the fix round made no commits, so ${review ? "its findings stand" : "CI stays red"}`);
   if (!ev || ev.sha !== sha) end("ATTENTION", `verify --full left no evidence at the run head ${sha.slice(0, 7)}`);
   if (!ev.green) end(["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --full is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`);
   if (!status) end("ROUND", `${REPORT} has no status line, so the round is INCOMPLETE`);
+  if (!review) end("PUSH", `the fix round is green at ${sha.slice(0, 7)}, so pr-open.mjs pushes it and CI is read again`);
   const diff = node("review-package.mjs", ["--since", from, "--run", ctx.id], { cwd: ctx.MAIN });
   if (diff.status) end("ATTENTION", `the fix diff couldn't be written: ${diff.stderr.trim()}`);
   end(`REVIEW ${lenses.join(",")}`, `the fix round is green at ${sha.slice(0, 7)}, so the lenses that had its findings re-review review-fix.diff`);

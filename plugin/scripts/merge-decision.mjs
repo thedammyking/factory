@@ -94,8 +94,8 @@ const behind = Number(git(wt, "rev-list", "--count", `HEAD..${base}`));
 fact("not_behind_base", !unfetched && behind === 0, unfetched ? `${s.base_branch} couldn't be fetched: ${unfetched}`
   : behind ? `${behind} commit${behind > 1 ? "s" : ""} on ${base} not in HEAD: sync-base.mjs before-merge` : `up to date with ${base}`, [base]);
 
-// Each implementer's last assessment: every ticket's, and a review fix round's.
-const reports = [...tickets.map((n) => `tickets/${n}/implementation.md`), ...(fs.existsSync(at("review-fix.md")) ? ["review-fix.md"] : [])];
+// Each implementer's last assessment: every ticket's, and a review or CI fix round's.
+const reports = [...tickets.map((n) => `tickets/${n}/implementation.md`), ...["review-fix.md", "ci-fix.md"].filter((f) => fs.existsSync(at(f)))];
 const doubts = reports.flatMap((f) => {
   const block = [...read(f).matchAll(/^assessment:[ \t]*\n((?:[ \t]+\S.*(?:\n|$))+)/gm)].at(-1)?.[1] ?? "";
   const val = (k) => block.match(new RegExp(`^\\s*${k}:[ \\t]*(.*?)[ \\t]*$`, "m"))?.[1] ?? "";

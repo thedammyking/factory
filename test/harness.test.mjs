@@ -32,6 +32,14 @@ test("fake CLIs on PATH record their argv and answer from canned files", () => {
   assert.deepEqual(f.calls("gh"), [["api", "repos/o/r/pulls"], ["pr", "merge", "7"], ["issue", "comment", "7", "--body", "two words"]]);
 });
 
+test("a fake CLI's rule with a list of files answers its n-th call with the n-th, then the last", () => {
+  const canned = fs.mkdtempSync(path.join(os.tmpdir(), "factory-canned-"));
+  const [a, b] = ["a", "b"].map((n) => { fs.writeFileSync(path.join(canned, n), n); return path.join(canned, n); });
+  const f = fakeClis({ gh: [{ match: /^api x$/, file: [a, b] }, { match: /^api/, file: a }] });
+  const gh = (args) => spawnSync("gh", args, { env: f.env, encoding: "utf8" }).stdout;
+  assert.deepEqual([gh(["api", "x"]), gh(["api", "y"]), gh(["api", "x"]), gh(["api", "x"])], ["a", "a", "b", "b"]);
+});
+
 test("bareRemote is origin and takes the project's pushes", () => {
   const p = project();
   const remote = bareRemote(p);

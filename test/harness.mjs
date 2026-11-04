@@ -31,7 +31,8 @@ export function project({ recipe = RECIPE, config = {} } = {}) {
 
 // Fake CLIs in a bin dir that `env.PATH` puts first. Each call appends its argv to calls(name). The first
 // rule whose `match` regex finds the argv joined by spaces prints its canned `file` and exits `status`
-// (default 0); a call no rule matches exits 127 and names its argv on stderr.
+// (default 0); a call no rule matches exits 127 and names its argv on stderr. A `file` that is a list answers the
+// rule's n-th call with its n-th file, and every call past its last with the last, as a state that moves on would.
 export function fakeClis(rules) {
   const bin = tmp("factory-bin-");
   for (const [name, list] of Object.entries(rules)) {
@@ -41,8 +42,12 @@ export function fakeClis(rules) {
 const fs = require("node:fs");
 const argv = process.argv.slice(2);
 fs.appendFileSync(__filename + ".calls", JSON.stringify(argv) + "\\n");
-const rule = JSON.parse(fs.readFileSync(__filename + ".rules.json", "utf8")).find((r) => new RegExp(r.match, r.flags).test(argv.join(" ")));
-if (rule) { process.stdout.write(fs.readFileSync(rule.file)); process.exitCode = rule.status; }
+const rules = JSON.parse(fs.readFileSync(__filename + ".rules.json", "utf8"));
+const first = (a) => rules.findIndex((r) => new RegExp(r.match, r.flags).test(a.join(" "))), i = first(argv), rule = rules[i];
+if (rule) {
+  const files = [].concat(rule.file), n = fs.readFileSync(__filename + ".calls", "utf8").trim().split("\\n").filter((l) => first(JSON.parse(l)) === i).length;
+  process.stdout.write(fs.readFileSync(files[Math.min(n, files.length) - 1])); process.exitCode = rule.status;
+}
 else { process.stderr.write(${JSON.stringify(`fake ${name}: no canned reply for `)} + JSON.stringify(argv) + "\\n"); process.exitCode = 127; }
 `, { mode: 0o755 });
   }
