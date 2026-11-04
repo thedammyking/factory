@@ -11,11 +11,11 @@ One request carried through the factory, from the prompt to a terminal outcome (
 _Avoid_: job, session, pipeline execution
 
 **Request issue**:
-The tracker issue a run was started from, and the only thing on the tracker the run writes to. A run started from plain text has none.
+The tracker issue a run belongs to: the one it was started from, or, for a run started from plain text, the one it files when its spec is approved. The run's tickets hang off it as sub-issues.
 _Avoid_: source issue, linked issue, ticket
 
 **Orchestrator**:
-The skill that drives exactly one run from its own session: it routes between stages, dispatches each one and records progress, and it is where the human answers the grill and the gates. Several runs at once means several orchestrators.
+The skill that drives exactly one run from its own session: it routes between stages, dispatches each one and records progress, and it is where the human answers the grill, the spec gate and any question the run stops on. Several runs at once means several orchestrators.
 _Avoid_: supervisor, controller, driver
 
 **Stage**:
@@ -42,7 +42,7 @@ _Avoid_: budget (when meaning a single limit), quota
 A human's recorded decision to lift a cap for one run.
 
 **Attention item**:
-The single format in which the factory asks the human for a decision: what happened, the evidence, a recommendation and the options.
+The single format in which the factory asks the human for a decision: what happened, the evidence, a recommendation with its benefit and trade-off, and the options. It is put to the human as a question with those options, and kept in the run as the record.
 _Avoid_: escalation message, alert
 
 **Retro**:
@@ -50,6 +50,10 @@ A look back over finished runs that proposes at most three durable changes (a le
 _Avoid_: postmortem, review (a lens's job), golden task
 
 ### Work
+
+**Grill**:
+The decisions a run puts to the human before its spec is written, each with options. Questions come one at a time or all at once, as the project chose at setup. Facts are researched, never asked.
+_Avoid_: interview, Q&A, questionnaire
 
 **Spec**:
 The approved statement of what a run delivers: requirements, numbered success criteria and anti-goals.
@@ -86,7 +90,7 @@ One question on a map whose answer is a decision, not a slice of work.
 _Avoid_: ticket (a run's slice), issue
 
 **Tracker**:
-Where a project's maps live (local files, GitHub Issues, Linear, or another tracker the human describes) and, on any but local files, its request issues. A run's tickets never appear there.
+Where a project's maps live (local files, GitHub Issues, Linear, or another tracker the human describes) and, on any but local files, its request issues with their tickets as sub-issues. What the tracker shows is a copy: the run's own files stay the record.
 _Avoid_: board, issue tracker
 
 **Run list**:
@@ -96,7 +100,7 @@ _Avoid_: backlog, queue
 ### Proof
 
 **Recipe**:
-The project's proven commands for setting up, checking, running and previewing each app.
+The project's proven commands for setting up, checking, running and previewing each app, plus the commands the human has allowed the factory to run. A run that adds an app extends it.
 _Avoid_: config, manifest
 
 **Profile**:
