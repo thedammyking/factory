@@ -16,7 +16,7 @@ To install from a local checkout, pass its path to `/plugin marketplace add` ins
 ## Repo layout
 
 - `plugin/` is what installs into a project.
-- `test/` holds the `node:test` suites; run them with `node --test` (Node ≥ 20). They never ship.
+- `test/` holds the `node:test` suites; run them with `node --test` (Node ≥ 20). They never ship. A test named `fix N` or `design fix N` is the regression case for fix N in the two fixes tables of [docs/design/design.md](docs/design/design.md).
 - `evals/` holds the `claude plugin eval` cases for the agent prompts, run before a tag; see [evals/README.md](evals/README.md). They never ship.
 
 ## Licence
