@@ -11,7 +11,9 @@
 //      child session with what its last attempt left to fix; at the last round (caps.implement_rounds, 3) it starts a
 //      fresh child on models.implement_escalated, told that a prior implementer tried twice. When the child exits,
 //      verify --full judges the ticket's worktree (unless the child stopped BLOCKED or NEEDS_CONTEXT), and:
-//        MERGE      DONE with no concern, and the evidence green at the ticket's HEAD
+//        MERGE      DONE with no concern, and the evidence green at the ticket's HEAD, after qa's walk
+//        QA         for qa:NN, which costs no round: DONE and green, but qa hasn't walked the ticket since this attempt
+//                   (when the recipe has an app with a dev command), or a red only in pinned tests it hasn't ruled on
 //        ROUND      a red introduced or incomplete, a report with no status line (INCOMPLETE), or a concern to fix
 //        AMEND      BLOCKED: bad_plan: the ticket's commits are reset away, and the planner amends the plan, once
 //        RESEARCH   NEEDS_CONTEXT: one researcher dispatch answers its question in tickets/NN/context.md
@@ -20,6 +22,8 @@
 //   run-stage.mjs merge <NN> -> after MERGE: merges factory/<run>/NN into the run branch, runs verify --full at the new
 //      head, then removes the ticket's worktree and branch. MERGED (the ticket marked done) when the run head is green;
 //      ATTENTION when it's red, or on a conflict, which is aborted and leaves everything as it was.
+//   run-stage.mjs verify <NN> -> after qa:NN is done: verify --full judges the ticket's worktree again, qa's pinned tests
+//      included, and the verdict is as implement's.
 import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
@@ -29,7 +33,7 @@ import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ti
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
-if (!["implement", "merge"].includes(cmd) || !/^\d{2}$/.test(n || "")) { console.error("run-stage: usage: run-stage.mjs implement | merge <NN> --run <id>"); process.exit(2); }
+if (!["implement", "merge", "verify"].includes(cmd) || !/^\d{2}$/.test(n || "")) { console.error("run-stage: usage: run-stage.mjs implement | merge | verify <NN> --run <id>"); process.exit(2); }
 const ctx = runContext(), stage = `implement:${n}`;
 const wt = ticketWorktree(ctx.MAIN, ctx.id, n), branch = ticketBranch(ctx.id, n), dir = path.join(ctx.runDir, "tickets", n);
 const IMPL = path.join(dir, "implementation.md"), EVIDENCE = path.join(dir, "evidence.json");
@@ -65,9 +69,16 @@ function verdict(s) {
     ? ["ATTENTION", "NEEDS_CONTEXT again, after its one researcher dispatch"] : ["RESEARCH", `NEEDS_CONTEXT, so one researcher dispatch answers its question in ${path.join(dir, "context.md")}`];
   const ev = readJson(EVIDENCE), sha = head();
   if (!ev || ev.sha !== sha) return ["ATTENTION", `verify --full left no evidence at the ticket's HEAD ${sha?.slice(0, 7)}`];
+  // qa:NN finished since the latest attempt: it walked the ticket and ruled on the pinned tests that attempt left red
+  const walked = s.dispatches.findLastIndex((d) => d.stage === `qa:${n}`) > s.dispatches.findLastIndex((d) => d.stage === stage) && s.stages_done.includes(`qa:${n}`);
+  if (!ev.green && ev.pinned_only && ev.red_cause === "introduced" && !walked) return ["QA", `verify --full is red only in pinned tests at ${sha.slice(0, 7)}: `
+    + `${ev.checks.filter((c) => c.status !== "pass").map((c) => c.check).join(", ")}, so qa rules on them`];
   if (!ev.green) return [["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --full is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`];
   if (!status) return ["ROUND", "implementation.md has no status line, so the attempt is INCOMPLETE"];
   if (status === "DONE_WITH_CONCERNS" || concerns.length) return ["ROUND", "the implementer named a concern, which is fixed before the next ticket"];
+  if (!walked && (readJson(path.join(wt, ".factory", "setup.json"), {}).apps || []).some((a) => a.dev)) {
+    return ["QA", `DONE, and verify --full is green at ${sha.slice(0, 7)}, so qa walks ticket ${n}'s criteria`];
+  }
   return ["MERGE", `DONE, and verify --full is green at ${sha.slice(0, 7)}`];
 }
 
@@ -88,6 +99,12 @@ if (cmd === "merge") {
   if (!ev?.green || ev.sha !== sha) say("ATTENTION", `verify --full is red at the run head ${sha.slice(0, 7)} after merging two green sides, red_cause ${ev?.red_cause}`);
   if (told(runState("ticket", n, "done")).status) say("ATTENTION", `merged at ${sha.slice(0, 7)} and green, but ticket ${n} couldn't be marked done`);
   say("MERGED", `at ${sha.slice(0, 7)} on ${s.branch}, where verify --full is green`);
+}
+
+if (cmd === "verify") {
+  if (!fs.existsSync(wt)) die(`ticket ${n} has no worktree to verify`);
+  console.log(node("verify.mjs", ["--full", "--run", ctx.id], { cwd: wt }).stdout.split("\n")[0]);
+  say(...verdict(state()));
 }
 
 const ticket = fs.readdirSync(path.join(ctx.runDir, "tickets")).find((f) => f.startsWith(`${n}-`) && f.endsWith(".md"))?.slice(0, -3);
@@ -140,10 +157,13 @@ const allowed = [...new Set([...programs.map((p) => `Bash(${p}:*)`), ...GIT.map(
 function message() {
   const again = moved ? ` Then write ${IMPL} again from the top: the last one is now ${moved}.` : "";
   const tries = round - 1 === 2 ? "twice" : `${round - 1} times`;
+  const red = ev && !ev.green && ev.sha === head(), failingPins = red ? ev.checks.filter((c) => c.pinned && c.status === "fail").map((c) => c.check) : [];
+  const pinNote = failingPins.length ? ` Failing pinned tests: ${failingPins.join(", ")}. Make each pass by changing the product code; one the spec `
+    + `contradicts goes under concerns:, untouched, for qa to rule on. \`node ${path.join(HERE, "verify.mjs")} --pinned <path>\` runs one with the apps up.` : "";
   if (escalated) return `A prior implementer has worked on this ticket and tried ${tries} to fix it; you own it now. Its commits stay on this branch. `
-    + `Read the plan, then its last report${moved ? ` (${moved})` : ""} and the last evidence (${EVIDENCE}), and carry on from the code as it is.`;
+    + `Read the plan, then its last report${moved ? ` (${moved})` : ""} and the last evidence (${EVIDENCE}), and carry on from the code as it is.${pinNote}`;
   if (fresh) return "Implement the plan.";
-  if (was === "ROUND" && ev && !ev.green && ev.sha === head()) return `verify --full is red at ${ev.sha.slice(0, 7)}, red_cause ${ev.red_cause}: ${EVIDENCE} has each failing check's digest and log. Fix what it shows.${again}`;
+  if (was === "ROUND" && red) return `verify --full is red at ${ev.sha.slice(0, 7)}, red_cause ${ev.red_cause}: ${EVIDENCE} has each failing check's digest and log. Fix what it shows.${pinNote}${again}`;
   if (was === "ROUND" && !wasStatus) return `Your last turn ended before implementation.md had its status line. Carry on with the plan.${again}`;
   if (was === "ROUND") return `Fix each concern under concerns: in ${moved || IMPL}, or say there why it needs no fix.${again}`;
   if (was === "RESEARCH") return `The answer to your question is in ${path.join(dir, "context.md")}. Carry on with the plan.${again}`;

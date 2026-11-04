@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { project, sh } from "./harness.mjs";
+import { project, sh, write, STUB_SERVER } from "./harness.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN = path.join(ROOT, "plugin"), SCRIPTS = path.join(PLUGIN, "scripts");
@@ -41,11 +41,13 @@ const PACKAGE = JSON.stringify({ name: "reports", scripts: { test: "test -f csv.
 
 // A build run on a project holding `recipe`, past the ticket gate, with ticket 01 in progress and its plan ready. stage()
 // runs run-stage.mjs as the orchestrator does, from the main checkout, with the fake claude first on PATH playing the
-// steps play() sets. Every fake child still alive is killed after the test, pass or fail.
-function ticketReady(t, { recipe = RECIPE, config = {} } = {}) {
+// steps play() sets. Every fake child still alive is killed after the test, pass or fail. `files` are committed with the
+// product.
+function ticketReady(t, { recipe = RECIPE, config = {}, files = {} } = {}) {
   const p = project({ recipe, config });
   fs.writeFileSync(path.join(p.dir, "package.json"), PACKAGE);
   fs.writeFileSync(path.join(p.dir, "index.js"), "1\n");
+  write(p.dir, files);
   p.git("add", "."); p.git("commit", "-qm", "product");
   fs.appendFileSync(path.join(p.dir, ".git/info/exclude"), ".deps\n");
   const bin = tmp("factory-bin-"), fake = tmp("factory-claude-");
@@ -301,4 +303,56 @@ test("NEEDS_CONTEXT gets one researcher dispatch, whose answer the resumed child
   const [first, second] = r.calls();
   assert.equal(flag(second.argv, "--resume"), flag(first.argv, "--session-id"), "the same child, resumed");
   assert.ok(second.stdin.startsWith(`The answer to your question is in ${context}. Carry on with the plan.`));
+});
+
+// qa's stage on ticket 01 as the orchestrator records it: dispatched, the test files it changed (null deletes one)
+// committed on the ticket's branch by name, its qa.json written, then done.
+function qaWalks(r, files = {}) {
+  r.run("dispatch", "qa:01");
+  write(r.wt, files);
+  if (Object.keys(files).length) { git(r.wt, "add", "--", ...Object.keys(files)); git(r.wt, "commit", "-qm", "Pin SC-001"); }
+  fs.writeFileSync(path.join(r.tickets, "qa.json"), JSON.stringify({ ticket: "01-csv-export", status: "done", criteria: [] }));
+  r.run("done", "qa:01");
+}
+const PINNED_PASS = 'import { test } from "node:test";\nimport assert from "node:assert/strict";\n'
+  + 'test("[r] SC-001: the app answers", async () => assert.equal((await fetch(`${process.env.BASE_URL}/`)).status, 200));\n';
+const NO_CSV = 'import { test } from "node:test";\nimport assert from "node:assert/strict";\nimport fs from "node:fs";\n'
+  + 'test("[old] SC-004: the reports offer no CSV", () => assert.ok(!fs.existsSync("csv.js")));\n';
+
+test("with an app to walk, a green DONE ticket goes to qa before it merges, and verify then judges the ticket's head again with qa's pinned tests", (t) => {
+  const recipe = { ...RECIPE, apps: [{ ...RECIPE.apps[0], dev: "PORT={port:app} node server.mjs", health: "http://localhost:{port:app}/" }], pinned: ["e2e"] };
+  const r = ticketReady(t, { recipe, files: { "server.mjs": STUB_SERVER } });
+  const alive = path.join(r.p.dir, ".alive");  // the stub app lives by it
+  fs.writeFileSync(alive, ""); fs.writeFileSync(path.join(r.p.dir, ".factory/env.local"), `ALIVE=${alive}\n`);
+  t.after(() => fs.rmSync(alive, { force: true }));
+  r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }]);
+  assert.match(lastLine(r.stage("implement", "01")), /^QA 01: DONE, and verify --full is green at \w{7}, so qa walks ticket 01's criteria$/);
+  assert.equal(r.stage("merge", "01").status, 2, "nothing merges before qa walks it");
+  const pinned = `e2e/${r.s.id}-01-csv-export.test.mjs`;
+  qaWalks(r, { [pinned]: PINNED_PASS });
+  assert.equal(lastLine(r.stage("verify", "01")), `MERGE 01: DONE, and verify --full is green at ${git(r.wt, "rev-parse", "HEAD").slice(0, 7)}`);
+  const pins = (file) => JSON.parse(fs.readFileSync(file, "utf8")).checks.filter((c) => c.pinned).map((c) => [c.check, c.status]);
+  assert.deepEqual(pins(path.join(r.tickets, "evidence.json")), [[pinned, "pass"]], "qa's committed test is a pinned check");
+  assert.match(lastLine(r.stage("merge", "01")), /^MERGED 01:/);
+  assert.deepEqual(pins(path.join(r.s.run_dir, "evidence.json")), [[pinned, "pass"]], "rerun at the run head");
+});
+
+test("a red only in pinned tests goes to qa at no round's cost: a test qa rules fail is named in the fix round with verify --pinned, and one it supersedes lets the ticket merge", (t) => {
+  const old = "e2e/old-01-no-csv.test.mjs";
+  for (const ruling of ["fail", "superseded"]) {
+    const r = ticketReady(t, { recipe: { ...RECIPE, pinned: ["e2e"] }, files: { [old]: NO_CSV } });
+    r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }, {}]);
+    assert.equal(lastLine(r.stage("implement", "01")), `QA 01: verify --full is red only in pinned tests at ${git(r.wt, "rev-parse", "HEAD").slice(0, 7)}: ${old}, so qa rules on them`);
+    assert.equal(r.state().rounds, undefined);
+    qaWalks(r, ruling === "superseded" ? { [old]: null } : {});
+    if (ruling === "superseded") { assert.match(lastLine(r.stage("verify", "01")), /^MERGE 01:/, ruling); continue; }
+    assert.match(lastLine(r.stage("verify", "01")), /^ROUND 01: verify --full is red at \w{7}, red_cause introduced$/);
+    assert.equal(lastLine(r.node("run-state.mjs", ["round", "implement:01", "--run", r.s.id])), "OK implement:01 round 1/3", "the ruling cost none");
+    r.stage("implement", "01");
+    const { stdin } = r.calls().at(-1);
+    assert.ok(stdin.includes(` Failing pinned tests: ${old}. Make each pass by changing the product code; one the spec contradicts goes under `
+      + `concerns:, untouched, for qa to rule on. \`node ${path.join(SCRIPTS, "verify.mjs")} --pinned <path>\` runs one with the apps up.`), stdin);
+    r.run("dispatch", "qa:01");
+    assert.deepEqual(["qa.json", "qa.round1.json"].map((f) => fs.existsSync(path.join(r.tickets, f))), [false, true], "qa's next dispatch moves its last qa.json aside");
+  }
 });

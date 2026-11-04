@@ -72,9 +72,9 @@ const OUTPUT = {  // the file each stage writes in the run dir
   triage: "triage.md", answer: "answer.md", research: "research.md", spec: "spec.md", "builder-check": "builder-check.md",
   tickets: "tickets",  // a folder
 };
-// the file a stage of one ticket, <stage>:<NN>, writes in tickets/<NN>/: the planner's plan, the implementer's report and
-// the researcher's answer to the implementer
-const TICKET_OUTPUT = { plan: "plan.md", implement: "implementation.md", context: "context.md" };
+// the file a stage of one ticket, <stage>:<NN>, writes in tickets/<NN>/: the planner's plan, the implementer's report,
+// the researcher's answer to the implementer and qa's walk
+const TICKET_OUTPUT = { plan: "plan.md", implement: "implementation.md", context: "context.md", qa: "qa.json" };
 const BEFORE_SPEC_GATE = ["triage", "research", "spec", "builder-check"];  // a build run's only stages before its spec is approved
 const TICKET_STATUSES = ["ready-for-agent", "in-progress", "done", "blocked"];
 const CREDENTIAL = /KEY|SECRET|TOKEN|PASS|PWD|PRIVATE|CREDENTIAL|AUTH|DSN/i;  // an env name whose value the snapshot withholds
@@ -329,7 +329,7 @@ switch (cmd) {
       const out = file && path.join(ctx.runDir, file);
       if (out && fs.existsSync(out)) {
         const round = s.dispatches.filter((d) => d.stage === stage).length;
-        fs.renameSync(out, out.replace(/(\.md)?$/, `.round${round}$1`));  // tickets/ moves aside whole
+        fs.renameSync(out, out.replace(/(\.md|\.json)?$/, `.round${round}$1`));  // tickets/ moves aside whole
       }
       // orchestrator_session: the session dispatching, beside whose transcript a subagent's is written
       // fix: the fix round this attempt is for, as `round` counted it

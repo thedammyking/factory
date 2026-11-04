@@ -3,6 +3,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import net from "node:net";
+import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
@@ -270,4 +271,70 @@ test("fix 15: verify --full brings down a stack left up, so an e2e suite that st
   assert.deepEqual(statuses(r.evidence), ["web/test=pass", "web/e2e=pass"]);
   assert.equal(fs.readFileSync(r.evidence.checks[1].log, "utf8"), "e2e ran\n");
   assert.ok(!alive(pid), "the stack is down afterwards");
+});
+
+// A pinned test qa wrote: it passes only when BASE_URL reaches the run's own app, which runs from the test's worktree.
+const PINNED_OK = 'import { test } from "node:test";\nimport assert from "node:assert/strict";\n'
+  + 'test("[r1] SC-001: the app answers at BASE_URL", async () => {\n  assert.match(process.env.BASE_URL, /^http:\\/\\/localhost:\\d+$/);\n'
+  + '  assert.equal((await (await fetch(`${process.env.BASE_URL}/`)).json()).cwd, process.cwd());\n});\n';
+const PINNED_RED = 'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("[r1] SC-002: the total is 4250", () => assert.equal(2750, 4250));\n';
+const API = (test = "true") => ({ apps: [{ name: "api", path: ".", dev: "PORT={port:api} node server.mjs", health: "http://localhost:{port:api}/health", checks: { test } }], pinned: ["e2e/"] });
+
+test("verify --full runs each test qa pinned in the recipe's pinned directories as a check of its own, marked pinned, with the apps up and BASE_URL their URL, and a red only there is pinned_only", (t) => {
+  const p = withApps(t, API(), { "e2e/r1-01-total.test.mjs": PINNED_OK, "e2e/r1-02-red.test.mjs": PINNED_RED,
+    "e2e/notes.test.mjs": "process.exit(1);\n", "e2e/r1-01-helper.mjs": "process.exit(1);\n" });
+  const r = p.verify("--full");
+  assert.equal(r.status, 1, r.stdout);
+  assert.deepEqual(statuses(r.evidence), ["api/test=pass", "api/e2e/r1-01-total.test.mjs=pass", "api/e2e/r1-02-red.test.mjs=fail"],
+    "a file qa didn't name, or one no runner runs, isn't a pinned test");
+  const [unit, ok, red] = r.evidence.checks;
+  assert.deepEqual([unit.pinned, ok.pinned, ok.needs_apps, red.pinned], [undefined, true, true, true]);
+  assert.match(red.digest, /Expected values to be strictly equal/);
+  assert.deepEqual([r.evidence.green, r.evidence.red_cause, r.evidence.pinned_only], [false, "introduced", true]);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(p.s.run_dir, "apps.json"), "utf8")).apps, {}, "the apps went down after");
+  assert.equal(p.verify("--fast").evidence.checks.length, 1, "--fast runs no pinned test");
+
+  const e = withApps(t, API("exit 1"), { "e2e/r1-02-red.test.mjs": PINNED_RED }).verify("--full").evidence;
+  assert.deepEqual([statuses(e), e.pinned_only], [["api/test=fail", "api/e2e/r1-02-red.test.mjs=fail"], false], "red outside the pinned checks too");
+});
+
+test("verify --pinned <path> runs that one pinned test with the apps up, in the worktree holding it wherever it's called from, into evidence-pinned.json", (t) => {
+  const p = withApps(t, API(), { "e2e/r1-01-total.test.mjs": PINNED_OK, "e2e/r1-02-red.test.mjs": PINNED_RED });
+  const red = node("verify.mjs", p.dir, ["--pinned", path.join(p.wt, "e2e/r1-02-red.test.mjs")]);
+  assert.equal(red.status, 1, red.stdout + red.stderr);
+  const e = JSON.parse(fs.readFileSync(path.join(p.s.run_dir, "evidence-pinned.json"), "utf8"));
+  assert.deepEqual([e.mode, statuses(e), e.pinned_only], ["pinned", ["api/e2e/r1-02-red.test.mjs=fail"], true]);
+  assert.equal(e.checks[0].log, path.join(p.s.run_dir, "logs", "api-e2e_r1-02-red.test.mjs.pinned.log"), "a pinned log never overwrites a full one");
+  assert.match(red.stdout, /^--- api\/e2e\/r1-02-red\.test\.mjs fail\n[\s\S]*Expected values to be strictly equal/m);
+  assert.ok(!fs.existsSync(path.join(p.s.run_dir, "evidence.json")), "the full evidence is untouched");
+
+  const ticket = path.join(p.dir, ".factory/worktrees", `${p.s.id}-01`);
+  p.git("worktree", "add", "-q", "-b", `factory/${p.s.id}/01`, ticket, git(p.wt, "rev-parse", "HEAD"));
+  const ok = node("verify.mjs", ticket, ["--pinned", "e2e/r1-01-total.test.mjs"]);
+  assert.equal(ok.status, 0, ok.stdout + ok.stderr);
+  const te = JSON.parse(fs.readFileSync(path.join(p.s.run_dir, "tickets", "01", "evidence-pinned.json"), "utf8"));
+  assert.deepEqual([te.sha, te.green, statuses(te)], [git(ticket, "rev-parse", "HEAD"), true, ["api/e2e/r1-01-total.test.mjs=pass"]], "the app ran from the ticket's worktree");
+
+  for (const [args, why] of [[["server.mjs"], /isn't a \.test\.mjs or \.spec\.ts in an app's pinned directory \(e2e\)/],
+    [["e2e/r1-03-gone.test.mjs"], /no pinned test at /], [[], /no pinned test at /]]) {
+    const r = node("verify.mjs", ticket, ["--pinned", ...args]);
+    assert.equal(r.status, 2, args.join(" "));
+    assert.match(r.stderr, why);
+  }
+});
+
+test("a pinned .spec.ts runs with the project's Playwright from the directory of the app that holds it", (t) => {
+  const bin = fs.mkdtempSync(path.join(os.tmpdir(), "factory-bin-"));
+  fs.writeFileSync(path.join(bin, "npx"), `#!${process.execPath}\nconsole.log(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), BASE_URL: process.env.BASE_URL }));\n`, { mode: 0o755 });
+  const p = withApps(t, { apps: [
+    { name: "api", path: ".", checks: { test: "true" } },
+    { name: "web", path: "web", dev: "PORT={port:web} node ../server.mjs", health: "http://localhost:{port:web}/", checks: { test: "true" } },
+  ], pinned: ["web/e2e"] }, { "web/e2e/r1-01-signup.spec.ts": "// pinned\n" });
+  const r = p.verify("--full", { ...process.env, PATH: bin + path.delimiter + process.env.PATH });
+  assert.equal(r.status, 0, r.stdout);
+  const c = r.evidence.checks.at(-1);
+  assert.deepEqual([c.app, c.check, c.pinned], ["web", "web/e2e/r1-01-signup.spec.ts", true]);
+  const seen = JSON.parse(fs.readFileSync(c.log, "utf8"));
+  assert.deepEqual([seen.argv, seen.cwd], [["--no", "playwright", "test", "e2e/r1-01-signup.spec.ts"], path.join(p.wt, "web")]);
+  assert.match(seen.BASE_URL, /^http:\/\/localhost:\d+$/);
 });

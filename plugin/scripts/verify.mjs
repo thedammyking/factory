@@ -1,11 +1,16 @@
 #!/usr/bin/env node
-// verify.mjs --fast | --full — runs every check in the run worktree's recipe (.factory/setup.json) for every app, never
-// stopping at the first failure, and writes the evidence to the run dir: evidence.json for --full, evidence-fast.json for
-// --fast (typecheck, lint and test only), so a fast pass never stands in for a full one. Takes --run <id>, or derives the
-// run from the run worktree it runs in. Run in a ticket's worktree, it checks that worktree instead, and writes to
-// tickets/<NN>/ in the run dir.
+// verify.mjs --fast | --full | --pinned <path> — runs every check in the run worktree's recipe (.factory/setup.json) for
+// every app, never stopping at the first failure, and writes the evidence to the run dir: evidence.json for --full,
+// evidence-fast.json for --fast (typecheck, lint and test only), so a fast pass never stands in for a full one. Takes
+// --run <id>, or derives the run from the run worktree it runs in. Run in a ticket's worktree, it checks that worktree
+// instead, and writes to tickets/<NN>/ in the run dir.
+//   - --full also runs each pinned test: a file qa named <run>-<NN>-<slug>.test.mjs (node:test) or .spec.ts (Playwright,
+//     the project's own) in one of the recipe's `pinned` directories. Each is a check of its own, marked pinned, run in
+//     the app whose path holds it while the apps are up, with that app's URL as BASE_URL. --pinned <path> runs only that
+//     test, in the worktree holding it, wherever it's called from, into evidence-pinned.json.
+//   - pinned_only marks a red where every check that didn't pass is pinned, on a clean and trusted tree: qa rules on it.
 //   - A check is "<command>" or { cmd, env: [names it needs] }. It runs under bash in its app's path with lib's runEnv,
-//     its full output saved to logs/<app>-<check>.log in the run dir (.fast.log under --fast); a failing one carries
+//     its full output saved to logs/<app>-<check>.log in the run dir (.fast.log or .pinned.log); a failing one carries
 //     lib's digest of that output.
 //   - A check needing a name .factory/env.local doesn't hold is skipped, never run. An app without a test check fails it.
 //   - A check its app lists in needs_apps runs between run-apps up and down, with {port:<app>} and {db} filled in its
@@ -22,10 +27,13 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, worktreesDir, runContext, runEnv, digest, fill } from "./lib.mjs";
+import { readJson, arg, git, worktreesDir, runContext, runEnv, digest, fill } from "./lib.mjs";
 
-const mode = ["fast", "full"].find((m) => process.argv.includes(`--${m}`));
-if (!mode) { console.error("verify: usage: verify.mjs --fast | --full [--run <id>]"); process.exit(2); }
+const mode = ["fast", "full", "pinned"].find((m) => process.argv.includes(`--${m}`));
+if (!mode) { console.error("verify: usage: verify.mjs --fast | --full | --pinned <path> [--run <id>]"); process.exit(2); }
+const onlyTest = mode === "pinned" && path.resolve(arg("--pinned") ?? "");  // --pinned's file, else false
+if (onlyTest && !fs.statSync(onlyTest, { throwIfNoEntry: false })?.isFile()) { console.error(`verify: no pinned test at ${onlyTest}`); process.exit(2); }
+if (onlyTest) process.chdir(path.dirname(onlyTest));
 const ctx = runContext(), s = readJson(ctx.state), tree = ctx.tree, out = ctx.ticket ? path.join(ctx.runDir, "tickets", ctx.ticket) : ctx.runDir;
 const RECIPE = ".factory/setup.json", FAST = ["typecheck", "lint", "test"];
 let text, recipe; try { text = fs.readFileSync(path.join(tree, RECIPE), "utf8"); recipe = JSON.parse(text); } catch (e) {
@@ -39,7 +47,7 @@ const logs = path.join(out, "logs");
 fs.mkdirSync(logs, { recursive: true });
 const appDir = (root, name) => path.join(root, recipe.apps.find((a) => a.name === name).path || ".");
 const NOT_RUN = { exit: null, seconds: 0, log: null };
-const logOf = (name) => path.join(logs, `${name.replace(/[^\w.-]/g, "_")}${mode === "fast" ? ".fast" : ""}.log`);
+const logOf = (name) => path.join(logs, `${name.replace(/[^\w.-]/g, "_")}${mode === "full" ? "" : `.${mode}`}.log`);
 const RUN_APPS = fileURLToPath(new URL("run-apps.mjs", import.meta.url));
 const apps = (cmd) => spawnSync(process.execPath, [RUN_APPS, cmd, "--run", ctx.id], { encoding: "utf8" });
 
@@ -68,8 +76,9 @@ function atBase(failing) {
   } finally { git(ctx.MAIN, "worktree", "remove", "--force", wt); }
 }
 
-// Runs a check that needs apps between run-apps up and down.
-function withApps(app, check, cmd) {
+// Runs a check that needs apps between run-apps up and down. A pinned test gets its path, from its app's, as
+// $FACTORY_PINNED, never spliced into the command, and its app's URL as BASE_URL.
+function withApps(app, check, cmd, pinnedPath) {
   const up = apps("up");
   try {
     if (up.status !== 0) {
@@ -79,14 +88,29 @@ function withApps(app, check, cmd) {
     }
     const recorded = readJson(path.join(ctx.runDir, "apps.json"));
     const filled = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, typeof v === "string" ? fill(v, recorded) : v]));
+    const url = recorded?.apps?.[app]?.url;
+    if (pinnedPath) Object.assign(filled, { FACTORY_PINNED: pinnedPath }, url && { BASE_URL: new URL(url).origin });
     return execute(appDir(tree, app), fill(cmd, recorded), `${app}-${check}`, filled);
   } finally { apps("down"); }
+}
+
+// Pinned tests by file type, each found by qa's naming in a pinned directory, and the app whose path holds one, deepest first.
+const RUNNERS = { ".test.mjs": 'node --test "$FACTORY_PINNED"', ".spec.ts": 'npx --no playwright test "$FACTORY_PINNED"' };
+const QA_NAMED = /^[a-z0-9][a-z0-9-]*-\d{2}-[a-z0-9-]+\./;  // <run>-<NN>-<slug>.
+const runner = (rel) => Object.entries(RUNNERS).find(([ext]) => rel.endsWith(ext))?.[1];
+const pinnedDirs = [].concat(recipe.pinned ?? []).map((d) => path.normalize(String(d)).replace(/\/+$/, ""));
+const holder = (rel) => (recipe.apps || []).map((a) => [a, path.normalize(a.path || ".")])
+  .filter(([, p]) => p === "." || rel.startsWith(p + path.sep)).sort(([, a], [, b]) => b.length - a.length)[0]?.[0];
+const pinnedTests = onlyTest ? [path.relative(tree, fs.realpathSync(onlyTest))] : mode === "fast" ? [] : pinnedDirs.flatMap((d) => fs.existsSync(path.join(tree, d))
+  ? fs.readdirSync(path.join(tree, d)).filter((f) => QA_NAMED.test(f) && runner(f)).sort().map((f) => path.join(d, f)) : []);
+if (onlyTest && !(pinnedDirs.some((d) => pinnedTests[0].startsWith(d + path.sep)) && runner(pinnedTests[0]) && holder(pinnedTests[0]))) {
+  console.error(`verify: ${pinnedTests[0]} isn't a ${Object.keys(RUNNERS).join(" or ")} in an app's pinned directory (${pinnedDirs.join(", ") || "the recipe has none"})`); process.exit(2);
 }
 
 if (mode === "full") apps("down");
 const before = git(tree, "rev-parse", "HEAD");
 const checks = [];
-for (const app of recipe.apps || []) {
+for (const app of onlyTest ? [] : recipe.apps || []) {
   const defs = app.checks || {};
   for (const [check, def] of Object.entries(defs)) {
     if (mode === "fast" && !FAST.includes(check)) continue;
@@ -98,6 +122,12 @@ for (const app of recipe.apps || []) {
       : needsApps ? withApps(app.name, check, cmd) : execute(appDir(tree, app.name), cmd, `${app.name}-${check}`)) });
   }
   if (!defs.test) checks.push({ app: app.name, check: "test", cmd: null, status: "fail", ...NOT_RUN, digest: "required check not in recipe" });
+}
+// ponytail: the apps go up and down around each pinned test; bring them up once for all if the minutes show it.
+for (const rel of pinnedTests) {
+  const app = holder(rel), cmd = runner(rel), check = { check: rel, cmd, needs_apps: true, pinned: true };
+  checks.push(app ? { app: app.name, ...check, ...withApps(app.name, rel, cmd, path.relative(path.normalize(app.path || "."), rel)) }
+    : { app: null, ...check, status: "fail", ...NOT_RUN, digest: "no app's path holds this pinned directory" });
 }
 // The run's bookkeeping under .factory/ isn't product, but the recipe is. Not lib's git(), whose trim would eat the
 // first line's leading status column.
@@ -115,8 +145,9 @@ if (rerun.length) atBase(rerun);
 const red_cause = green ? null
   : failed.length ? (failed.every((c) => !c.cmd || c.at_base?.status === "fail") ? "inherited" : "introduced")
   : dirty || !trusted ? "incomplete" : "environment";
-const evidence = { mode, sha, green, dirty, trusted, red_cause, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString() };
-const file = path.join(out, mode === "full" ? "evidence.json" : "evidence-fast.json");
+const pinned_only = !green && !dirty && trusted && checks.every((c) => c.status === "pass" || c.pinned);
+const evidence = { mode, sha, green, dirty, trusted, red_cause, pinned_only, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString() };
+const file = path.join(out, mode === "full" ? "evidence.json" : `evidence-${mode}.json`);
 fs.writeFileSync(file, JSON.stringify(evidence, null, 2) + "\n");
 
 console.log(`verify ${mode}: green=${green} dirty=${dirty} trusted=${trusted}${red_cause ? ` red_cause=${red_cause}` : ""} sha=${sha.slice(0, 7)} `
