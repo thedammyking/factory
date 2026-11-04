@@ -1,8 +1,8 @@
 ---
 name: factory
-description: Carries a request through the factory as a run. /factory <request> | status | resume [run] | approve [run] approved|revise|abandon | abandon [run] | try <run>
+description: Carries a request through the factory as a run. /factory <request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run>
 disable-model-invocation: true
-argument-hint: "<request> | status | resume [run] | approve [run] approved|revise|abandon | abandon [run] | try <run>"
+argument-hint: "<request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run>"
 allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*)
 ---
 
@@ -25,7 +25,7 @@ When a command names no run, run `run-state status`. If exactly one run is liste
 
 ## New run
 
-1. Start the run. When `tracker` in `.factory/config.json` isn't `local`, see **Request issue** first: a request that is an issue's reference starts from that issue. Otherwise pass the request exactly as given, on stdin through a quoted heredoc, so no shell parses it. If a line of the request is exactly `FACTORY_REQUEST`, pick another delimiter that no line of it matches.
+1. Start the run. A request `map <map> <N>` starts from entry N of a map's run list: follow **From a run list** in `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/map.md` instead. When `tracker` in `.factory/config.json` isn't `local`, see **Request issue** first: a request that is an issue's reference starts from that issue. Otherwise pass the request exactly as given, on stdin through a quoted heredoc, so no shell parses it. If a line of the request is exactly `FACTORY_REQUEST`, pick another delimiter that no line of it matches.
 
    ```bash
    node ${CLAUDE_PLUGIN_ROOT}/scripts/run-state.mjs init <<'FACTORY_REQUEST'
@@ -75,7 +75,7 @@ The request can't be specified as written. No lane branch is made.
 
 ### map
 
-The request is too foggy for one spec. Until the map gate ships, every map run stops here. Write `attention-map.md`: say triage judged the request too big for one run. Recommend starting one run per piece. Give these options: `/factory <one piece of the request>` and `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, print the attention item and stop.
+The request is too foggy for one spec: it waits at the map gate, where the human charts a map, runs it anyway or abandons it. Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/map.md` and follow its **Gate**. Its **Decisions** and **From a run list** are named elsewhere: whenever one is, read that file first if it isn't already in this session.
 
 ### answer
 
@@ -104,7 +104,7 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/build.md` and follow it. I
 
 ## Approve
 
-`/factory approve [run] <decision>`, at the spec gate or the ticket gate. Find the run (see above). It is at the ticket gate when its last dispatch in `run-state get` is `tickets`, else at the spec gate. With no decision, or one that isn't `approved`, `revise` or `abandon`, print the options of that gate's attention item and stop. At the spec gate:
+`/factory approve [run] <decision>`, at the spec gate, the ticket gate or the map gate. Find the run (see above). A run routed `map` is at the map gate: follow **Decisions** in `references/map.md`, whose decisions are `chart`, `run` and `abandon`, and nothing below. Otherwise it is at the ticket gate when its last dispatch in `run-state get` is `tickets`, else at the spec gate. With no decision, or one that isn't `approved`, `revise` or `abandon`, print the options of that gate's attention item and stop. At the spec gate:
 
 - `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop; otherwise do the **Notion push** first. Then go to step 7 of **build**.
 - `revise`: `run-state approve spec revise --run <id>`; if it refuses, print why and stop. Ask in plain chat what should change, append the answer to `grill.md` under `### Session <today's date> (revise)` as `- Q: What should change? → A: <their words>`, then go to step 4 of **build**.

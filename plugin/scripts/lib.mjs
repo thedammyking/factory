@@ -37,10 +37,12 @@ export function runPaths(main, id) {
 // Commits onto `base` without checking it out: apply(wt) writes into a temp worktree detached at the base tip and returns
 // the paths to stage. The base then moves by a fast-forward in the checkout that holds it, else by a compare-and-swap.
 // If the move fails (the base moved meanwhile, or the checkout holding it refused), it applies again on the new tip, 3
-// tries in all, then throws. Every caller writes a per-run path or appends, so applying again is safe. Returns the new
+// tries in all, then throws. Every caller writes a per-run path or appends, or, as map.mjs does, checks the tip in
+// apply and throws there (committing nothing) when another writer got in first, so applying again is safe. Returns the new
 // commit's SHA, or null when nothing changed.
 export function commitToBase(main, base, message, apply) {
   let err;
+  fs.mkdirSync(worktreesDir(main), { recursive: true });  // a project with no run yet has none
   for (let n = 0; n < 3; n++) {
     const tip = git(main, "rev-parse", "--verify", `refs/heads/${base}^{commit}`);
     const wt = fs.mkdtempSync(path.join(worktreesDir(main), ".base-"));
@@ -152,21 +154,22 @@ export function digest(output, log) {
 export const fill = (text, apps) =>
   text.replace(/\{port:([^}]+)\}|\{db\}/g, (m, app) => String((app ? apps?.apps?.[app]?.port : apps?.db) ?? m));
 
-// The shared frontier reader, over a folder of NN-slug.md items (a run's tickets). Each has a `Status:` line and a
-// `Blocked by:` line (`none`, or the number of each item it waits on), either one bold or not; blockedBy is null without one.
-// next is what can be taken now: the in-progress items, then each ready-for-agent item whose blockers are all done.
-// open is every item not done.
+// The shared frontier reader, over a folder of NN-slug.md items (a run's tickets, or a map's decision tickets). Each has a
+// `Status:` line and a `Blocked by:` line (`none`, or the number of each item it waits on), either one bold or not;
+// blockedBy is null without one. next is what can be taken now: the started items, then each ready item whose blockers are
+// all closed. open is every item not closed, and done the numbers of those closed. `words` names the statuses, a run's
+// tickets' by default; `files` (name -> text) stands in for the folder on disk, as map.mjs reads its base branch's tree.
 export const STATUS_LINE = /^(\**Status:\**[ \t]*)(.*)$/m;
-export function frontier(dir) {
-  const items = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => /^\d{2}-.+\.md$/.test(f)).sort().map((f) => {
-    const text = fs.readFileSync(path.join(dir, f), "utf8"), blocked = text.match(/^\**Blocked by:\**[ \t]*(.*)$/m);
+export function frontier(dir, { closed = ["done"], started = "in-progress", ready = "ready-for-agent" } = {}, files = null) {
+  const items = (files ? Object.keys(files) : fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => /^\d{2}-.+\.md$/.test(f)).sort().map((f) => {
+    const text = files ? files[f] : fs.readFileSync(path.join(dir, f), "utf8"), blocked = text.match(/^\**Blocked by:\**[ \t]*(.*)$/m);
     return { id: f.slice(0, -3), n: f.slice(0, 2), file: path.join(dir, f), text,
       status: text.match(STATUS_LINE)?.[2].trim(), blockedBy: blocked && (blocked[1].match(/\d+/g) || []).map((d) => d.padStart(2, "0")) };
   });
-  const done = new Set(items.filter((t) => t.status === "done").map((t) => t.n));
-  const open = items.filter((t) => t.status !== "done");
-  const next = [...open.filter((t) => t.status === "in-progress"),
-    ...open.filter((t) => t.status === "ready-for-agent" && (t.blockedBy || []).every((b) => done.has(b)))];
+  const done = new Set(items.filter((t) => closed.includes(t.status)).map((t) => t.n));
+  const open = items.filter((t) => !closed.includes(t.status));
+  const next = [...open.filter((t) => t.status === started),
+    ...open.filter((t) => t.status === ready && (t.blockedBy || []).every((b) => done.has(b)))];
   return { items, open, next, done };
 }
 

@@ -30,7 +30,7 @@ The dispatch gives you `{run_dir}` (the run's directory), `{worktree}` (a clean 
 3. **acceptance_check**: for a `bug` or `feature` on an app, shape it as a success criterion: where (a route, screen or endpoint), the action, and the observable result. For an endpoint, say what triggers it and what to observe. It always runs in the default profile. For a `question`, state what a complete answer says. Otherwise, state the observable result.
 4. **size**: `s` is one product file, `m` one vertical slice, `l` several slices or a new app.
 5. **route**:
-   - `map`, whatever the contract, when the request is too foggy for one spec: several features or open decisions that need charting before any of them can be specified ("build me a CRM").
+   - `map`, whatever the contract, when the request is too foggy for one spec: several features or open decisions that need charting before any of them can be specified ("build me a CRM"). Its size is `l`.
    - `hold` for `NEEDS_CLARIFICATION` or `BLOCKED`.
    - `answer` for a `READY` question or a `NO_ACTION` contract.
    - `oneshot` only when every condition holds: the contract is `READY`; the change touches one product file (tests aside) in one app; it adds no dependency; and the acceptance check has the criterion shape above, or the type is `docs`, `refactor` or `maintenance`. If any condition is in doubt, it isn't a oneshot.

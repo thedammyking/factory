@@ -14,6 +14,7 @@ The factory is MIT-licensed (see [LICENSE](LICENSE)). It copies only whole files
 - Copyright: Copyright (c) 2026 Matt Pocock
 - Files:
   - `skills/grilling/SKILL.md`, copied from `skills/productivity/grilling/SKILL.md`. Its text is unchanged; the frontmatter gains `user-invocable: false` and a `license:` line.
+  - `skills/wayfinder/SKILL.md`, adapted from `skills/engineering/wayfinder/SKILL.md`. Its map is on the factory's tracker, read from `tracker` in `.factory/config.json` and that tracker doc's Wayfinding operations, never `docs/agents/`; its destination is always a run list for `/factory`; research tickets go to the `factory:researcher` agent with the ticket's question, and their findings are committed to `.factory/maps/<slug>/research/` with no research branches; the prototype ticket type and the domain-modeling skill are dropped; a ticket's type is a `Type:` line, never a label. The frontmatter gains `allowed-tools` and a `license:` line.
 
 ## Licence texts
 
@@ -58,4 +59,4 @@ SOFTWARE.
 - [pbakaus/impeccable](https://github.com/pbakaus/impeccable) (Apache-2.0): the operate-surface checks `ui-craft`'s floor grew from; the UI lens's check 0, its `recapture | rebuild | fix | ship` dispositions, its critique rubric over Nielsen's heuristics with a floor, and the P0 to P3 severities.
 - [emilkowalski/skills](https://github.com/emilkowalski/skills) (MIT): `ui-craft`'s motion limits, ease-out within 300 ms and never from `scale(0)`; the UI lens's break-ui and motion passes.
 - [kunchenguid/no-mistakes](https://github.com/kunchenguid/no-mistakes) (MIT): a finding's `fix | ask | note` action, a missing one read as `ask`; anything the intent doesn't need as a `P2 ask`; expected values that don't come from the code under test.
-- [mattpocock/skills](https://github.com/mattpocock/skills) (MIT): the code lens's two axes in one pass, spec compliance and the repo's written standards first.
+- [mattpocock/skills](https://github.com/mattpocock/skills) (MIT): the code lens's two axes in one pass, spec compliance and the repo's written standards first; the tracker docs' Wayfinding operations, and a local map as a folder of numbered tickets with `Status:` and `Blocked by:` lines whose frontier is the first open, unblocked, unclaimed one.
