@@ -214,6 +214,21 @@ test("section B: a Notion parent page's URL sends specs to Notion under that pag
   assert.deepEqual([config().docs, "notion_parent" in config()], ["repo", false]);
 });
 
+test("section B: a fresh config grills one question at a time, and set grill takes only one or all", () => {
+  const p = shop();
+  const f = fakes();
+  detect(p, f);
+  assert.match(run(p, f, ["apply", "--dry-run"]).stdout, /^\+  "grill": "one",$/m);
+  for (const value of ["both", "One", "null", '"one "']) {
+    const r = run(p, f, ["set", "grill", value]);
+    assert.equal(r.status, 2, `set grill ${value}`);
+    assert.match(r.stderr, /grill is one or all/);
+  }
+  const r = run(p, f, ["set", "grill", "all"]);
+  assert.equal(r.status, 0, r.stderr);
+  assert.match(run(p, f, ["apply", "--dry-run"]).stdout, /^\+  "grill": "all",$/m);
+});
+
 test("prove runs every check, dev command and health route once and records wall-clock seconds, writing nothing in the project", () => {
   const p = shop();
   const f = fakes();

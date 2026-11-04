@@ -151,7 +151,9 @@ const OUTPUT = {  // the file each stage writes in the run dir
 // the file a stage of one ticket, <stage>:<NN>, writes in tickets/<NN>/: the planner's plan, the implementer's report,
 // the researcher's answer to the implementer and qa's walk
 const TICKET_OUTPUT = { plan: "plan.md", implement: "implementation.md", context: "context.md", qa: "qa.json" };
-const BEFORE_SPEC_GATE = ["triage", "research", "spec", "builder-check"];  // a build run's only stages before its spec is approved
+// a build run's only stages before its spec is approved. fact: the researcher sent for one fact mid-grill, as often as the
+// grill needs; it appends to research.md, so it has no OUTPUT to move aside.
+const BEFORE_SPEC_GATE = ["triage", "research", "fact", "spec", "builder-check"];
 const TICKET_STATUSES = ["ready-for-agent", "in-progress", "done", "blocked"];
 const CREDENTIAL = /KEY|SECRET|TOKEN|PASS|PWD|PRIVATE|CREDENTIAL|AUTH|DSN/i;  // an env name whose value the snapshot withholds
 const LENSES = ["code", "ui", "security"];  // each writes review-<lens>.md, dispatched as stage review-<lens>

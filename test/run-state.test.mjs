@@ -421,6 +421,36 @@ test("the dispatch cap refuses the 31st dispatch and the minute cap refuses past
   assert.match(rs(p.dir, ["spend", "--run", held.id]).stdout, /^minutes 0\/90$/m);
 });
 
+test("a fact the grill sends for counts toward the build run's caps and spend, repeats, and leaves research.md in place", () => {
+  const p = project({ config: { caps: { dispatches_per_run: 3 } } });
+  const c = claude();
+  const s = init(p);
+  const run = (...args) => rs(p.dir, [...args, "--run", s.id], "", c.env);
+  const research = path.join(s.run_dir, "research.md");
+  run("set", "route", "build");
+  run("dispatch", "research");
+  fs.writeFileSync(research, "# Research: a CSV export\n\nStatus: ok\n");
+  run("done", "research");
+  const fact = run("dispatch", "fact");
+  assert.equal(fact.status, 0, fact.stderr || fact.stdout);
+  assert.equal(run("dispatch", "fact", "--agent", "a-fact").status, 0);
+  c.subagent("a-fact", usage("m-fact", 5000));
+  fs.appendFileSync(research, "\n## Fact: How big may an export be?\n\n- Unknown: no limit is set.\n");
+  assert.equal(run("done", "fact").status, 0);
+  assert.equal(run("dispatch", "fact").status, 0, "a second fact in the same grill");
+  let st = stateOf(p, s, c.env);
+  assert.deepEqual(st.dispatches.map((d) => d.stage), ["research", "fact", "fact"]);
+  assert.equal(st.spend.by_stage.fact.tokens, 5000);
+  assert.ok(!st.stages_done.includes("fact"), "the second fact is working");
+  assert.match(fs.readFileSync(research, "utf8"), /^Status: ok\n\n## Fact: How big may an export be\?/m, "research.md is never moved aside");
+  assert.deepEqual(fs.readdirSync(s.run_dir).filter((f) => f.startsWith("research")), ["research.md"]);
+  const over = run("dispatch", "fact");
+  assert.equal(over.status, 4);
+  assert.match(over.stdout, /^BUDGET dispatches 3\/3: fact not dispatched$/m);
+  st = stateOf(p, s, c.env);
+  assert.equal(st.dispatches.length, 3, "a refused fact is never recorded");
+});
+
 test("a run resumed in another session is measured in both: each dispatch records the session it was made from", () => {
   const p = project();
   const c = claude();

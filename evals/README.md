@@ -9,6 +9,7 @@
 | `triager-one-file-bug` | a cart total that ignores quantity, in one file | `READY`, route `oneshot` |
 | `triager-not-oneshot` | "Show the user's timezone on their profile card", which needs a component change and an API change | route `build` |
 | `researcher-local-doc` | a question `docs/auth.md` answers | `answer.md` cites `docs/auth.md`, and WebFetch is called zero times |
+| `researcher-fact` | a `mode: fact` question about the upload limit, which only line 4 of `src/uploads/limits.js` sets, with a `research.md` that doesn't hold it | `research.md` keeps what it held and gains a `## Fact:` section citing `src/uploads/limits.js:4` |
 | `builder-check-uncheckable` | a spec whose `SC-003` says only "The export feels fast." | the last message and `builder-check.md` name `SC-003` |
 | `planner-plan-test-first` | a ticket adding a CSV export to a small repo with a `node:test` seam | `tickets/01/plan.md` is written, names a path the repo holds, and (judged by `llm`) writes a failing test before the change |
 | `implementer-red-pinned` | a ready plan for that CSV export, with the pinned test `e2e/r1-01-csv-export.test.mjs` red, in a run and ticket worktree laid out as `run-state` and `run-stage` make them | `node --test` in the ticket's worktree ends `# fail 0` with the pinned test passing, the pinned file is byte for byte as written and never the target of an Edit or Write, and the ticket's branch has a commit |

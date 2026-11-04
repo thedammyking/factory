@@ -34,7 +34,9 @@ When the answer is `other`, ask how the tracker does each of these, by a command
 
 ## B. Specs
 
-Only when a Notion server was visible in **Detection**; otherwise skip this section. Ask "Copy each approved spec to a Notion page for people who don't read the repo?", with `Yes` (Recommended), the URL of the parent page to put them under in its notes or through Other, and `No`. On a re-run whose proposal has `config.notion_parent`, keeping that page is the first option, recommended. The factory only writes these pages and never reads them back.
+Always ask "How should a run's grill put its questions to you?", with `One at a time` (Recommended), each question picked after the last answer so the answers steer what's asked, at the cost of more turns, and `All at once`, every question that can be asked now, up to four a call: fewer turns, but no question in a call can follow from another's answer. On a re-run, the kept `grill` is the first option, recommended. Record it with `setup-factory set grill one` or `setup-factory set grill all`. Wayfinder's grilling tickets ask the same way.
+
+Only when a Notion server was visible in **Detection**; otherwise go to **C**. Ask "Copy each approved spec to a Notion page for people who don't read the repo?", with `Yes` (Recommended), the URL of the parent page to put them under in its notes or through Other, and `No`. On a re-run whose proposal has `config.notion_parent`, keeping that page is the first option, recommended. The factory only writes these pages and never reads them back.
 
 - A URL: `setup-factory set notion_parent '<the URL>'`, which keeps the page's ID and sets `docs` to `notion`. If it says the URL names no Notion page, ask again.
 - No: `setup-factory set notion_parent null`, which sets `docs` to `repo`.

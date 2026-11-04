@@ -30,7 +30,8 @@
 //   setup-factory.mjs set <field> [<value>]  -> sets one field of the proposal to the value, or to stdin without one;
 //                                              null drops the field. notion_parent takes a Notion page's URL and keeps its
 //                                              ID, setting docs notion, or null for docs repo. tracker_doc takes the other
-//                                              tracker's run operations, which apply writes into .factory/tracker.md
+//                                              tracker's run operations, which apply writes into .factory/tracker.md.
+//                                              grill takes one or all, how the grill asks
 //   setup-factory.mjs apply [--tracker <t>] [--dry-run] -> --dry-run prints the proposal: every detected value with its
 //                                              source, guesses marked, and each file's diff. Without it, refuses a command
 //                                              that wasn't proven, then writes .factory/, the .gitignore entries and the
@@ -808,6 +809,8 @@ switch (cmd) {
       console.log(id ? `set docs notion, under page ${P.config.notion_parent}` : "set docs repo");
       break;
     }
+    // B. Specs: the grill asks one question a call, or the whole frontier in as few calls as it can
+    if (field === "grill" && !["one", "all"].includes(value)) die(`grill is one or all, not ${raw}`);
     if (!["apps", "pinned", "preview", "env", "smoke"].includes(keys[0]) && !(keys[0] in P.config)) die(`${field} isn't a field setup writes`);
     let node = keys[0] in P.config ? P.config : P.recipe;
     for (const [i, k] of keys.slice(0, -1).entries()) {
