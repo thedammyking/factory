@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 // setup-factory.mjs — what /setup-factory runs. Nothing but the untracked .factory/env.local is written in the project
 // before apply, and no env value is ever printed or kept in the proposal.
-//   setup-factory.mjs detect [--mcp <a,b>]   -> checks the prerequisites (a package.json, a GitHub remote, a signed-in gh)
+//   setup-factory.mjs detect [--mcp <a,b>]   -> checks the prerequisites (a GitHub remote, a signed-in gh)
 //                                              and exits 1 with the fix for each one missing; otherwise prints the proposal
 //                                              as one JSON object and keeps it in the git dir for the next commands. --mcp
 //                                              names the MCP servers (linear, notion, figma, mobbin) visible in the setup
 //                                              session's own tool list. On a re-run the existing .factory/ values are kept,
 //                                              detection fills only what's missing, and each field it disagrees with is listed.
-//                                              The recipe's env names each variable the env files do, with its purpose.
+//                                              The recipe's env names each variable the env files do, with its purpose. A repo
+//                                              with no package.json is empty: its package manager is pnpm, its recipe no apps.
 //   setup-factory.mjs env                    -> section C: copies each of those variables' values from the developer's env
 //                                              files into .factory/env.local, keeping every line already there, and prints
 //                                              one line per variable: copied, kept or a gap, never its value.
@@ -35,6 +36,7 @@
 //                                              that wasn't proven, then writes .factory/, the .gitignore entries and the
 //                                              CLAUDE.md block, installs Playwright and axe for a web app lacking them, and
 //                                              prints the closing notes. Writing an applied proposal again changes nothing.
+//                                              In an empty repo it runs `pnpm init` first, and exits 1 if that fails.
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
@@ -113,7 +115,6 @@ function githubRepo(root) {
 
 function prerequisites(root, repo) {
   const missing = [];
-  if (!exists(root, "package.json")) missing.push(`no package.json in ${root}\n  fix: \`npm init -y\` (or your package manager's init), then run /setup-factory again`);
   if (!repo) missing.push("no GitHub remote\n  fix: `git remote add origin git@github.com:<owner>/<repo>.git` (or `gh repo create --source . --push`), then run /setup-factory again");
   const auth = run("gh", ["auth", "status"]);
   if (auth.status !== 0) missing.push(`gh isn't signed in${auth.error ? " (gh isn't installed: https://cli.github.com)" : ""}\n  fix: \`gh auth login\`, then run /setup-factory again`);
@@ -239,10 +240,12 @@ function detect(root, repo, mcp) {
   const add = (field, value, source, guess = false) => sources.push({ field, value, source, guess });
   const pkg = readJson(path.join(root, "package.json"), {});
   const lock = LOCKS.find(([f]) => exists(root, f)), declared = pkg.packageManager?.split("@")[0];
-  // the recipe's package manager leads on a re-run, as the kept tracker does
+  // the recipe's package manager leads on a re-run, as the kept tracker does, but an empty repo's is pnpm: it has no
+  // package.json until apply's `pnpm init` makes one, and no apps until a run's scaffold ticket
   const held = kept(root, ".factory/setup.json").package_manager;
-  const pm = ADD[held] ? held : lock?.[1] || (ADD[declared] ? declared : "npm");
-  add("package_manager", pm, ADD[held] ? ".factory/setup.json" : lock?.[0] || (ADD[declared] ? "package.json packageManager" : "default"));
+  const [pm, from] = [[!exists(root, "package.json") && "pnpm", "no package.json, so apply runs `pnpm init` first to make one"],
+    [held, ".factory/setup.json"], [lock?.[1], lock?.[0]], [declared, "package.json packageManager"], ["npm", "default"]].find(([v]) => ADD[v]);
+  add("package_manager", pm, from);
   // an app is named for its directory (the package, at the root), or for its whole path when another directory shares the name
   const dirs = workspaceDirs(root, pkg), base = (d) => path.posix.basename(d);
   const nameOf = (d) => d === "." ? pkg.name?.split("/").pop() || path.basename(root)
@@ -409,6 +412,7 @@ function closingNotes(P, tracker) {
     ...(tracker === "github" && P.config.branching.model === "git-flow" && P.default_branch !== P.config.branching.develop
       ? ["`develop` isn't the default branch, so GitHub won't close a request issue from a PR into it: make `develop` the default branch, or close request issues by hand."] : []),
     ...Object.entries(P.scanners).filter(([, on]) => !on).map(([bin]) => `${bin} isn't installed, so its scan is skipped: \`brew install ${bin}\`.`),
+    ...(!P.recipe.apps.length ? ["The recipe has no apps yet: the first run's scaffold ticket fills it."] : []),
   ];
 }
 
@@ -832,6 +836,17 @@ switch (cmd) {
       process.exit(1);
     }
     let changed = 0;
+    // an empty repo's package.json comes first, so a missing pnpm stops apply with nothing written
+    if (!exists(P.root, "package.json")) {
+      const r = run("pnpm", ["init"], { cwd: P.root });
+      if (r.status !== 0) {
+        console.error(`setup-factory: pnpm init failed, so nothing was written:\n${lastLines(`${r.stdout}${r.stderr}${r.error?.message ?? ""}`)}\n`
+          + "fix it (`corepack enable pnpm` installs a missing pnpm), then run apply again");
+        process.exit(1);
+      }
+      console.log("ran pnpm init");
+      changed++;
+    }
     for (const [f, before, after] of files) {
       if (before === after) continue;
       fs.mkdirSync(path.dirname(path.join(P.root, f)), { recursive: true });

@@ -84,15 +84,9 @@ const untouched = (p) => {
 };
 const read = (p, f) => fs.readFileSync(path.join(p.dir, f), "utf8");
 
-test("no package.json, no GitHub remote or a failing gh auth status stops setup with the fix, writing nothing", () => {
-  const noPackage = shop({ files: { "README.md": "hi\n" } });
-  let r = run(noPackage, fakes(), ["detect"]);
-  assert.equal(r.status, 1);
-  assert.match(r.stderr, /no package\.json.*\n.*npm init/i);
-  untouched(noPackage);
-
+test("no GitHub remote or a failing gh auth status stops setup with the fix, writing nothing", () => {
   const noRemote = shop({ remote: null });
-  r = run(noRemote, fakes(), ["detect"]);
+  let r = run(noRemote, fakes(), ["detect"]);
   assert.equal(r.status, 1);
   assert.match(r.stderr, /no GitHub remote.*\n.*git remote add origin/i);
   untouched(noRemote);
@@ -456,6 +450,28 @@ test("apply records the package manager in the recipe, and a re-run keeps it and
   assert.deepEqual([d.package_manager, source(d, "package_manager").source, d.disagreements], ["npm", ".factory/setup.json", []]);
   assert.match(apply(p, f), /nothing to write/);
   assert.deepEqual(tree(p), { ...before, "pnpm-lock.yaml": tree(p)["pnpm-lock.yaml"] }, "the recipe, CLAUDE.md and the rest as they were");
+});
+
+test("a repo with no package.json gets `pnpm init` in the proposal, run once by apply before anything is written, and a recipe with no apps", () => {
+  const p = shop({ files: { "README.md": "hi\n" } });
+  const f = fakes({ pnpm: [{ match: /^init$/, file: EMPTY }] }), noPnpm = fakes();
+  const d = detect(p, f);
+  assert.deepEqual([d.package_manager, d.recipe.package_manager, d.recipe.apps], ["pnpm", "pnpm", []]);
+  assert.match(apply(p, f, ["--dry-run"]), /^\| `package_manager` \| `pnpm` \| no package\.json, so apply runs `pnpm init` first/m);
+  assert.deepEqual(f.calls("pnpm"), [], "nothing runs before the proposal is approved");
+  untouched(p);
+
+  const missing = run(p, noPnpm, ["apply"]);
+  assert.equal(missing.status, 1);
+  assert.match(missing.stderr, /corepack enable pnpm/);
+  untouched(p);
+
+  const out = apply(p, f);
+  assert.deepEqual(f.calls("pnpm"), [["init"]]);
+  assert.match(out, /^ran pnpm init\nwrote \.factory\/config\.json$/m, "before anything is written");
+  assert.match(out, /^- The recipe has no apps yet: the first run's scaffold ticket fills it\.$/m);
+  const recipe = JSON.parse(read(p, ".factory/setup.json"));
+  assert.deepEqual([recipe.apps, recipe.package_manager], [[], "pnpm"]);
 });
 
 test("apply adds @playwright/test and @axe-core/playwright as dev dependencies, with Chromium, to a web app lacking them", () => {

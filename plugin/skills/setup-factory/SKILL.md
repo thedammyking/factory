@@ -19,10 +19,12 @@ Ask each question with `AskUserQuestion`, one question a call: 2 to 4 options, t
 
 1. Read your own tool list for the MCP servers the factory uses: Linear, Notion, Figma and Mobbin. A server is visible when a tool's name starts with `mcp__` and names it, such as `mcp__linear__…`, `mcp__claude_ai_Linear__…` or `mcp__plugin_<plugin>_linear__…`. Deferred tools count. Never run `claude mcp list`.
 2. Run `setup-factory detect --mcp <the visible servers, comma-separated, lowercase>`, leaving `--mcp` out when none are.
-   - Exit 1: a prerequisite is missing (a `package.json`, a GitHub remote, a signed-in `gh`). Print its lines as they are and stop. Nothing was written.
+   - Exit 1: a prerequisite is missing (a GitHub remote, a signed-in `gh`). Print its lines as they are and stop. Nothing was written.
    - Exit 0: it printed the proposal as JSON. Keep its `tracker`, `existing`, `disagreements` and `auth`; don't print the JSON.
 
 On a re-run (`existing` is true) the project's `.factory/` values are the defaults. Detection only fills what's missing, and each field it disagrees with shows up in the proposal. A kept value stays unless the human changes it.
+
+A repo with no `package.json` is empty, and setup starts it. The proposal records `package_manager` as `pnpm`, and its source says apply runs `pnpm init` first to make the `package.json`. The recipe has no apps until the first run's scaffold ticket fills it.
 
 ## A. Tracker
 
@@ -89,4 +91,5 @@ The mobile app's `app_id` and `build` come from its `app.json`, and the proposal
 3. Only on `Apply`, run `setup-factory apply --tracker <answer>` and print its output as it is: what it wrote, the installs it ran and the closing notes.
    - Exit 1 naming commands not proven: run `setup-factory prove`, then apply again.
    - Exit 1 after an install: show its output, and once the human has fixed the cause, apply again. Applying again rewrites nothing.
-4. End with one line: commit what setup wrote (`.factory/`, `.gitignore`, `CLAUDE.md`, plus `package.json` and the lockfile when it installed Playwright) to the base branch before the first `/factory` run, because a run starts from the base branch's tip.
+   - Exit 1 after `pnpm init`, in an empty repo: nothing was written. Show its output and ask "Fix it, then answer.", naming `corepack enable pnpm` when pnpm isn't installed, with `Done` (Recommended) and `Not now` (nothing is written but `.factory/env.local`). On `Done`, apply again.
+4. End with one line: commit what setup wrote (`.factory/`, `.gitignore`, `CLAUDE.md`, plus `package.json` when it ran `pnpm init` or installed Playwright, and the lockfile when it installed Playwright) to the base branch before the first `/factory` run, because a run starts from the base branch's tip.
