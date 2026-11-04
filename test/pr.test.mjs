@@ -196,6 +196,42 @@ test("each base fact failing alone makes the decision needs-human and is listed 
   }
 });
 
+test("a touched app's github-deployment preview must reach success at HEAD, as preview.mjs reads it, for a merge; an untouched app's needn't", () => {
+  const preview = { app: { mode: "github-deployment", environment: "Preview" }, docs: { mode: "github-deployment", environment: "Docs" } };
+  const r = ready({ recipe: { ...RECIPE, apps: [...RECIPE.apps, { name: "docs", type: "web", path: "docs" }], preview } });
+  const fixture = (name, value) => { const f = path.join(r.s.run_dir, "..", `${name}.json`); fs.writeFileSync(f, JSON.stringify(value)); return f; };
+  const gh = fakeClis({ gh: [
+    { match: /^api repos\/o\/r\/pulls\/7$/, file: path.join(r.s.run_dir, "..", "pr7.json") },
+    { match: /^api -X GET repos\/o\/r\/deployments -f sha=[0-9a-f]{40} -f environment=Preview /, file: fixture("deployments", [{ id: 5, environment: "Preview" }]) },
+    { match: /^api repos\/o\/r\/deployments\/5\/statuses/, file: path.join(r.s.run_dir, "..", "statuses.json") },
+  ] });
+  const decide = (status) => {
+    fixture("statuses", [status]);
+    const p = script("preview.mjs", r.p.dir, ["--run", r.s.id, "--wait", "0"], { env: gh.env });
+    assert.equal(p.status, 0, p.stderr);
+    const d = script("merge-decision.mjs", r.p.dir, ["--run", r.s.id], { env: gh.env });
+    assert.equal(d.status, 0, d.stderr);
+    return r.read("decision.json");
+  };
+  let d = decide({ state: "success", environment_url: "https://app-git-feature-signup.vercel.app" });
+  assert.equal(d.decision, "merge", d.reasons.join("; "));
+  assert.equal(d.facts.find((f) => f.name === "previews_ready").detail, "app ready", "docs isn't touched, so its preview isn't read");
+  assert.equal(r.read("preview.json").apps.docs.status, "none");
+  for (const status of [{ state: "in_progress" }, { state: "failure" }, { state: "success" }]) {
+    d = decide(status);
+    assert.deepEqual(failing(d), ["previews_ready"], JSON.stringify(status));
+  }
+  // a commit since the preview was read: the preview is of another head
+  decide({ state: "success", environment_url: "https://app-git-feature-signup.vercel.app" });
+  const before = r.head();
+  r.s.commit({ "src/more.js": "x\n" }); r.pin();
+  const m = script("merge-decision.mjs", r.p.dir, ["--run", r.s.id], { env: gh.env });
+  assert.equal(m.status, 0, m.stderr);
+  d = r.read("decision.json");
+  assert.deepEqual(failing(d), ["previews_ready"]);
+  assert.match(d.reasons[0], new RegExp(`app ready at ${before.slice(0, 7)}`));
+});
+
 test("fix 21: the protected-path fact diffs from the merge base with the live base, and not_behind_base names the sync step", () => {
   const r = ready();
   // the base gains a CI workflow on origin after the run branched

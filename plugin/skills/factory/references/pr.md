@@ -4,6 +4,7 @@
 
 1. **Render.** `pr-render.mjs` writes `pr.md`.
 2. **Open.** `pr-open.mjs` pushes the run branch and opens the PR ready, labelled `factory`. On a hotfix lane it also opens the back-merge PR into `develop`.
+   Then **Preview**: `preview.mjs` writes `preview.json`, where each touched app's preview of the head is, waiting up to 10 minutes on the host. Run it with Bash's `run_in_background`, say `Reading <id>'s previews.` and end your turn. When it wakes you, print the background task's output and go on, whatever it says or exits: a preview never stops the run.
 3. **Decide.** `merge-decision.mjs` writes `decision.json` and prints `DECISION merge` or `DECISION needs-human`, with each fact that doesn't hold.
 4. **Render** again. `pr-render.mjs` adds the decision to `pr.md` and writes the decision comment, `comment.md`: "Would merge (trial)", or the attention item, which it also writes as `attention-merge.md`.
 5. **Record.** `pr-open.mjs` again updates the body, adds the decision's label and posts the comment, once.

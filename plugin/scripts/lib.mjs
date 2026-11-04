@@ -85,13 +85,17 @@ export function lock(file) {
 // The run named by --run, else the one whose worktree holds cwd. Exits 2 when neither names a run with a state.json.
 // From a ticket's worktree, ticket is its NN, tree that worktree and out tickets/<NN>/ in the run dir; otherwise ticket
 // is null, tree the run worktree and out the run dir. out holds what is the worktree's own: its apps, evidence and logs.
+// From <run>-try, `preview.mjs try`'s worktree of an ended run's PR, which only run-apps runs in, tree and out are in it,
+// with no worktree, runDir or state.
 export function runContext() {
   const MAIN = mainRoot();
   let id = arg("--run"), ticket = null;
   const top = git(process.cwd(), "rev-parse", "--show-toplevel");
   if (path.dirname(top) === worktreesDir(MAIN)) {
     const name = path.basename(top), t = name.match(/^(.+)-(\d{2})$/);
+    const trial = !id && !fs.existsSync(runPaths(MAIN, name).state) && name.match(/^([a-z0-9][a-z0-9-]*)-try$/);
     if (t && !fs.existsSync(runPaths(MAIN, name).state) && fs.existsSync(runPaths(MAIN, t[1]).state) && (!id || id === t[1])) [id, ticket] = [t[1], t[2]];
+    else if (trial) return { MAIN, id: trial[1], ticket: null, tree: top, out: path.join(top, ".factory", "runs", trial[1]) };
     else id ||= name;
   }
   if (!id) { console.error("no run: pass --run <id>, or run inside the run's worktree"); process.exit(2); }
