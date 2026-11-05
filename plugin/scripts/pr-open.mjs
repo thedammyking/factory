@@ -35,8 +35,10 @@ const label = (n, names) => gh("-X", "POST", `repos/${repo}/issues/${n}/labels`,
 
 // A PR the factory merged is never pushed to again: GitHub may have deleted its branch on merge. Before the run's PR
 // exists, the branch on origin is only the base its ticket PRs merged into (#81), which the review's rebase rewrote, so it
-// is forced; after, never.
-const force = pr ? [] : ["--force"];
+// is replaced, with a lease on the copy last pushed (a branch never pushed must not exist there, so nobody else's is
+// overwritten); after, never forced.
+const seen = (() => { try { return git(ctx.worktree, "rev-parse", "--verify", "-q", `refs/remotes/origin/${s.branch}`); } catch { return ""; } })();
+const force = pr ? [] : [`--force-with-lease=refs/heads/${s.branch}:${seen}`];
 if (!decision?.merged) try { git(ctx.worktree, "push", "-q", ...force, "origin", `HEAD:refs/heads/${s.branch}`); } catch (e) { die(`can't push ${s.branch} to origin: ${gitError(e)}`, 1); }
 const stopped = ["needs-human", "failed"].includes(s.stage);  // not suspended, which resume carries on to the PR stage
 if (!pr) {

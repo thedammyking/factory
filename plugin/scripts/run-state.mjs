@@ -507,18 +507,19 @@ function readMap(main, tracker, base, stdin) {
 const runList = (body) => [...(body.match(/^## Run list[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? "").matchAll(/^[ \t]*(\d+)\.[ \t]+(.+)$/gm)]
   .map((m) => ({ n: Number(m[1]), line: m[2].trim() }));
 // Every run of a map, live (its worktree's state) or ended (its record on factory/records), the live one winning, each as
-// { s, pr }: its state and pr.json, or null.
+// { s, pr, decided }: its state, pr.json or null, and whether its PR stage got as far as the merge decision.
 function mapRuns(main, base, ref, only = null) {
   const runs = new Map(), rec = recordsRef(main, base);
   let ended = []; try { ended = git(main, "ls-tree", "--name-only", `${rec}:.factory/history`).split("\n").filter(Boolean); } catch {}
   for (const id of ended.filter((x) => !only || x === only)) {
-    try { const s = JSON.parse(git(main, "show", `${rec}:.factory/history/${id}/state.json`)); let pr = null; try { pr = JSON.parse(git(main, "show", `${rec}:.factory/history/${id}/pr.json`)); } catch {}
-      runs.set(id, { s, pr }); } catch {}
+    try { const s = JSON.parse(git(main, "show", `${rec}:.factory/history/${id}/state.json`)); let pr = null, decided = true; try { pr = JSON.parse(git(main, "show", `${rec}:.factory/history/${id}/pr.json`)); } catch {}
+      try { git(main, "cat-file", "-e", `${rec}:.factory/history/${id}/decision.json`); } catch { decided = false; }
+      runs.set(id, { s, pr, decided }); } catch {}
   }
   const dir = worktreesDir(main);
   for (const id of (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((x) => !only || x === only)) {
     const p = runPaths(main, id), s = readJson(p.state);
-    if (s) runs.set(id, { s, pr: readJson(path.join(p.runDir, "pr.json")) });
+    if (s) runs.set(id, { s, pr: readJson(path.join(p.runDir, "pr.json")), decided: fs.existsSync(path.join(p.runDir, "decision.json")) });
   }
   return [...runs.values()].filter(({ s }) => only || s.map?.ref === ref);
 }
@@ -747,8 +748,9 @@ switch (cmd) {
     for (const { n, line } of entries) {
       const mine = all.filter(({ s: r }) => r.map.entry === n && r.stage !== "abandoned").sort((a, b) => b.s.created_at.localeCompare(a.s.created_at))[0];
       if (!mine) { out.push(`ENTRY ${n} none: ${line}`); next ??= `START ${n}${under ? ` --on ${under}` : ""}`; continue; }
-      // a merged PR is built whatever pr.json last said of it, a draft one marked ready on GitHub by hand included
-      const { s: r, pr } = mine, m = pr ? prMerged(pr) : null, built = !!m?.merged || (!!pr && !pr.draft && !m?.closed);
+      // Built: a PR that merged, whatever pr.json last said of it (a draft readied by hand included), or a ready one whose
+      // run got as far as its merge decision. One cut off between opening its PR and deciding it still has its PR stage.
+      const { s: r, pr, decided } = mine, m = pr ? prMerged(pr) : null, built = !!m?.merged || (!!pr && !pr.draft && !m?.closed && decided);
       out.push(`ENTRY ${n} ${r.id} ${r.stage}${pr ? ` PR #${pr.number}${m?.merged ? " merged" : m?.closed ? " closed unmerged" : pr.draft ? " draft" : " open"}` : ""}`);
       if (next) continue;
       if (m?.closed && !m.merged) next = `STOP ${n}: ${r.id}'s PR #${pr.number} was closed unmerged, so the entries after it have nothing to build on`;

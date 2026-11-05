@@ -90,6 +90,31 @@ test("a before-review conflict in lockfiles alone goes through: each takes the b
   assert.equal(state(s).base_sha, tip);
 });
 
+test("a lockfile the base deleted while the run changed it goes, and the rebase goes through; a merge takes the base's lockfile (#81)", () => {
+  const p = project();
+  fs.writeFileSync(path.join(p.dir, "package-lock.json"), "{\"v\":1}\n"); p.git("add", "-A"); p.git("commit", "-qm", "npm");
+  githubOrigin(p);
+  const s = startRun(p), gh = noGh();
+  s.commit({ "src/a.js": "export const a = 1;\n", "package-lock.json": "{\"v\":2}\n" }, "Add a");
+  p.git("checkout", "-q", "main"); p.git("rm", "-q", "package-lock.json"); write(p.dir, { "pnpm-lock.yaml": "lockfileVersion: '9.0'\n" });
+  p.git("add", "-A"); p.git("commit", "-qm", "pnpm now"); p.git("push", "-q", "origin", "main");
+  const r = sync(s, "before-review", gh.env);
+  assert.equal(r.status, 0, r.stderr + r.stdout);
+  assert.ok(!fs.existsSync(path.join(s.worktree, "package-lock.json")), "the base's side: gone");
+  assert.equal(s.git("log", "-1", "--format=%s"), "Add a");
+  assert.equal(s.git("status", "--porcelain"), "");
+
+  const q = project();
+  fs.writeFileSync(path.join(q.dir, "package-lock.json"), "{\"v\":1}\n"); q.git("add", "-A"); q.git("commit", "-qm", "npm");
+  githubOrigin(q);
+  const m = startRun(q);
+  m.commit({ "package-lock.json": "{\"mine\":true}\n" }, "Mine");
+  q.git("checkout", "-q", "main"); write(q.dir, { "package-lock.json": "{\"theirs\":true}\n" }); q.git("add", "-A"); q.git("commit", "-qm", "base deps"); q.git("push", "-q", "origin", "main");
+  const merged = sync(m, "before-merge", gh.env);
+  assert.equal(merged.status, 0, merged.stderr + merged.stdout);
+  assert.equal(fs.readFileSync(path.join(m.worktree, "package-lock.json"), "utf8"), '{"theirs":true}\n', "the base's lockfile, for the install to redo");
+});
+
 test("before-review refuses once the PR is open: the branch is never rebased after its evidence is pinned", () => {
   const { s, baseMoves } = onGitHub(), gh = noGh();
   s.commit({ "src/a.js": "1\n" });

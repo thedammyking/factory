@@ -303,6 +303,8 @@ test("chain works a map's run list: each entry with its run and PR, the next sta
   write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: true }) });
   assert.equal(chain().at(-1), `RESUME ${one.id}`, "a draft PR is a stopped run's");
   write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: false }) });
+  assert.equal(chain().at(-1), `RESUME ${one.id}`, "a ready PR whose run hasn't decided it yet: its PR stage goes on");
+  write(one.run_dir, { "decision.json": JSON.stringify({ decision: "needs-human" }) });
   assert.deepEqual(chain(), [`ENTRY 1 ${one.id} start PR #60 open`, "ENTRY 2 none: Import contacts from a CSV file", `START 2 --on ${one.id}`]);
   const two = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "2", "--on", one.id])));
   assert.deepEqual([two.base_branch, two.trunk, two.stack], ["feature/add-contacts", "main", { run: one.id, branch: "feature/add-contacts", pr: 60, repo: "o/r" }]);

@@ -40,23 +40,29 @@ function stop(headline, happened, yourself) {
   process.exit(1);
 }
 // A rebase or merge whose every conflict is in a lockfile goes on (#81): each lockfile takes the base's side ("ours" in a
-// rebase, which builds on the base; the run's own in a merge, then regenerated alike), and once it's through, the
-// recipe's setup, else the package manager's install, writes the lockfile again from the manifests, committed when it
-// changed. True when it got through; false, with the rebase or merge still in progress, at a conflict outside them.
+// rebase, which replays onto the base; "theirs" in a merge of it), and goes when the base deleted it. Once it's through,
+// the recipe's setup, else the package manager's install, writes the lockfile again from the manifests, committed when it
+// changed. True when it got through; false, the rebase or merge still in progress for the caller to abort, at a conflict
+// outside lockfiles, a step git refuses, or anything unexpected.
 function throughLockfiles(cmd) {
   const unmerged = () => git(wt, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
-  for (let n = 0; n < 200; n++) {
-    const files = unmerged();
-    if (!files.length || !files.every((f) => LOCKFILE.test(f))) return false;
-    git(wt, "checkout", "--ours", "--", ...files);
-    git(wt, "add", "--", ...files);
-    const env = { ...process.env, GIT_EDITOR: "true" };
-    const step = cmd === "merge" ? ["commit", "-q", "--no-verify", "--no-edit"]
-      : spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: wt }).status === 0 ? ["rebase", "--skip"] : ["rebase", "--continue"];
-    const r = spawnSync("git", step, { cwd: wt, env, encoding: "utf8" });
-    if (r.status === 0 && (cmd === "merge" || !fs.existsSync(path.resolve(wt, git(wt, "rev-parse", "--git-dir"), "rebase-merge")))) break;
-    if (r.status !== 0 && !unmerged().length) return false;
-  }
+  const inRebase = () => fs.existsSync(path.resolve(wt, git(wt, "rev-parse", "--git-dir"), "rebase-merge"));
+  const side = cmd === "rebase" ? "--ours" : "--theirs", env = { ...process.env, GIT_EDITOR: "true" };
+  try {
+    for (let n = 0; ; n++) {
+      const files = unmerged();
+      if (n === 200 || !files.length || !files.every((f) => LOCKFILE.test(f))) return false;
+      for (const f of files) {
+        try { git(wt, "checkout", side, "--", f); git(wt, "add", "--", f); } catch { git(wt, "rm", "-q", "--", f); }  // modify/delete: it goes
+      }
+      const step = cmd === "merge" ? ["commit", "-q", "--no-verify", "--no-edit"]
+        : spawnSync("git", ["diff", "--cached", "--quiet"], { cwd: wt }).status === 0 ? ["rebase", "--skip"] : ["rebase", "--continue"];
+      const r = spawnSync("git", step, { cwd: wt, env, encoding: "utf8" });
+      if (cmd === "merge") { if (r.status !== 0) return false; break; }
+      if (!inRebase()) break;
+      if (r.status !== 0 && !unmerged().length) return false;
+    }
+  } catch { return false; }
   const recipe = readJson(path.join(wt, ".factory", "setup.json"), {}), install = recipe.setup || (recipe.package_manager && `${recipe.package_manager} install`);
   if (install) {
     const r = spawnSync("bash", ["-c", install], { cwd: wt, env: runEnv(ctx.MAIN), encoding: "utf8", timeout: 10 * 60_000 });

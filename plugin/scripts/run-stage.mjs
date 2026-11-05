@@ -82,7 +82,10 @@ function allowlist() {
 // The package managers the child's rules name, and what it is denied of them however it's allowed: publishing, which a
 // deny rule stops ahead of any allow (#81).
 const managers = (rules) => [...new Set(rules.map((r) => r.match(/^Bash\((npm|pnpm|yarn|bun) /)?.[1]).filter(Boolean))];
-const denylist = () => managers(allowlist()).flatMap((pm) => [`Bash(${pm} publish:*)`, `Bash(${pm} unpublish:*)`]);
+// ponytail: rules match by prefix, so a flag that comes first in some other order (`npm -w pkg publish`) slips past; node
+// reaches a publish anyway, so these keep the plain forms out by mistake, not a determined child.
+const denylist = () => managers(allowlist()).flatMap((pm) => ["publish", "unpublish", "-r publish", "--recursive publish", "--workspaces publish", "-ws publish", "npm publish"]
+  .map((c) => `Bash(${pm} ${c}:*)`)).concat(managers(allowlist()).includes("npm") ? ["dist-tag", "deprecate", "owner", "token", "access"].map((c) => `Bash(npm ${c}:*)`) : []);
 const config = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {});
 const node = (script, args, opts) => spawnSync(process.execPath, [path.join(HERE, script), ...args], { encoding: "utf8", ...opts });
 const runState = (...args) => node("run-state.mjs", [...args, "--run", ctx.id]);
@@ -148,6 +151,10 @@ function verdict(s) {
 function ticketPr(s) {
   const repo = githubRepo(ctx.MAIN), file = path.join(dir, "pr.json");
   if (!repo || readJson(file)) return readJson(file);
+  // A CI change goes to GitHub only in the run's PR, after the security lens has read it: pushed earlier, a workflow
+  // would run there with the repo's secrets before any review. So a ticket or run branch carrying one opens no ticket PR.
+  const ci = [s.branch, branch].flatMap((b) => git(ctx.MAIN, "diff", "--name-only", s.base_sha, b).split("\n")).filter((f) => /^\.github\/(workflows|actions)\//.test(f));
+  if (ci.length) return console.log(`ticket PR skipped: the branch changes CI (${[...new Set(ci)].join(", ")}), which reaches GitHub only in the run's reviewed PR`), null;
   for (const b of [s.branch, branch]) { const why = pushBranch(ctx.MAIN, b); if (why) return console.log(`ticket PR skipped: ${b} couldn't be pushed: ${why}`), null; }
   const name = fs.readdirSync(path.join(ctx.runDir, "tickets")).find((f) => f.startsWith(`${n}-`) && f.endsWith(".md")) ?? `${n}.md`;
   const title = fs.readFileSync(path.join(ctx.runDir, "tickets", name), "utf8").match(/^# (.+)$/m)?.[1].trim() || name.slice(0, -3);

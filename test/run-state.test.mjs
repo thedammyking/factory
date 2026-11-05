@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { project, sh } from "./harness.mjs";
+import { project, sh, write, bareRemote } from "./harness.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts/run-state.mjs");
 const FIXTURES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/spend");
@@ -155,6 +155,25 @@ test("abandon ends a run abandoned and keeps its branch and worktree; a finished
   assert.match(rs(p.dir, ["status"]).stdout, new RegExp(`^${waiting.id}\\s+needs-human\\s`), "a run waiting on the human is listed; an abandoned one isn't");
   assert.equal(rs(p.dir, ["abandon", "--run", waiting.id]).status, 0, "a run waiting on the human can be abandoned");
   assert.equal(rs(p.dir, ["status"]).stdout.trim(), "no active runs");
+});
+
+test("a new run starts from origin's tip when the local base is behind it, or has parted from it by the factory's own .factory/ commits alone; never past the developer's own (#81)", () => {
+  const p = project(), remote = bareRemote(p);
+  const elsewhere = (files, message) => {  // a commit that reaches origin from another clone, as a merged PR does
+    const c = fs.mkdtempSync(path.join(os.tmpdir(), "factory-clone-"));
+    sh(c, "git", ["clone", "-q", remote, "."]); sh(c, "git", ["config", "user.email", "x@x"]); sh(c, "git", ["config", "user.name", "x"]);
+    write(c, files); sh(c, "git", ["add", "-A"]); sh(c, "git", ["commit", "-qm", message]); sh(c, "git", ["push", "-q", "origin", "main"]);
+  };
+  const commitHere = (files, message) => { write(p.dir, files); p.git("add", "-A"); p.git("commit", "-qm", message); };
+  elsewhere({ "src/a.js": "1\n" }, "a merged PR");
+  p.git("fetch", "-q", "origin");
+  assert.equal(init(p, "First").base_sha, p.git("rev-parse", "origin/main"), "behind: origin's");
+  commitHere({ ".factory/history/old/state.json": "{}\n" }, "factory(run): old snapshot");
+  elsewhere({ "src/b.js": "2\n" }, "another merged PR");
+  p.git("fetch", "-q", "origin");
+  assert.equal(init(p, "Second").base_sha, p.git("rev-parse", "origin/main"), "parted by a snapshot alone: origin's");
+  commitHere({ "src/mine.js": "3\n" }, "the developer's own");
+  assert.equal(init(p, "Third").base_sha, p.git("rev-parse", "main"), "a product commit of the developer's: their main");
 });
 
 test("fix 24: snapshot commits the run dir to .factory/history/<run>/ on factory/records, never the base, and adds only new log lines", () => {

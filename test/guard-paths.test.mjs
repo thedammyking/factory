@@ -101,7 +101,8 @@ const CASES = [
   ["deny >& file (stdout and stderr to a file)", () => bash("make >& /srv/build.log"), 2],
   ["deny git mv into a workflow during a run", () => bash("git mv ci.yml .github/workflows/ci.yml"), 2],
   // the ticket worktree and its run dir
-  ["allow Write to the run dir from the ticket worktree", () => write(path.join(live.runDir, "tickets/01-a.md"), ticket), 0],
+  ["allow Write to the run dir from the ticket worktree", () => write(path.join(live.runDir, "tickets/01/implementation.md"), ticket), 0],
+  ["deny a ticket file to all but the planner (#81)", () => write(path.join(live.runDir, "tickets/01-a.md"), ticket), 2],
   ["deny Write to the main checkout's code from the ticket worktree", () => write(path.join(p.dir, "src/x.ts"), ticket), 2],
   ["deny the ticket worktree's recipe during the run", () => write(".factory/setup.json", ticket), 2],
   ["stay out of projects without .factory/", () => write("/etc/hosts", plain), 0],
@@ -117,12 +118,17 @@ test("a ticket worktree writes itself and its run dir, in the run worktree besid
   denied(hook(ticket, "NotebookEdit", { notebook_path: "/etc/x.ipynb", new_source: "" }), /outside/);
 });
 
-test("a ticket worktree writes the CI files its own plan names, and only those (#81)", () => {
+test("a ticket worktree writes the CI files its own plan lists under ci:, and only those; only the planner writes a plan (#81)", () => {
   const plan = path.join(live.runDir, "tickets/01/plan.md");
   fs.mkdirSync(path.dirname(plan), { recursive: true });
-  fs.writeFileSync(plan, "---\nstatus: ready\n---\n\n# Plan 01: CI\n\n- Write `.github/workflows/ci.yml` with the check, unit and e2e jobs.\n");
+  fs.writeFileSync(plan, "---\nstatus: ready\nticket: 01-ci\nci:\n  - .github/workflows/ci.yml\n---\n\n# Plan 01: CI\n\n"
+    + "- Write the check, unit and e2e jobs.\n\nOut of scope: `.github/workflows/deploy.yml`.\n");
   allowed(write(".github/workflows/ci.yml", ticket));
-  denied(write(".github/workflows/deploy.yml", ticket), /locked/);
+  denied(write(".github/workflows/deploy.yml", ticket), /locked/, "named in the body, not in ci:");
+  denied(write(plan, ticket), /planner's to write/, "an implementer can't list a CI file for itself");
+  denied(write(path.join(live.runDir, "tickets/01-ci.md"), ticket), /planner's to write/);
+  allowed(write(plan, live.wt, PLANNER));
+  allowed(write(path.join(live.runDir, "tickets/01/implementation.md"), ticket));
   denied(write(".github/workflows/ci.yml", live.wt), /locked/, "the run worktree is no ticket's");
   denied(bash("rm -r .github/workflows", ticket), /locked/);
   denied(write(".claude/settings.json", ticket), /locked/);

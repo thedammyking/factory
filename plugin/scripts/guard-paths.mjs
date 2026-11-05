@@ -60,6 +60,7 @@ function refuse([a, removes]) {
   const wt = under(r, WTS) && r !== WTS ? path.join(WTS, path.relative(WTS, r).split(path.sep)[0]) : TOP, run = runOf(wt);
   if (!run || TERMINAL.includes(run.stage)) return null;
   const rel = path.relative(wt, r).toLowerCase(), holds = (k) => removes && (rel === "" || k.startsWith(rel + "/"));
+  if (PLANS.test(rel) && input.agent_type !== "factory:planner") return `${a} is the planner's to write while run ${run.id} goes on`;
   if (!removes && planned(wt, run, rel)) return null;
   if (LOCKED.test(rel) || [...LOCKED_DIRS, `.factory/runs/${run.id}/state.json`].some(holds)) return `${a} is locked while run ${run.id} goes on`;
   if (input.agent_type === "factory:qa") return null;  // the value proven in docs/platform-facts.md
@@ -67,13 +68,19 @@ function refuse([a, removes]) {
   if (pinned.some((d) => under(rel, d) || holds(d + "/"))) return `${a} is in a pinned directory, which only factory:qa writes while run ${run.id} goes on`;
   return null;
 }
-// A CI workflow or action file that a ticket worktree's own plan.md names by its path, the ticket being one that builds
-// CI (#81): a ticket worktree is its run's id plus -NN. The security lens reads every CI change in the review.
+// A CI workflow or action file that a ticket worktree's own plan.md lists under its frontmatter's `ci:`, the ticket being
+// one that builds CI (#81): a ticket worktree is its run's id plus -NN. Only the planner writes a plan (PLANS, below), so
+// no other agent can name one; the run's PR is the first push that carries it, and the security lens reads it there.
 function planned(wt, run, rel) {
   const n = path.basename(wt).slice(run.id.length).match(/^-(\d{2})$/)?.[1];
   if (!n || !/^\.github\/(workflows|actions)\/[^/]+/.test(rel)) return false;
-  try { return fs.readFileSync(path.join(runPaths(MAIN, run.id).runDir, "tickets", n, "plan.md"), "utf8").toLowerCase().includes(rel); } catch { return false; }
+  let fm; try { fm = fs.readFileSync(path.join(runPaths(MAIN, run.id).runDir, "tickets", n, "plan.md"), "utf8").match(/^---\n([\s\S]*?)\n---/)?.[1] ?? ""; } catch { return false; }
+  const list = fm.match(/^ci:[ \t]*\n((?:[ \t]+- .*\n?)*)/m)?.[1] ?? "";
+  return list.split("\n").map((l) => l.replace(/^[ \t]+- /, "").replace(/[`"']/g, "").trim().toLowerCase()).includes(rel);
 }
+// A run's tickets and plans, the planner's alone to write while the run goes on (#81): a plan names the CI files its
+// ticket may write.
+const PLANS = /^\.factory\/runs\/[^/]+\/tickets\/(\d{2}-[^/]+\.md|\d{2}\/plan\.md)$/;
 // targets as [absolute path, whether the write removes it]
 const check = (targets) => {
   const why = [...new Set(targets.map(refuse).filter(Boolean))];

@@ -118,7 +118,8 @@ test("implement cuts the ticket's worktree on factory/<run>/NN at the SHA its di
   assert.deepEqual(flag(argv, "--allowedTools").split(","), ["Bash(node:*)", ...GIT_RULES, ...NPM_RULES, "Bash(npx:*)", "Bash(npm:*)", "Bash(curl:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
     "each check's executable; git with no push, fetch or rebase; npm's own commands and npx, npm named by a check in a recipe "
     + "from before setup recorded it, and npm whole, its flags first (#81); curl; verify; and the craft floor");
-  assert.deepEqual(flag(argv, "--disallowedTools").split(","), ["Bash(npm publish:*)", "Bash(npm unpublish:*)"], "never a publish, which a deny rule stops ahead of npm:*");
+  const denied = flag(argv, "--disallowedTools").split(",");
+  for (const rule of ["Bash(npm publish:*)", "Bash(npm unpublish:*)", "Bash(npm --workspaces publish:*)", "Bash(npm token:*)"]) assert.ok(denied.includes(rule), `${rule}: never a publish, which a deny rule stops ahead of npm:*`);
   assert.match(flag(argv, "--session-id"), /^[0-9a-f-]{36}$/);
   assert.deepEqual([d.pid, d.session], [call.pid, flag(argv, "--session-id")], "the dispatch records the child's PID and session id");
   assert.ok(d.log.startsWith(path.join(r.s.run_dir, "logs") + path.sep));
@@ -198,6 +199,19 @@ test("on a GitHub origin a ticket is its own PR into the run branch, stacked on 
   const head = git(r.s.worktree, "rev-parse", "HEAD");
   assert.equal(sh(remote, "git", ["rev-parse", "refs/heads/feature/csv-export"]), head, "the green run head is on origin");
   assert.equal(sh(remote, "git", ["for-each-ref", `refs/heads/${r.branch}`]), "", "the ticket's branch is gone from origin");
+});
+
+test("a ticket that changes CI opens no ticket PR and pushes nothing: a workflow reaches GitHub only in the run's reviewed PR (#81)", (t) => {
+  const r = ticketReady(t);
+  r.play([{ files: { ...CSV.files, ".github/workflows/ci.yml": "on: push\n" }, commit: "Add CI", write: { [r.impl]: report("DONE") } }]);
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
+  const remote = githubOrigin(r.p), gh = fakeClis({ gh: [] });
+  r.env.PATH = gh.bin + path.delimiter + r.env.PATH;
+  const out = r.stage("merge", "01");
+  assert.match(lastLine(out), /^MERGED 01:/);
+  assert.match(out.stdout, /^ticket PR skipped: the branch changes CI \(\.github\/workflows\/ci\.yml\)/m);
+  assert.deepEqual(gh.calls("gh"), []);
+  assert.equal(sh(remote, "git", ["for-each-ref", "refs/heads/feature/csv-export", `refs/heads/${r.branch}`]), "", "neither branch went to origin");
 });
 
 test("merge takes only a MERGE ticket into the run branch, runs verify --full at the new head, removes the ticket's worktree and branch, and marks it done", (t) => {
@@ -451,7 +465,9 @@ test("with no lockfile yet, the recipe's package manager is setup's default, so 
   const rules = flag(r.calls()[0].argv, "--allowedTools").split(",");
   for (const rule of ["Bash(npm install:*)", "Bash(pnpm add:*)", "Bash(yarn add:*)", "Bash(bun add:*)", "Bash(pnpm dlx:*)"]) assert.ok(rules.includes(rule), rule);
   assert.ok(!rules.some((x) => /publish/.test(x)), "and still no publish");
-  assert.deepEqual(flag(r.calls()[0].argv, "--disallowedTools").split(",").filter((x) => / publish:/.test(x)), ["npm", "pnpm", "yarn", "bun"].map((pm) => `Bash(${pm} publish:*)`), "denied for each");
+  const denied = flag(r.calls()[0].argv, "--disallowedTools").split(",");
+  for (const pm of ["npm", "pnpm", "yarn", "bun"]) assert.ok(denied.includes(`Bash(${pm} publish:*)`), `denied for ${pm}`);
+  assert.ok(denied.includes("Bash(yarn npm publish:*)"));
 });
 
 test("a resumed child is told which commands it was denied are allowed now, whatever its status, since its session says never to retry them", (t) => {

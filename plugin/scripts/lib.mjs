@@ -81,15 +81,13 @@ export function commitToBase(main, base, message, apply) {
 
 // The branch the factory's own records go to (#81): each run's snapshot under .factory/history/ with .factory/log.md, and
 // the maps under .factory/maps/. Never the base a PR merges into, so nothing reaches it but through a PR. Made from the
-// base's tip the first time, so the records it already holds come along, and pushed after each commit when origin exists,
-// best effort, so a tracker's links to it resolve. Readers take it, and the base while it doesn't exist yet.
+// base's tip the first time, so the records it already holds come along, and never pushed: a run dir holds the agents'
+// transcripts, which the secret check only scans for the env files' values. Readers take it, and the base until it exists.
 export const RECORDS = "factory/records";
 export const recordsRef = (main, base) => { try { git(main, "rev-parse", "--verify", `refs/heads/${RECORDS}^{commit}`); return `refs/heads/${RECORDS}`; } catch { return `refs/heads/${base}`; } };
 export function commitRecord(main, base, message, apply) {
   if (recordsRef(main, base) !== `refs/heads/${RECORDS}`) git(main, "branch", RECORDS, `refs/heads/${base}`);
-  const sha = commitToBase(main, RECORDS, message, apply);
-  if (sha) pushBranch(main, RECORDS);
-  return sha;
+  return commitToBase(main, RECORDS, message, apply);
 }
 // `git push origin <branch>`, never asking for credentials and never forced: the reason it failed, or null when it went
 // (or there's no origin to push to). A push is best effort wherever this is called.
@@ -99,12 +97,17 @@ export function pushBranch(cwd, branch, to = branch) {
   return r.status === 0 ? null : (r.stderr || r.error?.message || "push failed").trim().split("\n").at(-1);
 }
 // The tip a new run starts from: origin's copy of `branch` when the local one is behind it (a PR merged on GitHub since
-// the last pull), else the local one, so a run never misses a merge and never drops a local commit (#81).
+// the last pull), or when the two have parted and all the local one holds beyond it is the factory's own bookkeeping
+// under .factory/ (snapshots from before #81), else the local one: a run never misses a merge and never drops a local commit of the developer's.
 export function freshTip(cwd, branch) {
   const local = git(cwd, "rev-parse", "--verify", `refs/heads/${branch}^{commit}`);
   let remote; try { remote = git(cwd, "rev-parse", liveBase(cwd, branch)); } catch { return local; }
   if (remote === local) return local;
-  try { git(cwd, "merge-base", "--is-ancestor", local, remote); return remote; } catch { return local; }
+  const holds = (a, b) => { try { git(cwd, "merge-base", "--is-ancestor", a, b); return true; } catch { return false; } };
+  if (holds(local, remote)) return remote;
+  if (holds(remote, local)) return local;  // only ahead: the developer's own commits, unpushed
+  const mine = git(cwd, "log", "--format=", "--name-only", `${remote}..${local}`).split("\n").filter(Boolean);
+  return mine.every((f) => f.startsWith(".factory/")) ? remote : local;
 }
 
 // A ticket's worktree, .factory/worktrees/<run>-NN/, on its branch factory/<run>/NN, pushed only for its PR (#81).
