@@ -300,6 +300,8 @@ test("chain works a map's run list: each entry with its run and PR, the next sta
   rs(one, "set", "route", "build");
   rs(one, "lane");
   assert.equal(chain().at(-1), `RESUME ${one.id}`, "an entry with no PR yet goes on");
+  write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: true }) });
+  assert.equal(chain().at(-1), `RESUME ${one.id}`, "a draft PR is a stopped run's");
   write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: false }) });
   assert.deepEqual(chain(), [`ENTRY 1 ${one.id} start PR #60 open`, "ENTRY 2 none: Import contacts from a CSV file", `START 2 --on ${one.id}`]);
   const two = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "2", "--on", one.id])));
@@ -308,6 +310,7 @@ test("chain works a map's run list: each entry with its run and PR, the next sta
   assert.equal(chain().at(-1), `RESUME ${two.id}`);
   assert.match(rs(two, "stack"), /^stacked on feature\/add-contacts \(PR #60 open\)$/);
   fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "closed", merged_at: "2026-11-05T12:00:00Z" }));
+  write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: true }) });  // readied and merged by hand
   assert.deepEqual(chain(), [`RESTACK ${two.id}`, `ENTRY 1 ${one.id} start PR #60 merged`, `ENTRY 2 ${two.id} start`, `RESUME ${two.id}`]);
   assert.equal(rs(two, "stack"), "restacked onto main, feature/add-contacts's PR having merged");
   const after = JSON.parse(rs(two, "get"));

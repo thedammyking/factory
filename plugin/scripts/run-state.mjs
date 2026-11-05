@@ -747,11 +747,12 @@ switch (cmd) {
     for (const { n, line } of entries) {
       const mine = all.filter(({ s: r }) => r.map.entry === n && r.stage !== "abandoned").sort((a, b) => b.s.created_at.localeCompare(a.s.created_at))[0];
       if (!mine) { out.push(`ENTRY ${n} none: ${line}`); next ??= `START ${n}${under ? ` --on ${under}` : ""}`; continue; }
-      const { s: r, pr } = mine, m = pr && !pr.draft ? prMerged(pr) : null;
-      out.push(`ENTRY ${n} ${r.id} ${r.stage}${pr ? ` PR #${pr.number}${pr.draft ? " draft" : m?.merged ? " merged" : m?.closed ? " closed unmerged" : " open"}` : ""}`);
+      // a merged PR is built whatever pr.json last said of it, a draft one marked ready on GitHub by hand included
+      const { s: r, pr } = mine, m = pr ? prMerged(pr) : null, built = !!m?.merged || (!!pr && !pr.draft && !m?.closed);
+      out.push(`ENTRY ${n} ${r.id} ${r.stage}${pr ? ` PR #${pr.number}${m?.merged ? " merged" : m?.closed ? " closed unmerged" : pr.draft ? " draft" : " open"}` : ""}`);
       if (next) continue;
       if (m?.closed && !m.merged) next = `STOP ${n}: ${r.id}'s PR #${pr.number} was closed unmerged, so the entries after it have nothing to build on`;
-      else if (pr && !pr.draft) under = m?.merged ? null : r.id;
+      else if (built) under = m?.merged ? null : r.id;
       else if (FINISHED.includes(r.stage) || r.stage === "failed") next = `STOP ${n}: ${r.id} ended ${r.stage} with no PR`;
       else next = `RESUME ${r.id}${under && r.base_branch !== all.find(({ s: x }) => x.id === under)?.s.branch ? ` --on ${under}` : ""}`;
     }
