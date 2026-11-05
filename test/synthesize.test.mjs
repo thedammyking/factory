@@ -27,7 +27,7 @@ function run(files) {
 }
 const rows = (out) => out.findings.map((f) => [f.members.join("+"), f.severity, f.action, f.status]);
 
-test("design fix 3: findings merge only at the same file within 5 lines whose claims overlap or share a CWE, at the highest severity, and any ask makes the group an ask", () => {
+test("design fix 3: findings merge only at the same file within 5 lines whose claims overlap or share a CWE, at the highest severity, and any ask makes the group an ask, a lens's a judgment call (#81)", () => {
   const r = run({
     "review-code.md": lensFile("Code review", [
       { id: "code-01", severity: "P2", action: "fix", location: "src/api/orders.ts:40", claim: "The orders endpoint accepts a request body of any size, so one large upload can exhaust the server memory", fix: "Cap the body." },
@@ -46,17 +46,17 @@ test("design fix 3: findings merge only at the same file within 5 lines whose cl
   const { out, stdout } = r.synth();
   assert.deepEqual(rows(out), [
     ["code-01+security-01+security-04", "P1", "fix", "open"],
-    ["code-02", "P2", "ask", "open"],
+    ["code-02", "P2", "ask", "pr"],
     ["code-03+security-02", "P1", "ask", "open"],
-    ["code-04", "P2", "ask", "open"],
+    ["code-04", "P2", "ask", "pr"],
     ["code-05", "P1", "fix", "open"],
     ["security-03", "P1", "fix", "open"],
   ], "a neighbouring ask with another claim never demotes the P1 fix; within 5 lines of any member joins the group; the same CWE merges other "
     + "words; 17 lines apart never merges; a missing action is an ask and a missing severity a P1");
   const merged = out.findings[0];
   assert.deepEqual([merged.lens, merged.location, merged.cwe], [["code", "security"], "src/api/orders.ts:41", "CWE-770"], "the group is told by its most severe member");
-  assert.equal(out.disposition, "ask");
-  assert.match(stdout, /^synthesize: disposition=ask /m);
+  assert.equal(out.disposition, "fix", "a lens's ask is the fix round's call, a P2 one listed on the PR");
+  assert.match(stdout, /^synthesize: disposition=fix /m);
   assert.match(stdout, new RegExp(`findings\\.json: ${path.join(r.run_dir, "findings.json").replace(/[.\\]/g, "\\$&")}`));
 });
 
@@ -126,7 +126,7 @@ test("a oneshot, which has no spec.md, is held to the operate surface's UI rule"
   assert.deepEqual([rows(out), out.disposition], [[["ui-disposition", "P1", "fix", "resolved"]], "ship"]);
 });
 
-test("a finding that breaks an anti-goal is at least P1, an open P0 makes the disposition ask, and P2 and P3 never block", () => {
+test("a finding that breaks an anti-goal is at least P1, an open P0 goes to a fix round, only a person's question asks, and P2 and P3 never block", () => {
   const r = run({
     "review-code.md": lensFile("Code review", [
       { id: "code-01", severity: "P2", action: "fix", location: "src/checkout.ts:12", claim: "The anti-goal is broken: the card is charged when the order write fails", fix: "Save the order first." },
@@ -139,8 +139,12 @@ test("a finding that breaks an anti-goal is at least P1, an open P0 makes the di
   assert.equal(out.disposition, "fix");
   r.write({ "review-security.md": lensFile("Security review", [{ id: "security-01", severity: "P0", action: "fix", location: "src/db.ts:3", claim: "SQL injection", cwe: "CWE-89" }], { verdict: "block" }) });
   ({ out } = r.synth());
-  assert.equal(out.disposition, "ask", "an open P0 goes to the human");
+  assert.equal(out.disposition, "fix", "an open P0 goes to a fix round (#81)");
   assert.deepEqual([out.counts.P0, out.counts.P1, out.counts.open_blocking, out.counts.open_asks], [1, 1, 2, 0]);
+  r.write({ "review-human.md": lensFile("Human review", [{ id: "human-01", severity: "P1", action: "ask", location: "src/x.ts:9", claim: "Why a modal here?" }]) });
+  ({ out } = r.synth());
+  assert.deepEqual([out.disposition, out.counts.open_asks], ["ask", 1], "a person's question on the PR waits for them");
+  r.write({ "review-human.md": null });
   r.write({ "review-code.md": null, "review-security.md": lensFile("Security review", [{ id: "security-01", severity: "P2", action: "note", location: "src/db.ts:3", claim: "Fine" }], { verdict: "approve" }) });
   ({ out } = r.synth());
   assert.deepEqual([rows(out), out.disposition], [[["security-01", "P2", "note", "pr"]], "ship"]);

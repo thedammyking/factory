@@ -112,7 +112,7 @@ fact("criteria_pass", criteria.length && !unproven.length, criteria.length ? unp
   [at(oneshot ? "triage.md" : "spec.md"), ...walks.map(at)]);
 
 const review = json("findings.json"), open = (review?.findings || []).filter((f) => f.status === "open");
-const blocking = open.filter((f) => f.action === "ask" || (["P0", "P1"].includes(f.severity) && f.action === "fix"));
+const blocking = open.filter((f) => f.severity === "P0" || (f.action === "ask" && f.lens?.includes("human")) || (f.severity === "P1" && f.action !== "note"));
 fact("findings_ship", review?.disposition === "ship" && !blocking.length, review
   ? `disposition ${review.disposition}${blocking.map((f) => `, ${f.id} ${f.severity} ${f.action}`).join("")}` : "no findings.json: run synthesize.mjs", [at("findings.json")]);
 

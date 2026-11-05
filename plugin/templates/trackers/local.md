@@ -8,7 +8,7 @@ None. A run under `local` has no request issue: every request is plain text, and
 
 ## Wayfinding operations
 
-A map is a folder on the base branch, `.factory/maps/<slug>/`. Only `node ${CLAUDE_PLUGIN_ROOT}/scripts/map.mjs` (`map.mjs` below) writes it, each write a commit on the base, so never edit these files in a checkout. Pass a file's text on stdin through a quoted heredoc, with a delimiter no line of the text matches.
+A map is a folder on the `factory/records` branch, `.factory/maps/<slug>/` (the base's until the first write makes that branch). Only `node ${CLAUDE_PLUGIN_ROOT}/scripts/map.mjs` (`map.mjs` below) writes it, each write a commit on `factory/records`, never the base, so never edit these files in a checkout. Pass a file's text on stdin through a quoted heredoc, with a delimiter no line of the text matches.
 
 - **Map**: `map.md` in that folder holds the body, and the map's reference is its slug (`crm`). Write it whole with `map.mjs write <slug> map.md`, which refuses a text that drops a decision another session added since you read it (and a ticket's write that changes its `Status:` other than to `out-of-scope`): read it again, then write. Read it with `git show <base>:.factory/maps/<slug>/map.md`, `<base>` being the branch runs start from.
 - **Decision ticket**: `tickets/NN-<slug>.md`, numbered from `01` in the order they are made: a `# <title>` line, then `Type: research | grilling | task`, `Status: open` and `Blocked by: none` lines, then the body. Write one whole with `map.mjs write <slug> tickets/NN-<slug>.md`.

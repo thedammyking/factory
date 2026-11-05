@@ -37,7 +37,7 @@ The whole map at low resolution, loaded once per session. Open tickets are **not
 
 ## Notes
 
-Slug: <the map's slug, a few kebab-case words: its research findings live in `.factory/maps/<slug>/research/` on the base branch>
+Slug: <the map's slug, a few kebab-case words: its research findings live in `.factory/maps/<slug>/research/` on the `factory/records` branch, never the base>
 
 <domain; skills every session should consult; standing preferences for this effort>
 

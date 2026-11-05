@@ -188,7 +188,7 @@ test("fix 1: run state written mid-run leaves the evidence clean and pinned to H
   assert.equal(git(p.wt, "status", "--porcelain"), "", "state.json, run.log, the evidence and its logs never dirty the run worktree");
   rs("set", "stage", "needs-human");
   rs("snapshot");
-  assert.match(p.git("log", "-1", "--format=%s", "main"), /snapshot/, "the snapshot landed on the base");
+  assert.match(p.git("log", "-1", "--format=%s", "factory/records"), /snapshot/, "the snapshot landed on factory/records");
   assert.equal(git(p.wt, "rev-parse", "HEAD"), head, "the bookkeeping commit never moves the run's HEAD");
   const again = p.verify("--full");
   assert.deepEqual([again.status, again.evidence.sha, again.evidence.dirty], [0, head, false]);

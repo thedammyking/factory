@@ -28,7 +28,7 @@ const init = (p, request = "Add a CSV export to the reports page") => {
   assert.equal(r.status, 0, r.stderr);
   return JSON.parse(r.stdout);
 };
-const logLines = (p) => p.git("show", "main:.factory/log.md").split("\n").map((l) => l.replace(/^- \S+ /, ""));
+const logLines = (p) => p.git("show", "factory/records:.factory/log.md").split("\n").map((l) => l.replace(/^- \S+ /, ""));
 // A post-commit hook that moves main by an empty commit after each of the next `times` commits, the way a human or
 // another run committing to the base between a snapshot's commit and its move would.
 const baseMovesAfterCommit = (p, times) => {
@@ -37,7 +37,7 @@ const baseMovesAfterCommit = (p, times) => {
 n=$(cat "${counter}" 2>/dev/null || echo 0)
 [ "$n" -ge ${times} ] && exit 0
 echo $((n + 1)) > "${counter}"
-git update-ref refs/heads/main "$(git commit-tree 'main^{tree}' -p main -m "base moved $n")"
+git update-ref refs/heads/factory/records "$(git commit-tree 'factory/records^{tree}' -p factory/records -m "base moved $n")"
 `, { mode: 0o755 });
 };
 const tempWorktrees = (p) => p.git("worktree", "list", "--porcelain").split("\n").filter((l) => /^worktree .*\/\.base-/.test(l));
@@ -157,37 +157,38 @@ test("abandon ends a run abandoned and keeps its branch and worktree; a finished
   assert.equal(rs(p.dir, ["status"]).stdout.trim(), "no active runs");
 });
 
-test("fix 24: snapshot commits the run dir to .factory/history/<run>/ on the base and adds only new log lines", () => {
+test("fix 24: snapshot commits the run dir to .factory/history/<run>/ on factory/records, never the base, and adds only new log lines", () => {
   const p = project();
   const s = init(p);
   const run = (...args) => rs(p.dir, [...args, "--run", s.id]);
   run("set", "stage", "needs-human");
   const first = run("snapshot");
   assert.equal(first.status, 0, first.stderr);
-  const tracked = p.git("ls-tree", "-r", "--name-only", "main", ".factory").split("\n");
+  const tracked = p.git("ls-tree", "-r", "--name-only", "factory/records", ".factory").split("\n");
+  assert.doesNotMatch(p.git("ls-tree", "-r", "--name-only", "main"), /\.factory\/history\//, "main gets nothing but through a PR (#81)");
   for (const f of ["prompt.md", "state.json", "run.log"]) assert.ok(tracked.includes(`.factory/history/${s.id}/${f}`), f);
   assert.ok(!tracked.some((f) => f.startsWith(".factory/runs/")), "the run dir's own path is never tracked");
   run("set", "stage", "failed");
   assert.equal(run("snapshot").status, 0);
   assert.deepEqual(logLines(p), [`run: ${s.id} started`, `run: ${s.id} needs-human`, `run: ${s.id} failed`]);
-  assert.equal(JSON.parse(p.git("show", `main:.factory/history/${s.id}/state.json`)).stage, "failed", "a second snapshot refreshes the copy");
-  assert.equal(p.git("status", "--porcelain"), "", "the main checkout, which holds main, is fast-forwarded with it");
+  assert.equal(JSON.parse(p.git("show", `factory/records:.factory/history/${s.id}/state.json`)).stage, "failed", "a second snapshot refreshes the copy");
+  assert.equal(p.git("status", "--porcelain"), "", "the main checkout is untouched");
 });
 
-test("snapshot applies again on a base that moved, and lands on the third try", () => {
+test("snapshot applies again on a records branch that moved, and lands on the third try", () => {
   const p = project();
   const s = init(p);
   p.git("switch", "-q", "-c", "elsewhere");  // main is checked out nowhere, so it moves by compare-and-swap
   baseMovesAfterCommit(p, 2);
   const r = rs(p.dir, ["snapshot", "--run", s.id]);
   assert.equal(r.status, 0, r.stderr);
-  assert.deepEqual(p.git("log", "--format=%s", "main").split("\n"),
+  assert.deepEqual(p.git("log", "--format=%s", "factory/records").split("\n"),
     [`factory(run): ${s.id} snapshot (start)`, "base moved 1", "base moved 0", "init"]);
   assert.deepEqual(logLines(p), [`run: ${s.id} started`]);
   assert.deepEqual(tempWorktrees(p), []);
 });
 
-test("a base that moves on all 3 tries raises an attention item, ends the run needs-human and keeps its worktree", () => {
+test("a records branch that moves on all 3 tries raises an attention item, ends the run needs-human and keeps its worktree", () => {
   const p = project();
   const s = init(p);
   rs(p.dir, ["set", "stage", "answered", "--run", s.id]);
@@ -199,7 +200,7 @@ test("a base that moves on all 3 tries raises an attention item, ends the run ne
   assert.equal(JSON.parse(rs(p.dir, ["get", "--run", s.id]).stdout).stage, "needs-human");
   assert.ok(fs.existsSync(s.worktree));
   assert.deepEqual(tempWorktrees(p), []);
-  assert.doesNotMatch(p.git("log", "--format=%s", "main"), /snapshot/);
+  assert.doesNotMatch(p.git("log", "--format=%s", "factory/records"), /snapshot/);
   assert.equal(p.git("status", "--porcelain"), "");
 });
 
@@ -230,7 +231,7 @@ test("an answered run can't be resumed: once its worktree is gone, every command
   for (const args of [["get"], ["dispatch", "triage"], ["set", "stage", "needs-human"]]) {
     const r = rs(p.dir, [...args, "--run", s.id]);
     assert.equal(r.status, 2, args[0]);
-    assert.equal(r.stderr.trim(), `run ${s.id} has ended answered: its record is .factory/history/${s.id}/ on main`);
+    assert.equal(r.stderr.trim(), `run ${s.id} has ended answered: its record is .factory/history/${s.id}/ on factory/records`);
   }
 });
 
@@ -274,7 +275,7 @@ test("the secret check lets plain settings through: localhost URLs, short values
     "It serves http://localhost:3000, reads postgres://localhost:5432/app and redis://app:pw@localhost:6379, as reporting-dashboard with abc1234.\n");
   const r = rs(p.dir, ["snapshot", "--run", s.id]);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  assert.match(p.git("ls-tree", "-r", "--name-only", "main"), new RegExp(`\\.factory/history/${s.id}/answer\\.md`));
+  assert.match(p.git("ls-tree", "-r", "--name-only", "factory/records"), new RegExp(`\\.factory/history/${s.id}/answer\\.md`));
 });
 
 test("under git flow a run starts at develop's tip", () => {
@@ -566,7 +567,7 @@ test("the attribution lines: a factory commit ends with the commit lines the ses
   delete env.FACTORY_COMMIT_TRAILER; delete env.FACTORY_PR_TRAILER;
   const run = (args, e = env) => rs(p.dir, [...args, "--run", s.id], "", e);
   const snapshot = (stage, e) => { run(["set", "stage", stage]); const r = run(["snapshot"], e); assert.equal(r.status, 0, r.stderr); return r; };
-  const message = () => p.git("log", "-1", "--format=%B", "main");
+  const message = () => p.git("log", "-1", "--format=%B", "factory/records");
   const none = snapshot("needs-human");
   assert.equal(message(), `factory(run): ${s.id} snapshot (needs-human)`, "none recorded: the commit goes without");
   assert.equal(none.stderr.match(/no attribution recorded/g)?.length, 1, none.stderr);

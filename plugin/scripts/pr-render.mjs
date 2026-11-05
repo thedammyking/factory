@@ -4,7 +4,7 @@
 //   pr.md        the title and body: the spec's title, after the request issue's key as the branch has it (ENG-123:
 //                <title>, #12: <title>), and goal (a oneshot's acceptance check and triage's rationale),
 //                each criterion's full text with qa's result (a oneshot's one criterion its acceptance check), the
-//                evidence table, Needs a decision (open asks and P0s, and the facts a needs-human decision failed), the
+//                evidence table, Needs a decision (a person's open questions and open P0s, and the facts a needs-human decision failed), the factory's calls (grill.md's defaults), the
 //                findings, the security capabilities, each implementer's assumptions and assessment verbatim, up to six
 //                captures, the pinned tests qa superseded or repaired, the spec's Anti-goals, the Spec line (the Notion
 //                page in its frontmatter, else where the snapshot puts it, or a oneshot's triage.md), the request
@@ -54,7 +54,10 @@ const result = (id) => [...new Set(walks.flatMap((w) => w.criteria || []).filter
 const ev = json("evidence.json") || {}, findings = json("findings.json")?.findings || [], security = json("security.json"), pr = json("pr.json");
 const decision = json("decision.json"), failed = decision?.facts.filter((f) => !f.ok) ?? [];
 const finding = (f) => `- ${f.id} (${f.severity} ${f.action}) \`${f.location}\`: ${f.claim}`;
-const asks = findings.filter((f) => f.status === "open" && (f.action === "ask" || f.severity === "P0"));
+const asks = findings.filter((f) => f.status === "open" && ((f.action === "ask" && f.lens?.includes("human")) || f.severity === "P0"));
+// The calls the factory made in the human's place once the grill was over (#81): grill.md's answers marked (default),
+// (the factory's call) or (from the map), which the human reviews here.
+const calls = read("grill.md").split("\n").filter((l) => /^- Q: .*→ A: .*\((default|the factory's call|from the map)\)\s*$/.test(l));
 
 // A criterion's route: its first bare path once every URL (a scheme's, or protocol-relative) is taken out.
 const route = (text) => text.replace(/(?:[a-z][a-z\d+.-]*:)?\/\/[^\s`'")]*/gi, " ").match(/(?:^|[\s`'"(])(\/[^\s`'"),;]*)/)?.[1];
@@ -112,6 +115,9 @@ ${list(findings.filter((f) => f.status === "resolved").map(finding))}
 
 ## Security
 ${security ? Object.entries(security.capabilities).map(([c, x]) => `- ${c}: ${x.status} (${(x.runs || []).find((r) => !r.optional)?.tool ?? "no tool"})`).join("\n") : "- no security.json"}
+
+## The factory's calls
+${list(calls)}
 
 ## Assumptions and assessment
 ${reports.join("\n\n") || "No implementer report."}

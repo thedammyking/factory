@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // map.mjs — a map on the local tracker, .factory/maps/<slug>/: map.md (the map's body), tickets/NN-slug.md (one decision
 // ticket each, with `Type:`, `Status:` and `Blocked by:` lines) and research/<name>.md (a research ticket's findings).
-// It reads the base branch's tip, never the working tree, and writes only through lib's commitToBase, so every session
-// on one map sees the others' writes. Under any other tracker the map lives there, and only research/ is written here.
+// It reads factory/records' tip (lib's RECORDS, else the base's until it exists), never the working tree, and writes only
+// through lib's commitRecord, so every session on one map sees the others' writes and nothing lands on the base (#81). Under any other tracker the map lives there, and only research/ is written here.
 //   map.mjs frontier <slug>                -> `NEXT <NN-slug> (<type>): <title>` per open decision ticket whose blockers
 //                                             are all closed, in number order; with none, `CLAIMED <NN-slug>: <title>`
 //                                             or `BLOCKED <NN-slug>: waits on <NN>, …` per open one; with no open one,
@@ -18,7 +18,7 @@
 //                                             another session committed since the text was read is refused, never
 //                                             lost: a ticket's Status (claim and resolve change it, write only to
 //                                             out-of-scope) and map.md's pointers in `## Decisions so far`
-import { mainRoot, readJson, arg, git, frontier, commitToBase, attributed, STATUS_LINE } from "./lib.mjs";
+import { mainRoot, readJson, arg, git, frontier, commitRecord, recordsRef, RECORDS, attributed, STATUS_LINE } from "./lib.mjs";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -36,7 +36,7 @@ if (!config) die("no .factory/config.json: run /setup-factory first");
 if (!SLUG.test(slug || "")) die(`${cmd ?? "usage:"} <slug>: a map's folder name under .factory/maps/`);
 // the base a run starts from (run-state init's), which holds every map
 const branching = config.branching || {}, base = branching.model === "git-flow" ? branching.develop || "develop" : branching.main || "main";
-const dir = `.factory/maps/${slug}`, ref = `refs/heads/${base}`;
+const dir = `.factory/maps/${slug}`, ref = recordsRef(MAIN, base);
 const title = (t) => t.text.match(/^# (.+)$/m)?.[1].trim() ?? t.id;
 const type = (t) => t.text.match(/^\**Type:\**[ \t]*(\S+)/m)?.[1];
 const parse = (f, text) => frontier("", WORDS, { [f]: text }).items[0];  // one decision ticket, read as the frontier reads it
@@ -45,7 +45,7 @@ const tickets = () => git(MAIN, "ls-tree", "--name-only", ref, "--", `${dir}/tic
 // The file name of ticket NN (or NN-slug) at the base tip.
 function ticketName(n) {
   const f = /^\d{2}(-|$)/.test(n) && tickets().map((p) => path.posix.basename(p)).find((f) => f.startsWith(`${n.slice(0, 2)}-`) && f.endsWith(".md"));
-  return f || die(`no ticket ${n || "<NN>"} in map ${slug} on ${base}`);
+  return f || die(`no ticket ${n || "<NN>"} in map ${slug} on ${ref.slice(11)}`);
 }
 // That ticket as the temp worktree at the tip holds it.
 function ticketIn(wt, f) {
@@ -55,13 +55,13 @@ function ticketIn(wt, f) {
 // One commit onto the base, `apply` re-run on a moved tip; a throw from it (a lost race) ends the command committing nothing.
 // It acts on no run, so only an exported FACTORY_COMMIT_TRAILER attributes it.
 function commit(what, apply) {
-  try { return commitToBase(MAIN, base, attributed(`factory(map): ${slug} ${what}`, "commit", null), apply); } catch (e) { die(e.message); }
+  try { return commitRecord(MAIN, base, attributed(`factory(map): ${slug} ${what}`, "commit", null), apply); } catch (e) { die(e.message); }
 }
 
 if (config.tracker !== "local" && !(cmd === "write" && RESEARCH.test(target))) die(`${cmd} is for the local tracker, and this one is ${config.tracker}: its map lives there`);
 switch (cmd) {
   case "frontier": {
-    try { git(MAIN, "cat-file", "-e", `${ref}:${dir}/map.md`); } catch { die(`no map ${slug} on ${base}`); }
+    try { git(MAIN, "cat-file", "-e", `${ref}:${dir}/map.md`); } catch { die(`no map ${slug} on ${ref.slice(11)}`); }
     const files = Object.fromEntries(tickets().map((n) => [path.posix.basename(n), git(MAIN, "show", `${ref}:${n}`)]));
     const { open, next, done } = frontier(`${dir}/tickets`, WORDS, files);
     if (next.length) for (const t of next) console.log(`NEXT ${t.id} (${type(t)}): ${title(t)}`);
@@ -119,7 +119,7 @@ switch (cmd) {
       fs.writeFileSync(file, text);
       return [`${dir}/${target}`];
     });
-    console.log(`${sha ? "wrote" : "unchanged"} ${dir}/${target} on ${base}`);
+    console.log(`${sha ? "wrote" : "unchanged"} ${dir}/${target} on ${RECORDS}`);
     break;
   }
   default: die("usage: map.mjs frontier | claim | resolve | write <slug> …");

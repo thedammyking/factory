@@ -25,8 +25,10 @@ function mapped(tickets, config = { tracker: "local" }) {
   return { p, map };
 }
 const ok = (r) => { assert.equal(r.status, 0, r.stderr); return r.stdout.trim(); };
-const onMain = (p, f) => p.git("show", `main:${f}`);
-const commits = (p) => Number(p.git("rev-list", "--count", "main"));
+// The factory's records branch once a write made it (#81), else main, where the map started.
+const rec = (p) => { try { p.git("rev-parse", "--verify", "-q", "factory/records"); return "factory/records"; } catch { return "main"; } };
+const onMain = (p, f) => p.git("show", `${rec(p)}:${f}`);
+const commits = (p) => Number(p.git("rev-list", "--count", rec(p)));
 const temps = (p) => { const d = path.join(p.dir, ".factory/worktrees"); return fs.existsSync(d) ? fs.readdirSync(d) : []; };
 
 test("the frontier is every open ticket whose blockers are all closed, read from the base branch, in number order", () => {
@@ -66,7 +68,7 @@ test("a claim is a commit on the base; one that loses the race to another sessio
   assert.equal(ok(map(["claim", "crm", "01"])), "claimed 01-pick-a-store");
   assert.equal(commits(p), before + 1);
   assert.match(onMain(p, `${M}/tickets/01-pick-a-store.md`), /^Status: claimed$/m);
-  assert.equal(p.git("log", "-1", "--format=%s", "main"), "factory(map): crm claim 01-pick-a-store");
+  assert.equal(p.git("log", "-1", "--format=%s", "factory/records"), "factory(map): crm claim 01-pick-a-store");
   assert.equal(ok(map(["frontier", "crm"])), "NEXT 02-contact-fields (grilling): Contact fields");
   const again = map(["claim", "crm", "01"]);
   assert.equal(again.status, 2);
@@ -94,7 +96,7 @@ test("resolve records a claimed ticket's answer and links its gist from the map'
   assert.match(map(["resolve", "crm", "01", "--gist", "Postgres"]).stderr, /the answer on stdin/);
   assert.equal(ok(map(["resolve", "crm", "01-pick-a-store", "--gist", "Postgres, see research/store.md"], "Postgres, for its JSON columns: research/store.md.\n")), "resolved 01-pick-a-store");
   assert.equal(commits(p), before + 1, "the ticket and the map in one commit");
-  assert.equal(p.git("log", "-1", "--format=%s", "main"), "factory(map): crm resolve 01-pick-a-store");
+  assert.equal(p.git("log", "-1", "--format=%s", "factory/records"), "factory(map): crm resolve 01-pick-a-store");
   assert.equal(onMain(p, `${M}/tickets/01-pick-a-store.md`), ticket("Pick a store", { type: "research", status: "resolved" }).trimEnd()
     + "\n\n## Answer\n\nPostgres, for its JSON columns: research/store.md.");
   assert.equal(onMain(p, `${M}/map.md`), MAP.replace("<!-- one line per closed ticket -->\n",
@@ -114,14 +116,14 @@ test("write commits one map file whole onto the base, a ticket only with its Typ
   const map = (args, input = "") => script("map.mjs", p.dir, args, { input });
   p.git("checkout", "-qb", "elsewhere");
   const before = commits(p);
-  assert.equal(ok(map(["write", "crm", "map.md"], MAP)), "wrote .factory/maps/crm/map.md on main");
-  assert.equal(ok(map(["write", "crm", "tickets/01-pick-a-store.md"], ticket("Pick a store", { type: "research" }))), "wrote .factory/maps/crm/tickets/01-pick-a-store.md on main");
+  assert.equal(ok(map(["write", "crm", "map.md"], MAP)), "wrote .factory/maps/crm/map.md on factory/records");
+  assert.equal(ok(map(["write", "crm", "tickets/01-pick-a-store.md"], ticket("Pick a store", { type: "research" }))), "wrote .factory/maps/crm/tickets/01-pick-a-store.md on factory/records");
   assert.equal(commits(p), before + 2, "a commit each");
-  assert.equal(p.git("log", "-1", "--format=%s", "main"), "factory(map): crm write tickets/01-pick-a-store.md");
+  assert.equal(p.git("log", "-1", "--format=%s", "factory/records"), "factory(map): crm write tickets/01-pick-a-store.md");
   assert.equal(onMain(p, `${M}/map.md`), MAP.trimEnd());
   assert.ok(!fs.existsSync(path.join(p.dir, M)), "the working tree, on another branch, is left alone");
   assert.equal(ok(map(["frontier", "crm"])), "NEXT 01-pick-a-store (research): Pick a store");
-  assert.equal(ok(map(["write", "crm", "map.md"], MAP)), "unchanged .factory/maps/crm/map.md on main");
+  assert.equal(ok(map(["write", "crm", "map.md"], MAP)), "unchanged .factory/maps/crm/map.md on factory/records");
   assert.equal(commits(p), before + 2);
 
   for (const [args, input, why] of [
@@ -163,7 +165,7 @@ test("research findings land in the map's research/ under any tracker; the rest 
     const p = project({ config: { tracker } });
     const map = (args, input = "") => script("map.mjs", p.dir, args, { input });
     assert.equal(ok(map(["write", "crm", "research/store-options.md"], "# Research: Pick a store\n\nPostgres.\n\nStatus: ok\n")),
-      "wrote .factory/maps/crm/research/store-options.md on main", tracker);
+      "wrote .factory/maps/crm/research/store-options.md on factory/records", tracker);
     assert.equal(onMain(p, `${M}/research/store-options.md`), "# Research: Pick a store\n\nPostgres.\n\nStatus: ok");
     if (tracker === "local") continue;
     for (const args of [["write", "crm", "map.md"], ["frontier", "crm"], ["claim", "crm", "01"], ["resolve", "crm", "01", "--gist", "x"]]) {
@@ -254,13 +256,14 @@ test("a map run writes nothing to the tracker or to the map", () => {
     rs("set", "route", "build");
     assert.match(rs("lane"), /^on feature\/add-contacts from main/);
     assert.match(rs("claim"), /^skip: no request issue/, tracker);
-    const before = t.p.git("rev-parse", "main");
+    const before = t.p.git("rev-parse", "main"), records = rec(t.p) === "main" ? before : t.p.git("rev-parse", "factory/records");
     rs("abandon");
     assert.match(rs("unclaim"), /^skip: no request issue/);
     assert.match(rs("comment"), /^skip: no request issue/);
     assert.match(rs("snapshot"), /worktree removed/);
     assert.deepEqual(t.gh.calls("gh"), tracker === "github" ? [["api", "repos/o/r/issues/40"]] : [], `${tracker}: the map's one read, and no write`);
-    const changed = t.p.git("diff", "--name-only", before, "main").split("\n");
+    assert.equal(t.p.git("rev-parse", "main"), before, `${tracker}: main gets nothing but through a PR`);
+    const changed = t.p.git("diff", "--name-only", records, "factory/records").split("\n");
     assert.deepEqual(changed.filter((f) => !f.startsWith(`.factory/history/${s.id}/`)), [".factory/log.md"], `${tracker}: nothing under .factory/maps/`);
   }
 });

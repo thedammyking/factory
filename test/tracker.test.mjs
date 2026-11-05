@@ -263,7 +263,7 @@ Answer both.
 `;
 const comments = (t) => writes(t).filter((c) => c[3].endsWith("/comments")).map((c) => c.at(-1).replace(/^body=/, ""));
 const snapshot = (t, s) => t.rs(["snapshot", "--run", s.id]);
-const history = (t, f) => t.p.git("show", `main:${f}`);
+const history = (t, f) => t.p.git("show", `factory/records:${f}`);
 
 test("the closing comment waits for a clean snapshot: one that stops on a secret posts nothing, and the next clean one posts it once", () => {
   const t = setup(), s = started(t, "#12");

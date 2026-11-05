@@ -53,8 +53,9 @@
 //                                                implemented: its plan is done and the route becomes build, which goes on
 //                                                at research on the same branch, and the oneshot's tickets/ is kept as
 //                                                oneshot/, so the caps scale with the build's tickets once they're cut
-//   run-state.mjs approve spec approved|revise -> the human's decision at the spec gate; approved covers spec.md as it is,
-//                                                and until then a build run dispatches nothing past the builder check
+//   run-state.mjs approve spec approved|revise -> the factory's own approval once the builder check is done (#81);
+//                                                approved covers spec.md as it is, and until then a build run dispatches
+//                                                nothing past the builder check
 //   run-state.mjs notion [pushed <url> | failed "<why>"] -> an approved spec's Notion copy, which the orchestrator pushes
 //                                                through the Notion MCP: prints `skip: …` when the config names no Notion
 //                                                parent page (docs repo), else the page as JSON (parent, the page to
@@ -139,7 +140,8 @@
 //                                                of its loops), recorded with who and why; the orchestrator never calls
 //                                                it on its own
 //   run-state.mjs snapshot                    -> unless a run file holds a credential from the env files, commits the run
-//                                                dir to .factory/history/<id>/ on the base and its new run.log lines to
+//                                                dir to .factory/history/<id>/ on factory/records (lib's RECORDS, never
+//                                                the base: #81) and its new run.log lines to
 //                                                .factory/log.md, then removes the worktree of a finished run (its
 //                                                apps and any left ticket worktree's brought down, and their databases
 //                                                dropped, first); a stop
@@ -158,7 +160,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitToBase, attributed, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock, githubRepo, ghApi, SETTINGS, settingsWith } from "./lib.mjs";
+import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitRecord, recordsRef, freshTip, RECORDS, attributed, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock, githubRepo, ghApi, SETTINGS, settingsWith } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
 const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted", "suspended"];
@@ -388,9 +390,10 @@ function logOf(s, d) {
   return d.log || (t && path.join(path.dirname(t), id, "subagents", `agent-${d.agent}.jsonl`));
 }
 // The run's caps as [name, used, limit], from config.json's caps over the defaults. They scale with the ticket count (the
-// planner's tickets/NN-slug.md files) once it is known (design fix 7). Minutes are those since the spec was approved (since
-// init on a route with no spec gate), as the grill before it goes at the human's pace, less the time spent waiting on the
-// human (needs-human, failed or suspended, until the next dispatch) and the downtime reconcile finds.
+// planner's tickets/NN-slug.md files) once it is known (design fix 7). Minutes are those since the spec was approved, and
+// none before it on the build route, since the grill goes at the human's pace (since init on a route with no spec), less
+// the time spent waiting on the human (needs-human, failed or suspended, until the next dispatch) and the downtime
+// reconcile finds.
 // Once pr.json exists, tokens spent after it go to their own post_pr allowance, which the tokens cap never pays for
 // (design fix 13).
 const CAPS = { dispatches_per_run: 30, dispatches_per_ticket: 5, minutes_per_run: 90, minutes_per_ticket: 45, tokens_overhead: 700_000,
@@ -401,7 +404,8 @@ function caps(ctx, s) {
   const dir = path.join(ctx.runDir, "tickets");
   const tickets = fs.existsSync(dir) ? fs.readdirSync(dir).filter((f) => /^\d{2}-.+\.md$/.test(f)).length : 0;
   const pr = s.spend.tokens_at_pr;
-  const ran = Date.now() - Date.parse(s.approvals?.spec?.at ?? s.created_at) - (s.waited_ms || 0) - (s.waiting_since ? Date.now() - Date.parse(s.waiting_since) : 0);
+  const from = s.route === "build" ? s.approvals?.spec?.at : s.created_at;
+  const ran = !from ? 0 : Date.now() - Date.parse(from) - (s.waited_ms || 0) - (s.waiting_since ? Date.now() - Date.parse(s.waiting_since) : 0);
   return [
     ["dispatches", s.dispatches.length, c.dispatches_per_run + c.dispatches_per_ticket * Math.max(0, tickets - 1)],
     ["minutes", Math.floor(ran / 60000), c.minutes_per_run + c.minutes_per_ticket * Math.max(0, tickets - 1)],
@@ -467,7 +471,8 @@ function mapRun(main, tracker, base, sha, stdin) {
   if (tracker === "local") {
     const slug = ref.match(/^(?:\.factory\/maps\/)?([a-z0-9][a-z0-9-]*)(?:\/(?:map\.md)?)?$/)?.[1];
     if (!slug) die(`--map ${ref} isn't a map's slug, its folder under .factory/maps/`);
-    try { body = git(main, "show", `${sha}:.factory/maps/${slug}/map.md`); } catch { die(`no map ${slug} on ${base}`); }
+    const at = recordsRef(main, base);
+    try { body = git(main, "show", `${at}:.factory/maps/${slug}/map.md`); } catch { die(`no map ${slug} on ${at.slice(11)}`); }
     map = { tracker, ref: slug };
   } else if (tracker === "github") {
     const r = githubIssue(main, ref, "map") ?? die(`--map ${ref} isn't a map issue: #40 or its URL`);
@@ -565,7 +570,7 @@ switch (cmd) {
     // Before triage picks a lane, a run sits at the tip of the branch most lanes start from.
     const branching = config.branching || {};
     const base = branching.model === "git-flow" ? branching.develop || "develop" : branching.main || "main";
-    let sha; try { sha = git(MAIN, "rev-parse", "--verify", `refs/heads/${base}^{commit}`); } catch { die(`base branch '${base}' doesn't exist`); }
+    let sha; try { sha = freshTip(MAIN, base); } catch { die(`base branch '${base}' doesn't exist`); }
     const run = mapped && mapRun(MAIN, config.tracker, base, sha, stdin);
     const slug = (from?.title ?? run?.entry ?? request).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, 4).join("-").slice(0, 32).replace(/-$/, "") || "run";
     // mkdir is the claim, so two runs started at once never take the same id; git worktree add accepts the empty dir.
@@ -766,7 +771,7 @@ switch (cmd) {
     const check = String(triage.acceptance_check ?? "").replace(/\s+/g, " ").trim();
     if (s.route === "oneshot" && !check) die("triage.md has no acceptance_check, a oneshot's one criterion");
     const want = prefixes[kind] + [...key, ...slug.slice(0, 5)].join("-");
-    let sha; try { sha = git(ctx.MAIN, "rev-parse", "--verify", `refs/heads/${base}^{commit}`); } catch { die(`base branch '${base}' doesn't exist`); }
+    let sha; try { sha = freshTip(ctx.MAIN, base); } catch { die(`base branch '${base}' doesn't exist`); }
     // A name taken here or on a remote gets the run id appended; losing a race to another run moves on the same way.
     const taken = (name, refs = [`refs/heads/${name}`, `refs/remotes/*/${name}`]) => git(ctx.MAIN, "for-each-ref", "--format=x", ...refs) !== "";
     for (const name of [want, `${want}-${ctx.id}`]) {
@@ -1145,7 +1150,7 @@ switch (cmd) {
       if (!fs.statSync(file).isFile()) continue;
       const text = fs.readFileSync(file, "utf8"), hit = secrets.find((x) => text.includes(x.value));
       if (hit) stop(ctx, s, "secret", {
-        headline: `A run file holds a credential, so nothing was committed to ${s.base_branch}`,
+        headline: `A run file holds a credential, so nothing was committed to ${RECORDS}`,
         happened: `The run was ending ${s.stage}. \`${f}\` holds the value of \`${hit.name}\` from \`${hit.file}\`, `
           + `so its snapshot to \`.factory/history/${ctx.id}/\` committed nothing.`,
         evidence: [file], recommendation: `Remove the value from \`${f}\`, then try again.`, options,
@@ -1166,14 +1171,14 @@ switch (cmd) {
       if (fresh.length) fs.appendFileSync(logMd, (cur && !cur.endsWith("\n") ? "\n" : "") + fresh.join("\n") + "\n");
       return [dst, logMd];
     };
-    let sha; try { sha = commitToBase(ctx.MAIN, s.base_branch, attributed(`factory(run): ${ctx.id} snapshot (${s.stage})`, "commit", s), apply); } catch (e) {
+    let sha; try { sha = commitRecord(ctx.MAIN, s.trunk ?? s.base_branch, attributed(`factory(run): ${ctx.id} snapshot (${s.stage})`, "commit", s), apply); } catch (e) {
       stop(ctx, s, "snapshot", {
-        headline: `The run's files couldn't be committed to ${s.base_branch}`,
+        headline: `The run's files couldn't be committed to ${RECORDS}`,
         happened: `The run was ending ${s.stage}. Its snapshot to \`.factory/history/${ctx.id}/\` committed nothing: ${e.message}.`,
         evidence: [ctx.state], recommendation: "Clear what git reports, then try again.", options,
       });
     }
-    console.log(sha ? `snapshot ${sha.slice(0, 7)} on ${s.base_branch}` : `snapshot unchanged on ${s.base_branch}`);
+    console.log(sha ? `snapshot ${sha.slice(0, 7)} on ${RECORDS}` : `snapshot unchanged on ${RECORDS}`);
     // A finished run has nothing left to resume. Without --force, git refuses a worktree holding uncommitted work.
     if (!FINISHED.includes(s.stage)) console.log(`worktree kept (${s.stage})`);
     else if (issueComment && !s.issue_comment.posted && !s.issue_comment.failed) console.log(`worktree kept until the closing comment: \`${me} comment --run ${ctx.id}\`, then the snapshot again`);

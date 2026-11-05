@@ -14,8 +14,10 @@
 //   - On a persuade or operate surface (spec.md's frontmatter; a oneshot's is operate), a UI lens whose latest
 //     disposition isn't ship is an open P1 fix, ui-disposition, which only a later UI round saying ship resolves (design
 //     fix 6).
-//   - A group is resolved when every member is; otherwise it's open as a P0, a P1 or an ask, pr as a P2 and deferred as
-//     a P3. The disposition is ask with any open P0 or ask, fix with an open P1 fix, and ship otherwise.
+//   - A group is resolved when every member is; otherwise it's open as a P0, a P1 or a human's ask, pr as a P2 and
+//     deferred as a P3. A lens's ask is a judgment call, the fix round's to make like any fix (#81): only a person's
+//     question on the PR (the human lens) waits for them. The disposition is ask with an open human ask, fix with an open
+//     P0 or a P1 fix or ask, and ship otherwise.
 // Prints the disposition and counts, then each open finding.
 import fs from "node:fs";
 import path from "node:path";
@@ -75,7 +77,8 @@ const findings = groups.map(({ members: ms }, i) => {
   let severity = top.severity;
   if (rank(severity) > 1 && ms.some((m) => /anti-goal/i.test(`${m.claim} ${m.evidence} ${m.fix}`))) { severity = "P1"; rules.push("anti-goal => at least P1"); }
   const action = ms.some((m) => m.action === "ask") ? "ask" : ms.some((m) => m.action === "fix") ? "fix" : "note";
-  const status = ms.every((m) => m.resolved) ? "resolved" : rank(severity) <= 1 || action === "ask" ? "open" : severity === "P2" ? "pr" : "deferred";
+  const theirs = action === "ask" && ms.some((m) => m.lens === "human");
+  const status = ms.every((m) => m.resolved) ? "resolved" : rank(severity) <= 1 || theirs ? "open" : severity === "P2" ? "pr" : "deferred";
   return { id: ms.length > 1 ? `syn-${String(i + 1).padStart(2, "0")}` : top.id, members: ms.map((m) => m.id), lens: [...new Set(ms.map((m) => m.lens))],
     severity, action, status, location: top.location, claim: top.claim, evidence: top.evidence, fix: top.fix, cwe: top.cwe || ms.find((m) => m.cwe)?.cwe || "", rules };
 });
@@ -91,8 +94,9 @@ if (["persuade", "operate"].includes(surface) && uiRounds.some((d) => d !== "shi
 });
 
 const open = findings.filter((f) => f.status === "open");
-const blocking = open.filter((f) => rank(f.severity) <= 1 && f.action === "fix"), asks = open.filter((f) => f.action === "ask");
-const disposition = open.some((f) => f.severity === "P0") || asks.length ? "ask" : blocking.length ? "fix" : "ship";
+const asks = open.filter((f) => f.action === "ask" && f.lens.includes("human"));
+const blocking = open.filter((f) => !asks.includes(f) && (f.severity === "P0" || (f.severity === "P1" && f.action !== "note")));
+const disposition = asks.length ? "ask" : blocking.length ? "fix" : "ship";
 const counts = { ...Object.fromEntries(RANK.map((s) => [s, findings.filter((f) => f.severity === s).length])),
   open_blocking: blocking.length, open_asks: asks.length, resolved: findings.filter((f) => f.status === "resolved").length };
 const file = path.join(dir, "findings.json"), deferredFile = path.join(dir, "deferred.md");

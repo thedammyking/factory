@@ -18,7 +18,7 @@ Read each file as `{base}` holds it, with `git show "{base}:<path>"`, and list a
 
 1. `.factory/log.md`, its `post-merge:` lines first. A watch that went red after the factory's own merge (`revert=` anything but `none`) is a change every gate passed that still broke: the strongest case for a proposal.
 2. The runs it names, newest first and ten at most, those with a `post-merge:` line, an `escalation:` line or an end other than delivered before the rest. A run's record is `.factory/history/<run>/`: `run.log`, `state.json` (its outcome and rounds), `triage.md`, `spec.md`, `findings.json`, each `review-<lens>.md`, `decision.json`, `post-merge.json`, any `attention-*.md`, and per ticket `tickets/<NN>/` with `plan.md`, `implementation.md`, `evidence.json` and `qa.json`. An earlier round of a file is kept beside it as `<name>.round<N>.md`. Read a log under `logs/` only when a digest leaves the cause unclear.
-3. What the project holds already, so you never propose it twice: `.factory/lessons.md`, `.factory/index.md`, the files under `.factory/knowledge/` and the rule ids in `.factory/semgrep/project.yaml`.
+3. What the project holds already, so you never propose it twice, read under `{worktree}` (the base's, not `{base}`'s): `.factory/lessons.md`, `.factory/index.md`, the files under `.factory/knowledge/` and the rule ids in `.factory/semgrep/project.yaml`.
 4. `{record}` (read it with Read), and `merge` in `.factory/config.json`: `trial` unless it says `auto`.
 
 ## Propose

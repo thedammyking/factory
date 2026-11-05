@@ -182,7 +182,7 @@ test("green: CI at the merged SHA, the deployment, a probe past the wall with sm
   w.rs("set", "stage", "delivered");
   const snap = script("run-state.mjs", w.p.dir, ["snapshot", "--run", w.s.id], { env: ENV });
   assert.equal(snap.status, 0, snap.stdout + snap.stderr);
-  const logMd = w.p.git("show", "main:.factory/log.md");
+  const logMd = w.p.git("show", "factory/records:.factory/log.md");
   assert.equal(lines(logMd).length, 1, "one post-merge: line in log.md");
   assert.match(lines(logMd)[0], /^- \S+ post-merge: \S+ [0-9a-f]{7} on main: ci=green deploy=success smoke=pass revert=none$/);
 });
@@ -223,7 +223,7 @@ test("red smoke: a pinned test failing after sign-in opens a revert PR on revert
   smokeAlone(w);  // the revert's git calls and run-state's too
   const snap = script("run-state.mjs", w.p.dir, ["snapshot", "--run", w.s.id], { env: ENV });
   assert.equal(snap.status, 0, `the snapshot finds no credential: ${snap.stdout}${snap.stderr}`);
-  assert.deepEqual(lines(w.p.git("show", "main:.factory/log.md")).map((l) => l.replace(/^- \S+ /, "")), [`post-merge: ${w.s.id} ${w.sha.slice(0, 7)} on main: ci=green deploy=success smoke=fail revert=#9`]);
+  assert.deepEqual(lines(w.p.git("show", "factory/records:.factory/log.md")).map((l) => l.replace(/^- \S+ /, "")), [`post-merge: ${w.s.id} ${w.sha.slice(0, 7)} on main: ci=green deploy=success smoke=fail revert=#9`]);
 });
 
 test("red CI: a workflow run failing at the merged SHA opens the revert PR at once, with no probe or smoke; the revert ends with the session's lines", (t) => {

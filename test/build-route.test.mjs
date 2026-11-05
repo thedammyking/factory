@@ -144,7 +144,7 @@ test("the minute cap counts from the spec's approval, so a long grill spends non
   const [s, run] = atGate(p);
   const file = path.join(s.run_dir, "state.json"), st = JSON.parse(fs.readFileSync(file, "utf8"));
   fs.writeFileSync(file, JSON.stringify({ ...st, created_at: new Date(Date.now() - 200 * 60000).toISOString() }));  // a 200-minute grill
-  assert.match(run("spend").stdout, /^minutes 200\/90$/m);
+  assert.match(run("spend").stdout, /^minutes 0\/90$/m, "none before the approval, however long the grill");
   assert.equal(run("approve", "spec", "approved").status, 0);
   const tickets = run("dispatch", "tickets");
   assert.equal(tickets.status, 0, tickets.stdout);

@@ -1,6 +1,6 @@
 # Review the run
 
-The factory skill reads this at step 8 of **build**, once `next-ticket` prints `DONE`: every ticket is merged into the run branch, where `run-stage merge` left `evidence.json`. Read-only lenses judge the diff in parallel, `synthesize.mjs` turns their findings into `findings.json`, and only open P0 and P1 fixes go round, `caps.review_rounds` (2) times at most. The rounds and their cap are the scripts': never start a round that a step below doesn't name.
+The factory skill reads this at step 8 of **build**, once `next-ticket` prints `DONE`: every ticket is merged into the run branch, where `run-stage merge` left `evidence.json`. Read-only lenses judge the diff in parallel, `synthesize.mjs` turns their findings into `findings.json`, and only open P0s and P1s go round, `caps.review_rounds` (2) times at most. A lens's `ask` is a judgment call the fix round makes like any fix, recording it for the PR (#81): a review never stops to ask the human. The rounds and their cap are the scripts': never start a round that a step below doesn't name.
 
 The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<script> … --run <id>`, written out in full.
 
@@ -26,7 +26,7 @@ First, once per review and never on a re-review, run `sync-base.mjs before-revie
    Then run `run-state done review-<lens>` for each.
 4. **Synthesis.** `synthesize.mjs`, then by the `disposition` on its first line:
    - `ship`: the review is clean. Read `references/pr.md` beside this file and follow it.
-   - `ask`: an open P0 or ask is the human's to decide: stop, and What happened lists each open P0 and ask from `findings.json`, with its id, severity, location and claim.
+   - `ask`: only a person's question on the PR is (the human lens, read on a resume): stop, and What happened lists each open human ask from `findings.json`, with its id, severity, location and claim.
    - `fix`: step 5.
 5. **Fix round.** `run-state round review`, in the foreground. Exit 5 prints `ESCALATE …`: the rounds are spent, so stop, quoting it and listing the open P0 and P1 fixes, with the option `run-state override review_rounds "<reason>" --run <id>`, written out in full, followed by `/factory resume <id>`. On `OK …`, run `run-stage.mjs review-fix` with Bash's `run_in_background`, say `Fixing <id>'s review findings.` and end your turn. When it wakes you, read the last line of its output, ignoring the notification's text. Exit 4 is the **Caps** of the skill, with the stage `review-fix`. Otherwise, by its first word:
    - `REVIEW <lens,…>`: step 1 again, then step 2 when `ui` is among the lenses so the UI lens sees the fix, then step 3 for only the lenses it names, each with the `fix_diff` line, then step 4. `human` is no agent: leave it out of step 3 (with no other lens named, dispatch nothing and don't end your turn), and once the others are read, go to step 3 of `references/comments.md` in place of step 4.

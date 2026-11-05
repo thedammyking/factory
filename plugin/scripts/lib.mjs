@@ -79,6 +79,34 @@ export function commitToBase(main, base, message, apply) {
   throw new Error(`3 tries couldn't move ${base} (${gitError(err)})`);
 }
 
+// The branch the factory's own records go to (#81): each run's snapshot under .factory/history/ with .factory/log.md, and
+// the maps under .factory/maps/. Never the base a PR merges into, so nothing reaches it but through a PR. Made from the
+// base's tip the first time, so the records it already holds come along, and pushed after each commit when origin exists,
+// best effort, so a tracker's links to it resolve. Readers take it, and the base while it doesn't exist yet.
+export const RECORDS = "factory/records";
+export const recordsRef = (main, base) => { try { git(main, "rev-parse", "--verify", `refs/heads/${RECORDS}^{commit}`); return `refs/heads/${RECORDS}`; } catch { return `refs/heads/${base}`; } };
+export function commitRecord(main, base, message, apply) {
+  if (recordsRef(main, base) !== `refs/heads/${RECORDS}`) git(main, "branch", RECORDS, `refs/heads/${base}`);
+  const sha = commitToBase(main, RECORDS, message, apply);
+  if (sha) pushBranch(main, RECORDS);
+  return sha;
+}
+// `git push origin <branch>`, never asking for credentials and never forced: the reason it failed, or null when it went
+// (or there's no origin to push to). A push is best effort wherever this is called.
+export function pushBranch(cwd, branch, to = branch) {
+  try { git(cwd, "remote", "get-url", "origin"); } catch { return null; }
+  const r = spawnSync("git", ["push", "-q", "origin", `refs/heads/${branch}:refs/heads/${to}`], { cwd, encoding: "utf8", timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } });
+  return r.status === 0 ? null : (r.stderr || r.error?.message || "push failed").trim().split("\n").at(-1);
+}
+// The tip a new run starts from: origin's copy of `branch` when the local one is behind it (a PR merged on GitHub since
+// the last pull), else the local one, so a run never misses a merge and never drops a local commit (#81).
+export function freshTip(cwd, branch) {
+  const local = git(cwd, "rev-parse", "--verify", `refs/heads/${branch}^{commit}`);
+  let remote; try { remote = git(cwd, "rev-parse", liveBase(cwd, branch)); } catch { return local; }
+  if (remote === local) return local;
+  try { git(cwd, "merge-base", "--is-ancestor", local, remote); return remote; } catch { return local; }
+}
+
 // A ticket's worktree, .factory/worktrees/<run>-NN/, on its local branch factory/<run>/NN (never pushed).
 export const ticketWorktree = (main, id, n) => path.join(worktreesDir(main), `${id}-${n}`);
 export const ticketBranch = (id, n) => `factory/${id}/${n}`;
@@ -118,10 +146,10 @@ export function runContext() {
   if (!/^[a-z0-9][a-z0-9-]*$/.test(id)) { console.error(`no run ${id}`); process.exit(2); }
   const paths = runPaths(MAIN, id);
   if (!fs.existsSync(paths.state)) {
-    // A finished run's worktree is gone after its snapshot; its record on the base branch says how it ended.
+    // A finished run's worktree is gone after its snapshot; its record on factory/records says how it ended.
     const record = `.factory/history/${id}/state.json`, sha = git(MAIN, "log", "--all", "-1", "--format=%H", "--", record);
     const ended = sha && JSON.parse(git(MAIN, "show", `${sha}:${record}`));
-    console.error(ended ? `run ${id} has ended ${ended.stage}: its record is .factory/history/${id}/ on ${ended.base_branch}` : `no run ${id}`);
+    console.error(ended ? `run ${id} has ended ${ended.stage}: its record is .factory/history/${id}/ on ${RECORDS}` : `no run ${id}`);
     process.exit(2);
   }
   return { MAIN, id, ...paths, ticket, tree: ticket ? top : paths.worktree, out: ticket ? path.join(paths.runDir, "tickets", ticket) : paths.runDir };

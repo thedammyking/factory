@@ -406,10 +406,12 @@ test("fix 10: pr-render writes pr.md from the run's files alone, every section t
     repaired: [{ test: "e2e/older-02-login.spec.ts", change: "the button's locator", why: "the label changed" }],
   });
   r.put("findings.json", { disposition: "ask", findings: [
-    { id: "code-01", lens: ["code"], severity: "P1", action: "ask", status: "open", location: "src/signup.js:1", claim: "Should signup send a welcome email?" },
+    { id: "code-01", lens: ["human"], severity: "P1", action: "ask", status: "open", location: "src/signup.js:1", claim: "Should signup send a welcome email?" },
     { id: "code-02", lens: ["code"], severity: "P2", action: "fix", status: "pr", location: "src/signup.js:3", claim: "The name could be clearer." },
     { id: "sec-01", lens: ["security"], severity: "P1", action: "fix", status: "resolved", location: "src/signup.js:2", claim: "The password was logged." },
   ] });
+  fs.writeFileSync(path.join(r.s.run_dir, "grill.md"), "## Clarifications\n\n### Session 2026-11-05\n- Q: Who signs up? → A: Anyone\n"
+    + "\n### Session 2026-11-05 (builder check)\n- Q: What does the button say? → A: Sign up (the factory's call)\n- Q: Rate limit? → A: none (from grill.md)\n");
   r.json("captures/states.json", { captures: [...Array(8)].map((_, i) => ({ state: `s${i}`, width: 390, scheme: "light", file: `captures/s${i}-390-light.png` })) });
   const out = script("pr-render.mjs", r.p.dir, ["--run", r.s.id], { env: { ...r.gh.env, PATH: fake.bin + path.delimiter + r.gh.env.PATH } });
   assert.equal(out.status, 0, out.stderr);
@@ -423,6 +425,7 @@ test("fix 10: pr-render writes pr.md from the run's files alone, every section t
   assert.ok(criteria.includes("with the route \\| name. | blocked (environment) |"), criteria);
   assert.match(section(md, "Evidence"), /\| Check \| Result \| Duration \| SHA \|\n\|.*\n\| app\/test \| pass \| 1\.2 s \| `[0-9a-f]{7}` \|/);
   assert.match(section(md, "Needs a decision"), /code-01 \(P1 ask\) `src\/signup\.js:1`: Should signup send a welcome email\?/);
+  assert.equal(section(md, "The factory's calls").trim(), "- Q: What does the button say? → A: Sign up (the factory's call)", "only the calls made in the human's place");
   const findings = section(md, "Findings");
   assert.match(findings, /Open[\s\S]*code-02 \(P2 fix\)[\s\S]*Resolved[\s\S]*sec-01 \(P1 fix\)/);
   assert.match(section(md, "Security"), /- secrets: pass \(gitleaks\)\n- vulnerabilities: pass \(npm audit\)\n- sast: partial \(semgrep project rules\)/);
@@ -560,7 +563,7 @@ test("the PR stage: open, decide, then one decision label and one marked comment
   r.rs("set", "stage", "delivered");
   const snap = r.rs("snapshot");
   assert.match(snap.stdout, /worktree removed/);
-  const record = (f) => r.p.git("show", `main:.factory/history/${r.s.id}/${f}`);
+  const record = (f) => r.p.git("show", `factory/records:.factory/history/${r.s.id}/${f}`);
   assert.equal(JSON.parse(record("state.json")).stage, "delivered");
   assert.equal(JSON.parse(record("decision.json")).decision, "merge");
   assert.equal(JSON.parse(record("pr.json")).number, 7);

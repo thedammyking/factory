@@ -1,8 +1,8 @@
 ---
 name: factory
-description: Carries a request through the factory as a run. /factory <request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run> | retro
+description: Carries a request through the factory as a run. /factory <request> | map <map> [N] | status | resume [run] | approve [run] chart|run|abandon | abandon [run] | try <run> | retro
 disable-model-invocation: true
-argument-hint: "<request> | map <map> <N> | status | resume [run] | approve [run] approved|revise|chart|run|abandon | abandon [run] | try <run> | retro"
+argument-hint: "<request> | map <map> [N] | status | resume [run] | approve [run] chart|run|abandon | abandon [run] | try <run> | retro"
 allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(gh auth status)
 ---
 
@@ -102,17 +102,13 @@ Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/build.md` and do its step 
 
 ### build
 
-The request gets a lane branch, research, a grill, a spec and a builder check, then waits at the spec gate, its one scheduled stop: nothing is built from a spec the human hasn't approved. The approved spec is cut into tickets, which are built with no other gate, and each ticket is planned just before it is built.
+The request gets a lane branch, research, a grill, a spec and a builder check. The grill is the human's part: once it's over, the factory approves the spec itself and the run goes on to the PR with no gate (#81). The spec is cut into tickets, and each ticket is planned just before it is built.
 
 Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/build.md` and follow it. Its numbered steps are the steps of **build** named elsewhere: whenever one is named, read that file first if it isn't already in this session.
 
 ## Approve
 
-`/factory approve [run] <decision>`, at the spec gate or the map gate. Find the run (see above). A run routed `map` is at the map gate: follow **Decisions** in `references/map.md`, whose decisions are `chart`, `run` and `abandon`, and nothing below. Otherwise it is at the spec gate. With no decision, or one that isn't `approved`, `revise` or `abandon`, ask that gate's question (see **Attention items**). At the spec gate:
-
-- `approved`: `run-state approve spec approved --run <id>`. If it refuses, print why and stop; otherwise do the **Notion push** first, then the tracker's **Spec approval** (see **Request issue**). Then go to step 7 of **build**.
-- `revise`: `run-state approve spec revise --run <id>`; if it refuses, print why and stop. What should change is in their notes or Other answer at the gate, else ask it in plain chat. Append the answer to `grill.md` under `### Session <today's date> (revise)` as `- Q: What should change? → A: <their words>`, then go to step 4 of **build**.
-- `abandon`: the decision is the human's answer, so don't ask again. Run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.
+`/factory approve [run] <decision>`, at the map gate, the one gate left. Find the run (see above). A run routed `map` is at the map gate: follow **Decisions** in `references/map.md`, whose decisions are `chart`, `run` and `abandon`. A run waiting at a spec gate from before #81 (its newest attention item is `attention-spec-gate.md`) goes to step 6 of **build**, and `abandon` on it is **Abandon**'s.
 
 ## Notion push
 
@@ -124,7 +120,9 @@ Append the human's answers to `<run_dir>/clarifications.md` under a `## <today's
 
 ## Questions
 
-Every decision you put to the human, in this skill and its references, is asked with `AskUserQuestion`, one to four questions a call, each header at most 12 characters. The grill and the builder check ask as steps 3 and 5 of **build** say.
+Every decision you put to the human, in this skill and its references, is asked with `AskUserQuestion`, one to four questions a call, each header at most 12 characters. The grill asks as step 3 of **build** says.
+
+After the grill, or for a run from a map's run list from its start, the run is the human's grant for every reversible step (#81). A choice the spec, the map, `research.md` or the code can settle, or that has a recommended answer, is the factory's call: take it, record it where its step says, and the PR lists it for the human to review. Stop for the human only where a step says so: what no default can settle, what only they can do (a credential, a sign-in, a tool the factory can't install) and the caps.
 
 - Each question has 2 to 4 options, the recommended one first with ` (Recommended)` after its label. Each option's description says what it does, its benefit and its trade-off. The human can type their own answer through Other, or add notes to an option.
 - A decision with one real option isn't asked: say what you're doing and do it. A stop with one option is the human's to take, not yours (see **Attention items**).
@@ -157,7 +155,7 @@ Run `<id>`, stage `<stage>`.
 
 ## Ending a run
 
-Every `run-state set stage <outcome>` and every `run-state abandon` is followed at once by `run-state snapshot --run <id>`, before anything is printed. The snapshot checks the run's files for credentials from the env files, commits them to `.factory/history/<id>/` on the base branch, and removes the worktree of a run that has finished. If it exits 1, it has committed nothing, ended the run `needs-human` and printed `needs-human: <path>`: print the attention item at that path too. When `set stage failed` says the stage stopped at the usage limit, the run is `suspended`: say so, with `/factory resume <id>` for once the limit resets. When the snapshot exits 0 on a run with a request issue, the closing steps of **Request issue** follow at once.
+Every `run-state set stage <outcome>` and every `run-state abandon` is followed at once by `run-state snapshot --run <id>`, before anything is printed. The snapshot checks the run's files for credentials from the env files, commits them to `.factory/history/<id>/` on the `factory/records` branch, never the base (nothing reaches the base but through a PR, #81), and removes the worktree of a run that has finished. If it exits 1, it has committed nothing, ended the run `needs-human` and printed `needs-human: <path>`: print the attention item at that path too. When `set stage failed` says the stage stopped at the usage limit, the run is `suspended`: say so, with `/factory resume <id>` for once the limit resets. When the snapshot exits 0 on a run with a request issue, the closing steps of **Request issue** follow at once.
 
 ## Request issue
 
@@ -169,7 +167,7 @@ When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_RO
 
 1. Find the run (see above) and read its state with `run-state get --run <id>`. If it says the run has ended, or its stage is `delivered`, `abandoned`, `answered` or `charted`, say so and stop: an ended run can't be resumed, and a follow-up is a new `/factory` request in the human's own words.
 2. Read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/resume.md` and follow it: it reconciles the run from disk and continues what was cut off, and comes back to step 3 when the run waits on an attention item.
-3. If its route is `hold`, ask triage's `questions` (from `<run_dir>/triage.md`) as step 3 of **hold** does, then go to **Answers** with their answers. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names (for `implement:<NN>`, of `references/implement.md`; for `qa:<NN>`, of `references/qa.md`; for `ci-fix`, of `references/ci.md`). The dispatch refuses again while a cap is still crossed. If that item quotes `ESCALATE <loop>: rounds …`, go back to the loop's `round` (`ROUND` in `references/implement.md`, step 5 of `references/review.md`, step 2 of `references/ci.md`), which escalates again unless the human lifted the cap. If it is `attention-plan-<NN>.md`, ask its questions and go on with their answers, as step 9 of **build** does. If `<run_dir>/pr.json` exists, the human may have reviewed the PR: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/comments.md` and follow it. If it is `attention-pr.md` with no PR, go to step 1 of `references/pr.md`. Otherwise, print the run's newest attention item and ask its question again (see **Attention items**).
+3. If its route is `hold`, ask triage's `questions` (from `<run_dir>/triage.md`) as step 3 of **hold** does, then go to **Answers** with their answers. If `<run_dir>/triage.md` is missing or has no valid block, go to **Triage**. If the run's newest attention item is `attention-cap.md`, it stopped at a cap: go to step 1 of the stage that item names (for `implement:<NN>`, of `references/implement.md`; for `qa:<NN>`, of `references/qa.md`; for `ci-fix`, of `references/ci.md`). The dispatch refuses again while a cap is still crossed. If that item quotes `ESCALATE <loop>: rounds …`, go back to the loop's `round` (`ROUND` in `references/implement.md`, step 5 of `references/review.md`, step 2 of `references/ci.md`), which escalates again unless the human lifted the cap. If it is `attention-spec-gate.md`, from before #81, go to step 6 of **build**, which approves the spec without asking. If it is `attention-plan-<NN>.md`, ask its questions and go on with their answers, as step 9 of **build** does. If `<run_dir>/pr.json` exists, the human may have reviewed the PR: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/comments.md` and follow it. If it is `attention-pr.md` with no PR, go to step 1 of `references/pr.md`. Otherwise, print the run's newest attention item and ask its question again (see **Attention items**).
 
 ## Abandon
 

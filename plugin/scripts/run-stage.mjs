@@ -184,8 +184,10 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   const synthesis = review && readJson(path.join(ctx.runDir, "findings.json")), ci = !review && readJson(CI);
   if (review && synthesis?.disposition !== "fix") die(`findings.json's disposition is ${synthesis?.disposition ?? "missing"}, and only fix starts a review fix round`);
   if (!review && ci?.cause !== "ours") die(`ci.json's cause is ${ci?.cause ?? "missing"}, and only ours starts a CI fix round`);
-  // Only P0 and P1 fixes loop: a P2 goes to the PR, a P3 to deferred.md, and an ask to the human.
-  const fixes = review ? synthesis.findings.filter((f) => f.status === "open" && ["P0", "P1"].includes(f.severity) && f.action === "fix") : [];
+  // Only P0 and P1 fixes loop, a lens's ask among them as a judgment call (#81): a P2 goes to the PR, a P3 to deferred.md,
+  // and a human's question on the PR to them.
+  const call = (f) => f.action === "ask", humans = (f) => f.lens.includes("human") && call(f);
+  const fixes = review ? synthesis.findings.filter((f) => f.status === "open" && !humans(f) && (f.severity === "P0" || (f.severity === "P1" && f.action !== "note"))) : [];
   const lenses = [...new Set(fixes.flatMap((f) => f.lens))];
   // the latest attempt whose session resumes: one cut off before a message or a result left none
   const s = state(), tries = s.dispatches.filter((d) => d.stage === cmd), last = tries.findLast((d) => d.session && events(d.log).some((e) => ["assistant", "result"].includes(e.type)));
@@ -200,8 +202,10 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   const verification = `\n## Verification\n- \`node ${path.join(HERE, "verify.mjs")} --fast\` from the worktree → green\n`, nth = s.rounds?.[cmd]?.n ?? tries.length + 1;
   fs.writeFileSync(FIXES, review ? `---\nstatus: ready\nticket: review-fix\ncontext:\n${files.slice(0, 8).map((f) => `  - ${f}\n`).join("")}---\n\n`
     + `# Review fixes, round ${nth}\n\nThe run's review found these to fix. Fix each where its location says, with a test first where it's about behaviour, `
-    + `and change nothing else. Each lens's file beside this one (review-<lens>.md) holds its findings in full.\n\n## Findings\n`
-    + fixes.map((f) => `- **${f.id}** (${[f.severity, ...f.lens, f.cwe].filter(Boolean).join(", ")}) \`${f.location}\`: ${f.claim}${f.fix ? `\n  Fix: ${f.fix}` : ""}\n`).join("") + verification
+    + `and change nothing else. Each lens's file beside this one (review-<lens>.md) holds its findings in full. A finding marked `
+    + "judgment call is yours to decide: take the option that keeps closest to spec.md and the repo's own ways, make it, and say "
+    + `which you took and why under \`assumptions:\` in ${REPORT}, as \`- <id>: <the call>\`, which the PR lists.\n\n## Findings\n`
+    + fixes.map((f) => `- **${f.id}** (${[f.severity, ...f.lens, f.cwe, call(f) && "judgment call"].filter(Boolean).join(", ")}) \`${f.location}\`: ${f.claim}${f.fix ? `\n  Fix: ${f.fix}` : ""}\n`).join("") + verification
     : `---\nstatus: ready\nticket: ci-fix\ncontext:\n  - ${CI_LOG}\n  - ${CI}\n---\n\n# CI fix, round ${nth}\n\n`
     + `CI on the run's PR is red at \`${ci.sha.slice(0, 7)}\`, failing at ${(ci.failing || []).map((f) => `\`${f}\``).join(", ")}: not the base's red, and not a flake its re-run cleared. `
     + `${CI_LOG} holds each failing job's whole log. Find the root cause in what the failing step printed, fix it in the product code with a test first `
