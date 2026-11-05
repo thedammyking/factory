@@ -200,6 +200,7 @@ function tracked(tracker) {
     { match: /^api repos\/o\/r\/issues\/7$/, file: canned({ number: 7, title: "A PR", body: LISTED, pull_request: {}, assignees: [] }) },
     { match: /^api repos\/o\/r\/issues\/12$/, file: canned({ number: 12, title: "Build me a CRM", body: "Contacts first.", html_url: "https://github.com/o/r/issues/12", assignees: [] }) },
     { match: /^api user$/, file: canned({ login: "me" }) },
+    { match: /^api -X POST repos\/o\/r\/issues -f /, file: canned({ number: 50, id: 9050, html_url: "https://github.com/o/r/issues/50" }) },
     { match: /^api -X /, file: canned({}) },
   ] });
   const env = { ...process.env, PATH: gh.env.PATH };
@@ -248,7 +249,7 @@ test("a run started from a map's run list reads the map's body once into map.md,
   assert.deepEqual(li.gh.calls("gh"), []);
 });
 
-test("a map run writes nothing to the tracker or to the map", () => {
+test("a map run writes nothing to the tracker before its spec is approved, and nothing to the map", () => {
   for (const [tracker, ref] of [["github", "#40"], ["local", "crm"]]) {
     const t = tracked(tracker), s = JSON.parse(ok(t.rs(["init", "--map", ref, "--entry", "1"])));
     const rs = (...args) => ok(t.rs([...args, "--run", s.id]));
@@ -266,6 +267,25 @@ test("a map run writes nothing to the tracker or to the map", () => {
     const changed = t.p.git("diff", "--name-only", records, "factory/records").split("\n");
     assert.deepEqual(changed.filter((f) => !f.startsWith(`.factory/history/${s.id}/`)), [".factory/log.md"], `${tracker}: nothing under .factory/maps/`);
   }
+});
+
+test("once its spec is approved, a map run files its request issue as a sub-issue of the map, named for its entry (#81)", () => {
+  const t = tracked("github"), s = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "1"])));
+  const rs = (...args) => ok(t.rs([...args, "--run", s.id]));
+  write(s.run_dir, { "triage.md": "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch: "feature/add-contacts", route: "build" }) + "\n```\n" });
+  rs("set", "route", "build");
+  rs("lane");
+  for (const stage of ["research", "spec", "builder-check"]) {
+    rs("dispatch", stage);
+    write(s.run_dir, { [`${stage}.md`]: stage === "spec" ? "# Add contacts\n\n- **SC-001** (profile: default, live-safe: yes): /contacts lists them.\n" : `# ${stage}\n` });
+    rs("done", stage);
+  }
+  rs("approve", "spec", "approved");
+  assert.equal(rs("file-issue"), "filed #50: Run 1: Add contacts");
+  const calls = t.gh.calls("gh").filter((c) => c[1] === "-X" && !c.some((a) => /labels/.test(a)));
+  assert.deepEqual(calls.map((c) => c.slice(0, 6)), [["api", "-X", "POST", "repos/o/r/issues", "-f", "title=Run 1: Add contacts"],
+    ["api", "-X", "POST", "repos/o/r/issues/40/sub_issues", "-F", "sub_issue_id=9050"]]);
+  assert.equal(JSON.parse(rs("get")).request_issue.key, "#50");
 });
 
 test("a request at the map gate is mid-run, and once charted its closing comment links the map", () => {

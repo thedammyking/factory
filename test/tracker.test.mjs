@@ -126,7 +126,10 @@ const routed = (t, s, route = "build") => {
   const branch = s.request_issue ? /^on feature\/(12|eng-123)-export-csv from main/ : /^on feature\/export-csv from main/;
   if (["build", "oneshot"].includes(route)) assert.match(ok(t, s, ["lane"]), branch, "the branch carries the key, and only the key");
 };
-const writes = (t) => t.gh.calls("gh").filter((c) => c[1] === "-X");
+// The tracker's issue writes, the phase labels (#81) left out: a test of its own below has them.
+const labelled = (c) => c.some((a) => /^repos\/o\/r\/(labels$|issues\/\d+\/labels)/.test(a));
+const issueCalls = (t) => t.gh.calls("gh").filter((c) => !labelled(c));
+const writes = (t) => issueCalls(t).filter((c) => c[1] === "-X");
 
 test("the claim waits for the lane, so never on hold, answer or map; on GitHub it assigns @me and records exactly that, once", () => {
   for (const route of ["hold", "answer", "map"]) {
@@ -404,7 +407,7 @@ test("on github, a plain run files its request issue once its spec is approved: 
   assert.match(early.stderr, /isn't approved/);
   approved(t, s);
   assert.equal(ok(t, s, ["file-issue"]), "filed #30: Export reports as CSV");
-  assert.deepEqual(t.gh.calls("gh"), [["api", "user"], ["api", "-X", "POST", "repos/o/r/issues", "-f", "title=Export reports as CSV", "-f", `body=${SPEC_BODY}`, "-f", "assignees[]=me"]]);
+  assert.deepEqual(issueCalls(t), [["api", "user"], ["api", "-X", "POST", "repos/o/r/issues", "-f", "title=Export reports as CSV", "-f", `body=${SPEC_BODY}`, "-f", "assignees[]=me"]]);
   assert.deepEqual(state(t, s).request_issue, { tracker: "github", key: "#30", url: "https://github.com/o/r/issues/30", closing: "Closes #30", filed: true });
   assert.ok(logged(s).includes(`run: ${s.id} filed #30: Export reports as CSV`));
   assert.match(ok(t, s, ["file-issue"]), /^skip: /, "once");
@@ -458,6 +461,28 @@ test("on github, each ticket checked at done tickets becomes a sub-issue of the 
   assert.ok(logged(s).includes(`run: ${s.id} filed ticket 02 as #32`));
   assert.match(ok(t, s, ["file-tickets"]), /^skip: /, "once");
   assert.equal(writes(t).length, 10);
+});
+
+test("on github, the request issue moves through its phases as factory:<phase> labels, and a ticket's sub-issue to building once it starts (#81)", () => {
+  const t = setup(), s = started(t, "#12");
+  routed(t, s);
+  const moves = () => t.gh.calls("gh").filter(labelled).filter((c) => c[3] !== "repos/o/r/labels")
+    .map((c) => `${c[2]} ${c[3].replace("repos/o/r/issues/", "#").replace("/labels", "")}${c[5] ? ` ${c[5].replace("labels[]=", "")}` : ""}`);
+  approved(t, s);
+  cut(t, s);
+  ok(t, s, ["file-tickets"]);
+  assert.deepEqual(moves(), ["POST #12 factory:planning"], "once, from triage to the cut");
+  ok(t, s, ["ticket", "01", "in-progress"]);
+  ok(t, s, ["dispatch", "plan:01"]);
+  ok(t, s, ["dispatch", "review-code"]);
+  write(s.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 7, draft: false }) });
+  assert.equal(ok(t, s, ["track"]), "phase in-pr");
+  ok(t, s, ["set", "stage", "needs-human"]);
+  assert.deepEqual(moves().slice(1), ["POST #30 factory:building", "POST #12 factory:building", "DELETE #12/factory%3Aplanning",
+    "POST #12 factory:reviewing", "DELETE #12/factory%3Abuilding", "POST #12 factory:in-pr", "DELETE #12/factory%3Areviewing"],
+    "the last phase's label goes; a stop with a ready PR stays in-pr");
+  assert.equal(state(t, s).tracked.phase, "in-pr");
+  assert.ok(logged(s).includes(`run: ${s.id} #12 moved to reviewing`));
 });
 
 test("on github, a merged ticket's sub-issue closes as completed; abandon closes the open ones, and a request issue the run filed, as not planned", () => {
@@ -539,7 +564,7 @@ test("on linear and other, each command prints its work as JSON for the orchestr
   approved(t, s);
   assert.deepEqual(JSON.parse(ok(t, s, ["file-issue"])), { title: "Export reports as CSV", body: SPEC_BODY });
   assert.match(t.rs(["file-issue", "filed", "not a key", "--run", s.id]).stderr, /isn't an issue key/);
-  assert.equal(ok(t, s, ["file-issue", "filed", "ENG-130", "--url", "https://linear.app/acme/issue/ENG-130"]), "filed ENG-130: Export reports as CSV");
+  assert.equal(ok(t, s, ["file-issue", "filed", "ENG-130", "--url", "https://linear.app/acme/issue/ENG-130"]), "TRACK ENG-130 planning\nfiled ENG-130: Export reports as CSV");
   assert.deepEqual(state(t, s).request_issue, { tracker: "linear", key: "ENG-130", url: "https://linear.app/acme/issue/ENG-130", closing: "Fixes ENG-130", filed: true });
   assert.match(ok(t, s, ["claim"]), /^skip: the run filed ENG-130/);
   cut(t, s);

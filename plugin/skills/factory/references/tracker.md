@@ -1,6 +1,6 @@
 # tracker
 
-The factory skill reads this when `tracker` in `.factory/config.json` isn't `local`. A run's **request issue**, kept as `request_issue` in its state, is the issue it started from, or the one a plain run files when its spec is approved. A run reads the issue it started from once, claims it when it makes its branch and comments the approved spec on it; one it files has the spec as its body and you as its assignee, and is never claimed. Each ticket becomes a sub-issue of it, closed when the ticket merges. The PR links to it, and it gets one comment each time the run ends. Abandoning the run closes its open sub-issues, and a request issue it filed, as not planned. Nothing else on the tracker is written, no labels for one, and nothing is read back: what the tracker shows is a copy, and the run's own files stay the record. A run from a map's run list writes nothing to it.
+The factory skill reads this when `tracker` in `.factory/config.json` isn't `local`. A run's **request issue**, kept as `request_issue` in its state, is the issue it started from, or the one a plain run files when its spec is approved. A run reads the issue it started from once, claims it when it makes its branch and comments the approved spec on it; one it files has the spec as its body and you as its assignee, and is never claimed. Each ticket becomes a sub-issue of it, moved to building when it starts and closed when the ticket merges, and its PR into the run branch names it. The issue moves through the run's phases as the run goes (#81), planning, building, reviewing, in-pr, and needs-you or failed when it stops, so the tracker shows where every run stands, and closes when the run's PR merges. The PR links to it, and it gets one comment each time the run ends. Abandoning the run closes its open sub-issues, and a request issue it filed, as not planned. Nothing is read back: what the tracker shows is a copy, and the run's own files stay the record. A run from a map's run list files its request issue as any plain run does, as a sub-issue of the map, and never writes the map.
 
 The tracker doc says how each operation is done there: `${CLAUDE_PLUGIN_ROOT}/templates/trackers/<tracker>.md` for `github` and `linear`, `.factory/tracker.md` in the main checkout for `other`. Read its **Run operations** with this file. An operation it doesn't describe is skipped.
 
@@ -31,6 +31,10 @@ After every `run-state lane` that exits 0, and on every resume, run `run-state c
 - `skip: …`: nothing to do.
 - `github`: it claimed the issue and printed what changed.
 - Otherwise it printed the issue as JSON: claim it as the doc's **Claim** says, then record exactly what changed with `run-state claim claimed [--state "<the state it was in>"] [--assigned] --run <id>`. When a write fails, record `run-state claim failed "<why, in one line>"` instead, with the same flags for whatever did change, so that is undone too.
+
+## Phase
+
+`run-state dispatch`, `set stage`, `ticket <NN> in-progress` and `file-issue` move the issue to the run's phase themselves when it changes, and `run-state track --run <id>` does it on demand: run it after `pr-open.mjs` opens the PR, and on every resume. On `github` they move it themselves. Elsewhere they print a `TRACK <key> <phase>` line: whenever any command prints one, move that issue as the doc's **Move** says, then carry on with the step. A move is never recorded and never retried.
 
 ## Spec approval
 

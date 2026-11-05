@@ -159,7 +159,7 @@ Every `run-state set stage <outcome>` and every `run-state abandon` is followed 
 
 ## Request issue
 
-When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/tracker.md` and follow it: its **Start** for a new run's request, its **Claim** after every `run-state lane` that exits 0 and on every resume, its **Spec approval** after the Notion push, its **Tickets** after `done tickets` and each `MERGED`, and its **Closing** after the snapshot that ends a run. Whenever one of them is due, read that file first if it isn't already in this session.
+When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/tracker.md` and follow it: its **Start** for a new run's request, its **Claim** after every `run-state lane` that exits 0 and on every resume, its **Phase** whenever a command prints a `TRACK` line, after the PR opens and on every resume, its **Spec approval** after the Notion push, its **Tickets** after `done tickets` and each `MERGED`, and its **Closing** after the snapshot that ends a run. Whenever one of them is due, read that file first if it isn't already in this session.
 
 ## Resume
 

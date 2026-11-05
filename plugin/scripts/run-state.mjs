@@ -53,6 +53,9 @@
 //                                                implemented: its plan is done and the route becomes build, which goes on
 //                                                at research on the same branch, and the oneshot's tickets/ is kept as
 //                                                oneshot/, so the caps scale with the build's tickets once they're cut
+//   run-state.mjs track                       -> the request issue's phase recomputed and moved, as dispatch and set stage
+//                                                do on their own (#81): a `factory:<phase>` label on github, a
+//                                                `TRACK <key> <phase>` line for the orchestrator elsewhere
 //   run-state.mjs approve spec approved|revise -> the factory's own approval once the builder check is done (#81);
 //                                                approved covers spec.md as it is, and until then a build run dispatches
 //                                                nothing past the builder check
@@ -514,6 +517,37 @@ const ghWrite = (...args) => { const r = ghApi(...args); return r.ok ? null : r.
 const ghClose = (ctx, key, reason) => ghWrite("-X", "PATCH", `repos/${githubRepo(ctx.MAIN)}/issues/${key.slice(1)}`, "-f", "state=closed", "-f", `state_reason=${reason}`);
 // A tracker write's outcome, once recorded in s: saved, logged and printed.
 const report = (ctx, s, line) => { save(ctx.state, s); log(ctx.runDir, `run: ${ctx.id} ${line}`); console.log(line); };
+// The run's phase as its request issue shows it (#81), in the order a run goes: planning (triage to the cut), building
+// (its tickets), reviewing (the review and its fixes), in-pr (its PR open for the human's review), and needs-you or failed
+// when it stops. The issue closes when its PR merges ("Closes …"). A run that stopped with a ready PR is in-pr.
+const PHASES = { planning: "1d76db", building: "0e8a16", reviewing: "fbca04", "in-pr": "5319e7", "needs-you": "d93f0b", failed: "b60205" };
+function phaseOf(ctx, s) {
+  const pr = readJson(path.join(ctx.runDir, "pr.json"));
+  if (["failed", "abandoned"].includes(s.stage)) return "failed";
+  if (s.stage === "delivered" || (pr && !pr.draft)) return "in-pr";
+  if (["needs-human", "suspended"].includes(s.stage)) return "needs-you";
+  const last = s.dispatches.at(-1)?.stage || "";
+  return /^(review-|ci-fix)/.test(last) ? "reviewing" : /^(plan|implement|qa|context):/.test(last) ? "building" : "planning";
+}
+// Moves the request issue (or, with `ticket`, that ticket's sub-issue) to `phase` when it isn't there yet: on github a
+// `factory:<phase>` label in place of the last one, made when the repo lacks it; elsewhere a `TRACK <key> <phase>` line,
+// which the orchestrator acts on as the tracker doc's **Move** says. Best effort, as every tracker write: recorded in s,
+// never stopping the run. The caller saves s.
+function track(ctx, s, phase = phaseOf(ctx, s), ticket = null) {
+  const issue = ticket ? s.ticket_issues?.[ticket] && { ...s.ticket_issues[ticket], tracker: s.request_issue?.tracker } : s.request_issue;
+  const at = ticket ? (s.tracked_tickets ||= {}) : s, was = ticket ? at[ticket] : s.tracked?.phase;
+  if (!issue?.key || !["github", "linear", "other"].includes(issue.tracker) || was === phase) return;
+  let failed = null;
+  if (issue.tracker !== "github") console.log(`TRACK ${issue.key} ${phase}${was ? ` (was ${was})` : ""}`);
+  else {
+    const repo = githubRepo(ctx.MAIN), n = issue.key.slice(1), label = (p) => `factory:${p}`;
+    ghApi("-X", "POST", `repos/${repo}/labels`, "-f", `name=${label(phase)}`, "-f", `color=${PHASES[phase]}`);  // refused when it exists
+    failed = ghWrite("-X", "POST", `repos/${repo}/issues/${n}/labels`, "-f", `labels[]=${label(phase)}`);
+    if (!failed && was) ghApi("-X", "DELETE", `repos/${repo}/issues/${n}/labels/${encodeURIComponent(label(was))}`);
+  }
+  if (ticket) at[ticket] = phase; else s.tracked = { phase, at: now(), ...(failed && { failed }) };
+  log(ctx.runDir, `run: ${ctx.id} ${issue.key} ${failed ? `couldn't move to ${phase}: ${failed}` : `moved to ${phase}`}`);
+}
 // The run's newest attention item, but the snapshot's own stops, which aren't the run's.
 function newestAttention(ctx) {
   const at = (f) => fs.statSync(path.join(ctx.runDir, f)).mtimeMs;
@@ -622,9 +656,18 @@ switch (cmd) {
     if (stalled && atUsageLimit(logOf(s, stalled))) { value = "suspended"; console.log(`${stalled.stage} stopped at the usage limit: the run is suspended, not failed`); }
     if (key === "stage" && WAITING.includes(value)) s.waiting_since ??= now();
     s[key] = value;
+    if (key === "stage") track(ctx, s);
     save(ctx.state, s);
     if (key === "stage") log(ctx.runDir, `run: ${ctx.id} ${value}`);
     console.log(`ok ${key}`);
+    break;
+  }
+  case "track": {
+    // The request issue's phase recomputed (#81): after the PR opens, and on a resume.
+    const [ctx, s] = load();
+    track(ctx, s);
+    save(ctx.state, s);
+    console.log(`phase ${s.tracked?.phase ?? phaseOf(ctx, s)}`);
     break;
   }
   case "dispatch": {
@@ -671,6 +714,7 @@ switch (cmd) {
       s.stages_done = s.stages_done.filter((d) => d !== stage);
     }
     s.stage = stage;
+    if (!agent && !child) track(ctx, s);
     save(ctx.state, s);
     console.log(`dispatched ${stage} #${s.dispatches.length}${agent ? ` agent ${agent}` : ""}`);
     break;
@@ -893,24 +937,28 @@ switch (cmd) {
     const [what, detail] = args;
     const [ctx, s] = load(), tracker = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {}).tracker;
     if (!specApproved(ctx, s)) die(`the spec of ${ctx.id} isn't approved, and nothing reaches the tracker before it is`);
-    const skip = !["github", "linear", "other"].includes(tracker) ? "the local tracker has no request issues" : s.map ? "a run from a map's run list writes nothing to the tracker"
+    const skip = !["github", "linear", "other"].includes(tracker) ? "the local tracker has no request issues"
       : s.request_issue ? `${s.request_issue.key} is the run's request issue already` : s.file_issue ? "filing the request issue was tried already" : null;
     if (skip) { console.log(`skip: ${skip}`); break; }
     if (what && tracker === "github") die("on github, file-issue makes its own call: run it alone");
-    const spec = specText(ctx), title = spec.match(/^# (.+)$/m)?.[1].trim() || ctx.id, body = issueBody(ctx, "spec.md", spec);
+    // A run from a map's run list files its issue as a sub-issue of the map (#81), named for its entry.
+    const spec = specText(ctx), title = `${s.map ? `Run ${s.map.entry}: ` : ""}${spec.match(/^# (.+)$/m)?.[1].trim() || ctx.id}`, body = issueBody(ctx, "spec.md", spec);
     let failed;
     if (what === "filed") s.request_issue = { ...trackerIssue(tracker, detail), filed: true };
     else if (what === "failed") failed = detail || "no reason given";
     else if (what) die('file-issue [filed <key> [--url <url>] [--closing "<line>"] | failed "<why>"]');
-    else if (tracker !== "github") { console.log(JSON.stringify({ title, body }, null, 2)); break; }  // filed through the tracker's tools
+    else if (tracker !== "github") { console.log(JSON.stringify({ title, body, ...(s.map && { parent: s.map.ref }) }, null, 2)); break; }  // filed through the tracker's tools
     else {
       const user = ghApi("user"), r = user.ok && ghApi("-X", "POST", `repos/${githubRepo(ctx.MAIN)}/issues`, "-f", `title=${title}`,
         "-f", `body=${body}`, "-f", `assignees[]=${user.json.login}`);
       if (r.ok) s.request_issue = { tracker, key: `#${r.json.number}`, url: r.json.html_url, closing: `Closes #${r.json.number}`, filed: true };
       else failed = (r || user).message || "no reason given";
+      const link = r.ok && s.map?.tracker === "github" && ghWrite("-X", "POST", `repos/${githubRepo(ctx.MAIN)}/issues/${s.map.ref.slice(1)}/sub_issues`, "-F", `sub_issue_id=${r.json.id}`);
+      if (link) failed = `making it a sub-issue of the map ${s.map.ref}: ${link}`;
     }
     s.file_issue = { at: now(), ...(failed && { failed }) };
-    report(ctx, s, failed ? `filing the request issue failed: ${failed}` : `filed ${s.request_issue.key}: ${title}`);
+    if (s.request_issue) track(ctx, s);
+    report(ctx, s, failed && !s.request_issue ? `filing the request issue failed: ${failed}` : `filed ${s.request_issue.key}: ${title}${failed ? `; ${failed}` : ""}`);
     break;
   }
   case "spec-comment": {
@@ -1032,6 +1080,7 @@ switch (cmd) {
     if (!t) die(`no ticket ${n} in ${ctx.id}`);
     fs.writeFileSync(t.file, t.text.replace(STATUS_LINE, `$1${status}`));
     s.tickets_sha256 = ticketsHash(ctx);
+    if (status === "in-progress") track(ctx, s, "building", t.n);
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} ticket ${t.id} ${t.status} -> ${status}`);
     console.log(`ticket ${t.id} ${status}`);
@@ -1307,5 +1356,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | file-issue | spec-comment | file-tickets | close-ticket | approve | notion | ticket | allow | next-ticket | get | set | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
+  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | file-issue | spec-comment | file-tickets | close-ticket | approve | notion | ticket | allow | next-ticket | get | set | track | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
 }
