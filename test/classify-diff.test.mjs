@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { project, script, startRun } from "./harness.mjs";
 
 const RULES = fs.readFileSync(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/templates/touch-rules.json"), "utf8");
-const TOUCHES = ["auth", "data", "migrations", "network", "files", "crypto", "config", "deps", "native", "api_contract", "ui", "tests"];
+const TOUCHES = ["auth", "data", "migrations", "network", "files", "crypto", "config", "deps", "native", "api_contract", "ui", "tests", "ci"];
 
 // A run on a project whose main holds the touch rules and `files`; classify() runs classify-diff and returns touches.json.
 function run(files = {}) {

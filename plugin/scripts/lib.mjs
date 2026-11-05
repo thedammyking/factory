@@ -166,12 +166,15 @@ export const envLines = (text) => text.split("\n").flatMap((line) => {
   return [[m[1], quoted ? quoted[2] : m[2].replace(/\s+#.*$/, "").trim(), m[2].trim()]];
 });
 
-// The environment every project command runs in: PATH, HOME and TMPDIR, then .factory/env.local from the main checkout
+// The environment every project command runs in: PATH, HOME, TMPDIR and the locale, then .factory/env.local from the main checkout
 // (untracked, so no worktree has it), then `extra`. Never the developer's shell or login profile.
 export function runEnv(main, extra = {}) {
   const file = path.join(main, ".factory", "env.local");
   const local = envLines(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "");
-  return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...Object.fromEntries(local), ...extra };
+  // The locale too (#81): tools such as CocoaPods refuse to run without a UTF-8 one, which macOS's own default is.
+  const locale = Object.fromEntries(Object.entries(process.env).filter(([k]) => /^(LANG|LC_[A-Z]+)$/.test(k)));
+  if (!Object.keys(locale).length && process.platform === "darwin") locale.LANG = "en_US.UTF-8";
+  return { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR, ...locale, ...Object.fromEntries(local), ...extra };
 }
 
 // The watch's smoke command's environment alone (#32): runEnv's, with each WATCH_X in .factory/env.local taking X's

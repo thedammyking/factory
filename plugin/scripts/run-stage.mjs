@@ -70,10 +70,19 @@ const MAX_TURNS = fs.readFileSync(path.join(PLUGIN, "agents", "implementer.md"),
 function allowlist() {
   const recipe = readJson(path.join(ctx.worktree, ".factory", "setup.json"), {});
   const allowed = readJson(path.join(ctx.worktree, SETTINGS), {}).permissions?.allow || [];
+  const rules = factoryRules(ctx.worktree, recipe);
+  // The whole package manager and curl, the child's alone (#81): it runs node already, so its subcommands, flags first
+  // (`pnpm --filter api add zod`, `pnpm -r ls`), and a request to its own dev server add no reach, and each denial cost
+  // the human a stop. Never the project's settings, where every session would get them.
+  const whole = managers(rules).map((pm) => `Bash(${pm}:*)`);
   // the Skill rule asks first, and a plan with UI states loads that skill
-  return [...new Set([...factoryRules(ctx.worktree, recipe), `Bash(node ${path.join(HERE, "verify.mjs")}:*)`, "Skill(factory:ui-craft)",
+  return [...new Set([...rules, ...whole, "Bash(curl:*)", `Bash(node ${path.join(HERE, "verify.mjs")}:*)`, "Skill(factory:ui-craft)",
     ...allowed.filter((r) => r.startsWith("Bash(")), ...(recipe.allow || [])])];
 }
+// The package managers the child's rules name, and what it is denied of them however it's allowed: publishing, which a
+// deny rule stops ahead of any allow (#81).
+const managers = (rules) => [...new Set(rules.map((r) => r.match(/^Bash\((npm|pnpm|yarn|bun) /)?.[1]).filter(Boolean))];
+const denylist = () => managers(allowlist()).flatMap((pm) => [`Bash(${pm} publish:*)`, `Bash(${pm} unpublish:*)`]);
 const config = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {});
 const node = (script, args, opts) => spawnSync(process.execPath, [path.join(HERE, script), ...args], { encoding: "utf8", ...opts });
 const runState = (...args) => node("run-state.mjs", [...args, "--run", ctx.id]);
@@ -257,7 +266,7 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   fs.mkdirSync(path.dirname(log), { recursive: true });
   const fd = fs.openSync(log, "w");
   const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", config.models?.implement || "sonnet", "--max-turns", String(MAX_TURNS),
-    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), "--strict-mcp-config",
+    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), "--disallowedTools", denylist().join(","), "--strict-mcp-config",
     "--add-dir", ctx.runDir, "--output-format", "stream-json", "--verbose", ...(last ? ["--resume", session] : ["--session-id", session])],
     { cwd: ctx.worktree, stdio: ["pipe", fd, fd], env: { ...process.env, FACTORY_CHILD: "1" } });
   fs.closeSync(fd);
@@ -355,7 +364,7 @@ const log = path.join(ctx.runDir, "logs", `implement-${n}.${attempts + 1}.jsonl`
 fs.mkdirSync(path.dirname(log), { recursive: true });
 const fd = fs.openSync(log, "w");
 const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", model, "--max-turns", String(MAX_TURNS),
-  "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), "--strict-mcp-config",
+  "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), "--disallowedTools", denylist().join(","), "--strict-mcp-config",
   "--add-dir", ctx.runDir, "--output-format", "stream-json", "--verbose", ...(fresh ? ["--session-id", session] : ["--resume", session])],
   { cwd: wt, stdio: ["pipe", fd, fd], env: { ...process.env, FACTORY_CHILD: "1" } });
 fs.closeSync(fd);

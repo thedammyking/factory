@@ -10,7 +10,7 @@
 // worktree beside it), /dev/ or /tmp/. Targets are compared after resolving symlinks, in the case on disk, and a target
 // that is itself a symlink or a hard link is refused, so no link carries a write out.
 // While the run of the worktree a write lands in hasn't ended, the factory's own files, .claude/, CI and lint config are
-// locked, and the recipe's pinned directories (setup.json `pinned`, a list of paths) take writes only from the factory's
+// locked, but for a CI file a ticket's own plan names, which that ticket's worktree may write (#81), and the recipe's pinned directories (setup.json `pinned`, a list of paths) take writes only from the factory's
 // qa agent. Reads and script calls are never denied: of a Bash command, only what it writes is checked.
 // ponytail: a tokenizer, not a shell: no variable expansion but $HOME, no globs, no xargs, find -exec, curl -o or tar -C.
 //           The permission system bounds what else a command can do.
@@ -60,11 +60,19 @@ function refuse([a, removes]) {
   const wt = under(r, WTS) && r !== WTS ? path.join(WTS, path.relative(WTS, r).split(path.sep)[0]) : TOP, run = runOf(wt);
   if (!run || TERMINAL.includes(run.stage)) return null;
   const rel = path.relative(wt, r).toLowerCase(), holds = (k) => removes && (rel === "" || k.startsWith(rel + "/"));
+  if (!removes && planned(wt, run, rel)) return null;
   if (LOCKED.test(rel) || [...LOCKED_DIRS, `.factory/runs/${run.id}/state.json`].some(holds)) return `${a} is locked while run ${run.id} goes on`;
   if (input.agent_type === "factory:qa") return null;  // the value proven in docs/platform-facts.md
   const pinned = [].concat(readJson(path.join(wt, ".factory", "setup.json"))?.pinned ?? []).map((d) => path.normalize(String(d)).replace(/\/+$/, "").toLowerCase());
   if (pinned.some((d) => under(rel, d) || holds(d + "/"))) return `${a} is in a pinned directory, which only factory:qa writes while run ${run.id} goes on`;
   return null;
+}
+// A CI workflow or action file that a ticket worktree's own plan.md names by its path, the ticket being one that builds
+// CI (#81): a ticket worktree is its run's id plus -NN. The security lens reads every CI change in the review.
+function planned(wt, run, rel) {
+  const n = path.basename(wt).slice(run.id.length).match(/^-(\d{2})$/)?.[1];
+  if (!n || !/^\.github\/(workflows|actions)\/[^/]+/.test(rel)) return false;
+  try { return fs.readFileSync(path.join(runPaths(MAIN, run.id).runDir, "tickets", n, "plan.md"), "utf8").toLowerCase().includes(rel); } catch { return false; }
 }
 // targets as [absolute path, whether the write removes it]
 const check = (targets) => {

@@ -53,6 +53,11 @@
 //                                                implemented: its plan is done and the route becomes build, which goes on
 //                                                at research on the same branch, and the oneshot's tickets/ is kept as
 //                                                oneshot/, so the caps scale with the build's tickets once they're cut
+//   run-state.mjs chain --map <map>           -> a map's run list, each entry with its run and PR, then what comes next:
+//                                                RESTACK, then RESUME, START, STOP or DONE, which the orchestrator acts on
+//                                                to work the whole list (#81)
+//   run-state.mjs stack [--on <run>]          -> a run stacked on an earlier entry's open PR, or, without --on, put back
+//                                                on its trunk once that PR has merged, its own PR retargeted
 //   run-state.mjs track                       -> the request issue's phase recomputed and moved, as dispatch and set stage
 //                                                do on their own (#81): a `factory:<phase>` label on github, a
 //                                                `TRACK <key> <phase>` line for the orchestrator elsewhere
@@ -468,8 +473,15 @@ function githubIssue(main, text, what) {
 // other its key (and --url), the orchestrator having read the map, whose body is on stdin. Such a run has no request
 // issue, so it writes nothing to the tracker, and nothing writes to the map but wayfinder.
 function mapRun(main, tracker, base, sha, stdin) {
-  const ref = arg("--map") ?? "", entry = arg("--entry") ?? "", n = Number(entry);
+  const entry = arg("--entry") ?? "", n = Number(entry);
   if (!/^[1-9]\d*$/.test(entry)) die("--entry is the number of a run-list entry");
+  const { map, body } = readMap(main, tracker, base, stdin), line = runList(body).find((e) => e.n === n)?.line;
+  if (!line) die(`the map ${map.ref} has no entry ${n} in its run list`);
+  return { map: { ...map, entry: n }, body: body.trimEnd() + "\n", entry: line };
+}
+// The map --map names, read once: { map: { tracker, ref, url? }, body }, as mapRun and chain take it.
+function readMap(main, tracker, base, stdin) {
+  const ref = arg("--map") ?? "";
   let map, body;
   if (tracker === "local") {
     const slug = ref.match(/^(?:\.factory\/maps\/)?([a-z0-9][a-z0-9-]*)(?:\/(?:map\.md)?)?$/)?.[1];
@@ -489,10 +501,40 @@ function mapRun(main, tracker, base, sha, stdin) {
     body = stdin;
     map = { tracker, ref, ...(url && { url }) };
   }
-  body = body.replace(/\r\n/g, "\n");  // GitHub keeps the CRLF line ends its web editor writes
-  const line = body.match(/^## Run list[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1].match(new RegExp(`^[ \\t]*${n}\\.[ \\t]+(.+)$`, "m"))?.[1].trim();
-  if (!line) die(`the map ${map.ref} has no entry ${n} in its run list`);
-  return { map: { ...map, entry: n }, body: body.trimEnd() + "\n", entry: line };
+  return { map, body: body.replace(/\r\n/g, "\n") };  // GitHub keeps the CRLF line ends its web editor writes
+}
+// A map body's `## Run list`, as [{ n, line }] in its order.
+const runList = (body) => [...(body.match(/^## Run list[ \t]*\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? "").matchAll(/^[ \t]*(\d+)\.[ \t]+(.+)$/gm)]
+  .map((m) => ({ n: Number(m[1]), line: m[2].trim() }));
+// Every run of a map, live (its worktree's state) or ended (its record on factory/records), the live one winning, each as
+// { s, pr }: its state and pr.json, or null.
+function mapRuns(main, base, ref, only = null) {
+  const runs = new Map(), rec = recordsRef(main, base);
+  let ended = []; try { ended = git(main, "ls-tree", "--name-only", `${rec}:.factory/history`).split("\n").filter(Boolean); } catch {}
+  for (const id of ended.filter((x) => !only || x === only)) {
+    try { const s = JSON.parse(git(main, "show", `${rec}:.factory/history/${id}/state.json`)); let pr = null; try { pr = JSON.parse(git(main, "show", `${rec}:.factory/history/${id}/pr.json`)); } catch {}
+      runs.set(id, { s, pr }); } catch {}
+  }
+  const dir = worktreesDir(main);
+  for (const id of (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((x) => !only || x === only)) {
+    const p = runPaths(main, id), s = readJson(p.state);
+    if (s) runs.set(id, { s, pr: readJson(path.join(p.runDir, "pr.json")) });
+  }
+  return [...runs.values()].filter(({ s }) => only || s.map?.ref === ref);
+}
+// The run an entry stacks on (#81), live or ended: its branch, the trunk under the whole stack, and the stack record.
+function stackOn(main, base, id) {
+  const found = mapRuns(main, base, null, id)[0] ?? die(`no run ${id} to stack on`);
+  if (!found.s.branch) die(`${id} has no branch yet to stack on`);
+  const { s: o, pr } = found;
+  return { branch: o.branch, trunk: o.trunk ?? o.base_branch, stack: { run: id, branch: o.branch, ...(pr && { pr: pr.number, repo: pr.repo }) } };
+}
+// Whether a run's PR has merged, as GitHub says: true, false (open or closed unmerged: `closed` says which), or null
+// when it can't be read (no PR, not GitHub, or the call failed).
+function prMerged(pr) {
+  if (!pr?.repo || !pr.number) return null;
+  const r = ghApi(`repos/${pr.repo}/pulls/${pr.number}`);
+  return r.ok ? { merged: !!r.json.merged_at, closed: r.json.state === "closed" } : null;
 }
 // A GitHub request issue claimed for the gh user (@me), as what it changed: { assignee } when it assigned them, {} when
 // they were already when the run started (init's read: nothing reads the issue after it), { failed } when a call failed.
@@ -604,7 +646,9 @@ switch (cmd) {
     // Before triage picks a lane, a run sits at the tip of the branch most lanes start from.
     const branching = config.branching || {};
     const base = branching.model === "git-flow" ? branching.develop || "develop" : branching.main || "main";
-    let sha; try { sha = freshTip(MAIN, base); } catch { die(`base branch '${base}' doesn't exist`); }
+    // --on <run>: an entry stacked on an earlier entry's run (#81), branched from its branch while its PR is open.
+    const on = arg("--on") && stackOn(MAIN, base, arg("--on"));
+    let sha; try { sha = freshTip(MAIN, on?.branch ?? base); } catch { die(`base branch '${on?.branch ?? base}' doesn't exist`); }
     const run = mapped && mapRun(MAIN, config.tracker, base, sha, stdin);
     const slug = (from?.title ?? run?.entry ?? request).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, 4).join("-").slice(0, 32).replace(/-$/, "") || "run";
     // mkdir is the claim, so two runs started at once never take the same id; git worktree add accepts the empty dir.
@@ -627,8 +671,8 @@ switch (cmd) {
     if (answersFile) fs.writeFileSync(path.join(runDir, "grill-answers.md"), answers);
     const s = {
       id, request: key ?? run?.entry ?? request, ...(from && { request_issue: from.issue }), ...(run && { map: run.map }), session: process.env.CLAUDE_CODE_SESSION_ID || null,
-      stage: "start", route: null, base_branch: base, base_sha: sha, worktree, run_dir: runDir,
-      dispatches: [], stages_done: [], created_at: now(),
+      stage: "start", route: null, base_branch: on?.branch ?? base, base_sha: sha, worktree, run_dir: runDir,
+      ...(on && { trunk: on.trunk, stack: on.stack }), dispatches: [], stages_done: [], created_at: now(),
     };
     save(state, s);
     log(runDir, `run: ${id} started`);
@@ -660,6 +704,58 @@ switch (cmd) {
     save(ctx.state, s);
     if (key === "stage") log(ctx.runDir, `run: ${ctx.id} ${value}`);
     console.log(`ok ${key}`);
+    break;
+  }
+  case "stack": {
+    // --on <run>: the run stacked on an earlier entry's run while that run's PR is open (#81): it branches from, rebases
+    // onto and targets that run's branch, and its snapshot still goes where the trunk's would. Without --on, the stack is
+    // checked: once the PR under it has merged, the run goes back onto its trunk, and its own PR, when open, is retargeted.
+    const [ctx, s] = load();
+    if (FINISHED.includes(s.stage)) die(`run ${ctx.id} is ${s.stage}`);
+    const prFile = path.join(ctx.runDir, "pr.json"), pr = readJson(prFile), on = arg("--on");
+    if (on) {
+      if (pr) die(`${ctx.id}'s PR #${pr.number} is open, and a run is stacked before its PR`);
+      const o = stackOn(ctx.MAIN, s.trunk ?? s.base_branch, on);
+      Object.assign(s, { trunk: s.trunk ?? s.base_branch, stack: o.stack, base_branch: o.branch }, s.branch && { target_branch: o.branch });
+      report(ctx, s, `stacked on ${o.branch}${o.stack.pr ? ` (PR #${o.stack.pr})` : ""}: the review rebases the run onto it`);
+      break;
+    }
+    if (!s.stack) { console.log(`not stacked: on ${s.base_branch}`); break; }
+    const m = prMerged({ repo: s.stack.repo, number: s.stack.pr });
+    if (!m?.merged) { console.log(`stacked on ${s.stack.branch}${s.stack.pr ? ` (PR #${s.stack.pr} ${!m ? "unread" : m.closed ? "closed unmerged" : "open"})` : ""}`); break; }
+    const was = s.stack.branch;
+    delete s.stack;
+    Object.assign(s, { base_branch: s.trunk }, s.branch && { target_branch: s.trunk });
+    const failed = pr && ghWrite("-X", "PATCH", `repos/${pr.repo}/pulls/${pr.number}`, "-f", `base=${s.trunk}`);
+    if (pr && !failed) fs.writeFileSync(prFile, JSON.stringify({ ...pr, base: s.trunk }, null, 2) + "\n");
+    report(ctx, s, `restacked onto ${s.trunk}, ${was}'s PR having merged${!pr ? "" : failed ? `; retargeting PR #${pr.number} failed: ${failed}` : `, and PR #${pr.number} now targets ${s.trunk}`}`);
+    break;
+  }
+  case "chain": {
+    // The run list of the map --map names, entry by entry with its run (the newest not abandoned), then the one thing to
+    // do next (#81). An entry is built once its PR is open and ready; one whose PR merged leaves the next on the trunk,
+    // one whose PR is open has the next stacked on it. After a `RESTACK <run>` line for each live run stacked on a PR
+    // that has merged since: `RESUME <run> [--on <run>]` for an entry whose run hasn't its PR yet, `START <N> [--on <run>]`
+    // for one with no run, `STOP <N>: <why>` where only the human can go on, else `DONE`.
+    const MAIN = mainRoot(), config = readJson(path.join(MAIN, ".factory", "config.json")) ?? die("no .factory/config.json: run /setup-factory first");
+    const branching = config.branching || {}, base = branching.model === "git-flow" ? branching.develop || "develop" : branching.main || "main";
+    const { map, body } = readMap(MAIN, config.tracker, base, fs.readFileSync(0, "utf8")), entries = runList(body);
+    if (!entries.length) die(`the map ${map.ref} has no run list yet`);
+    const all = mapRuns(MAIN, base, map.ref), out = [];
+    for (const { s: r } of all) if (r.stack && !FINISHED.includes(r.stage) && prMerged({ repo: r.stack.repo, number: r.stack.pr })?.merged) out.push(`RESTACK ${r.id}`);
+    let under = null, next = null;  // under: the built entry the next one stacks on, while its PR is open
+    for (const { n, line } of entries) {
+      const mine = all.filter(({ s: r }) => r.map.entry === n && r.stage !== "abandoned").sort((a, b) => b.s.created_at.localeCompare(a.s.created_at))[0];
+      if (!mine) { out.push(`ENTRY ${n} none: ${line}`); next ??= `START ${n}${under ? ` --on ${under}` : ""}`; continue; }
+      const { s: r, pr } = mine, m = pr && !pr.draft ? prMerged(pr) : null;
+      out.push(`ENTRY ${n} ${r.id} ${r.stage}${pr ? ` PR #${pr.number}${pr.draft ? " draft" : m?.merged ? " merged" : m?.closed ? " closed unmerged" : " open"}` : ""}`);
+      if (next) continue;
+      if (m?.closed && !m.merged) next = `STOP ${n}: ${r.id}'s PR #${pr.number} was closed unmerged, so the entries after it have nothing to build on`;
+      else if (pr && !pr.draft) under = m?.merged ? null : r.id;
+      else if (FINISHED.includes(r.stage) || r.stage === "failed") next = `STOP ${n}: ${r.id} ended ${r.stage} with no PR`;
+      else next = `RESUME ${r.id}${under && r.base_branch !== all.find(({ s: x }) => x.id === under)?.s.branch ? ` --on ${under}` : ""}`;
+    }
+    console.log([...out, next ?? "DONE"].join("\n"));
     break;
   }
   case "track": {
@@ -1356,5 +1452,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | file-issue | spec-comment | file-tickets | close-ticket | approve | notion | ticket | allow | next-ticket | get | set | track | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
+  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | file-issue | spec-comment | file-tickets | close-ticket | approve | notion | ticket | allow | next-ticket | get | set | track | stack | chain | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
 }

@@ -115,9 +115,10 @@ test("implement cuts the ticket's worktree on factory/<run>/NN at the SHA its di
   assert.ok(!argv.includes("--mcp-config") && !argv.includes("--resume"));
   assert.deepEqual(["--agent", "--plugin-dir", "--model", "--max-turns", "--permission-mode", "--permission-prompts", "--add-dir", "--output-format"].map((k) => flag(argv, k)),
     ["factory:implementer", PLUGIN, "sonnet", "150", "acceptEdits", "none", r.s.run_dir, "stream-json"]);
-  assert.deepEqual(flag(argv, "--allowedTools").split(","), ["Bash(node:*)", ...GIT_RULES, ...NPM_RULES, "Bash(npx:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
-    "each check's executable but the package manager, which would allow npm publish; git with no push, fetch or rebase; "
-    + "npm's own commands and npx, npm named by a check in a recipe from before setup recorded it; verify; and the craft floor");
+  assert.deepEqual(flag(argv, "--allowedTools").split(","), ["Bash(node:*)", ...GIT_RULES, ...NPM_RULES, "Bash(npx:*)", "Bash(npm:*)", "Bash(curl:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
+    "each check's executable; git with no push, fetch or rebase; npm's own commands and npx, npm named by a check in a recipe "
+    + "from before setup recorded it, and npm whole, its flags first (#81); curl; verify; and the craft floor");
+  assert.deepEqual(flag(argv, "--disallowedTools").split(","), ["Bash(npm publish:*)", "Bash(npm unpublish:*)"], "never a publish, which a deny rule stops ahead of npm:*");
   assert.match(flag(argv, "--session-id"), /^[0-9a-f-]{36}$/);
   assert.deepEqual([d.pid, d.session], [call.pid, flag(argv, "--session-id")], "the dispatch records the child's PID and session id");
   assert.ok(d.log.startsWith(path.join(r.s.run_dir, "logs") + path.sep));
@@ -429,8 +430,8 @@ test("the child may run the recipe's package manager as it names its commands, i
   r.play([blocked, blocked]);
   const rules = (call) => flag(call.argv, "--allowedTools").split(",");
   assert.match(lastLine(r.stage("implement", "01")), /^ATTENTION 01: BLOCKED: environment/);
-  assert.deepEqual(rules(r.calls()[0]), [...GIT_RULES, ...NPM_RULES, "Bash(npx:*)", "Bash(node:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
-    "a recipe with no apps still gets npm's own commands and npx, and nothing else: no curl, docker, rm or publish");
+  assert.deepEqual(rules(r.calls()[0]), [...GIT_RULES, ...NPM_RULES, "Bash(npx:*)", "Bash(node:*)", "Bash(npm:*)", "Bash(curl:*)", `Bash(node ${SCRIPTS}/verify.mjs:*)`, "Skill(factory:ui-craft)"],
+    "a recipe with no apps still gets npm and npx, and nothing else but curl: no docker or rm, and publish denied");
 
   // a rule the developer allowed in the project's settings, and one in a recipe from before those held them, committed on
   // the run branch after the ticket was cut; the settings' other rules aren't Bash's
@@ -450,6 +451,7 @@ test("with no lockfile yet, the recipe's package manager is setup's default, so 
   const rules = flag(r.calls()[0].argv, "--allowedTools").split(",");
   for (const rule of ["Bash(npm install:*)", "Bash(pnpm add:*)", "Bash(yarn add:*)", "Bash(bun add:*)", "Bash(pnpm dlx:*)"]) assert.ok(rules.includes(rule), rule);
   assert.ok(!rules.some((x) => /publish/.test(x)), "and still no publish");
+  assert.deepEqual(flag(r.calls()[0].argv, "--disallowedTools").split(",").filter((x) => / publish:/.test(x)), ["npm", "pnpm", "yarn", "bun"].map((pm) => `Bash(${pm} publish:*)`), "denied for each");
 });
 
 test("a resumed child is told which commands it was denied are allowed now, whatever its status, since its session says never to retry them", (t) => {

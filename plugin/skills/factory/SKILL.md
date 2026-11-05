@@ -28,7 +28,7 @@ When a command names no run, run `run-state status`. If exactly one run is liste
 
 When the run will use the tracker (`tracker` in `.factory/config.json` isn't `local`) or Notion (`docs` is `notion`), first read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/integrations.md` and test them as it says.
 
-1. Start the run. A request `map <map> <N>` starts from entry N of a map's run list: follow **From a run list** in `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/map.md` instead. When `tracker` in `.factory/config.json` isn't `local`, see **Request issue** first: a request that is an issue's reference starts from that issue. Otherwise pass the request exactly as given, on stdin through a quoted heredoc, so no shell parses it. If a line of the request is exactly `FACTORY_REQUEST`, pick another delimiter that no line of it matches.
+1. Start the run. A request `map <map> <N>` starts from entry N of a map's run list: follow **From a run list** in `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/map.md` instead. A request `map <map>`, naming no entry, works the map's whole run list and resumes whatever of it is in flight: follow **The run list** there. When `tracker` in `.factory/config.json` isn't `local`, see **Request issue** first: a request that is an issue's reference starts from that issue. Otherwise pass the request exactly as given, on stdin through a quoted heredoc, so no shell parses it. If a line of the request is exactly `FACTORY_REQUEST`, pick another delimiter that no line of it matches.
 
    ```bash
    node ${CLAUDE_PLUGIN_ROOT}/scripts/run-state.mjs init <<'FACTORY_REQUEST'

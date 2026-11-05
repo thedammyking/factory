@@ -14,7 +14,7 @@ First, once per review and never on a re-review, run `sync-base.mjs before-revie
    - A state of a mobile app is `name`, `app` (the recipe's mobile app) and `flow` in place of `url`, `setup` and `actions`: the Maestro commands, each as JSON, that reach the state from a fresh launch, taken from the plan's words (`{"tapOn": "Cart"}`, `{"openLink": "shop://cart"}`). `capture-states` pictures it on the run's device, in light and dark at the default and largest text size.
 
    Then run `run-apps.mjs up`, `capture-states.mjs <run_dir>/ui-states.json`, and `run-apps.mjs down` whatever happened. A capture that failed (exit 1) is the UI lens's to judge: go on. If `up` failed or `capture-states` exited 2, stop.
-3. **Lenses.** Dispatch each lens the diff earns: `code` always, `ui` when `ui` hit, `security` when any of `auth`, `data`, `network`, `files` or `crypto` hit. Dispatch them one after another, each in the background, so they run at the same time:
+3. **Lenses.** Dispatch each lens the diff earns: `code` always, `ui` when `ui` hit, `security` when any of `auth`, `data`, `network`, `files`, `crypto` or `ci` hit. Dispatch them one after another, each in the background, so they run at the same time:
    - `run-state dispatch review-<lens>`, which moves the lens's last file aside as a round first. Exit 4 is the **Caps** of the skill, with the stage `review-<lens>`.
    - The `factory:reviewer-<lens>` agent in the background, with its model from `.factory/config.json` when set: `models.review_code`, `models.review_ui` or `models.security`. The prompt is triage's three lines, and on a re-review the line `fix_diff: <run_dir>/review-fix.diff`.
    - `run-state dispatch review-<lens> --agent <agent id>`.

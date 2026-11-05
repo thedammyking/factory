@@ -677,7 +677,9 @@ test("prove, after env, runs every command with .factory/env.local's values and 
   assert.match(r.stdout, /^pass +web\.e2e /m, "the API answered at the URL env.local gave the web app");
   const seen = JSON.parse(fs.readFileSync(dump, "utf8"));
   const { PWD, SHLVL, _, __CF_USER_TEXT_ENCODING, ...rest } = seen;  // bash's own, and the one macOS sets in every process
-  assert.deepEqual(Object.keys(rest).sort(), ["DATABASE_URL", "HOME", "JWT_SECRET", "NEXTAUTH_URL", "NEXT_PUBLIC_API_URL", "PATH", "PORT", "REDIS_URL", "STRIPE_PUBLISHABLE_KEY", "TMPDIR"]);
+  const locale = (k) => /^(LANG|LC_[A-Z]+)$/.test(k);  // the locale passes through, as tools like CocoaPods need it (#81)
+  assert.deepEqual(Object.keys(rest).filter((k) => !locale(k)).sort(), ["DATABASE_URL", "HOME", "JWT_SECRET", "NEXTAUTH_URL", "NEXT_PUBLIC_API_URL", "PATH", "PORT", "REDIS_URL", "STRIPE_PUBLISHABLE_KEY", "TMPDIR"]);
+  assert.ok(Object.keys(rest).some(locale) || process.platform !== "darwin", "a locale, macOS's default when the shell has none");
   assert.deepEqual([seen.DATABASE_URL, seen.REDIS_URL, seen.JWT_SECRET, seen.PATH], ["postgres://shop:fake-pw-local@localhost:5432/shop_dev", "redis://:fake-redis-dev@cache.dev.internal:6379", "fake-jwt-env", f.env.PATH]);
   assert.match(seen.NEXT_PUBLIC_API_URL, /^http:\/\/localhost:\d+\/v1$/);
   assert.doesNotMatch(seen.NEXT_PUBLIC_API_URL, /:4000\//, "a free port, not the developer's");

@@ -117,6 +117,19 @@ test("a ticket worktree writes itself and its run dir, in the run worktree besid
   denied(hook(ticket, "NotebookEdit", { notebook_path: "/etc/x.ipynb", new_source: "" }), /outside/);
 });
 
+test("a ticket worktree writes the CI files its own plan names, and only those (#81)", () => {
+  const plan = path.join(live.runDir, "tickets/01/plan.md");
+  fs.mkdirSync(path.dirname(plan), { recursive: true });
+  fs.writeFileSync(plan, "---\nstatus: ready\n---\n\n# Plan 01: CI\n\n- Write `.github/workflows/ci.yml` with the check, unit and e2e jobs.\n");
+  allowed(write(".github/workflows/ci.yml", ticket));
+  denied(write(".github/workflows/deploy.yml", ticket), /locked/);
+  denied(write(".github/workflows/ci.yml", live.wt), /locked/, "the run worktree is no ticket's");
+  denied(bash("rm -r .github/workflows", ticket), /locked/);
+  denied(write(".claude/settings.json", ticket), /locked/);
+  fs.rmSync(path.dirname(plan), { recursive: true });
+  denied(write(".github/workflows/ci.yml", ticket), /locked/, "with no plan naming it");
+});
+
 test("a hard link carries no write out either", () => {
   denied(write("notes-link.txt"), /hard link/);
   denied(bash("echo x >> notes-link.txt"), /hard link/);

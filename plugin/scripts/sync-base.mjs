@@ -19,9 +19,13 @@ import { readJson, git, gitError, runContext, liveBase, pause, ghApi, shellQuote
 const mode = process.argv[2];
 const die = (msg) => { console.error(`sync-base: ${msg}`); process.exit(2); };
 if (!["before-review", "before-merge"].includes(mode)) die("usage: sync-base.mjs before-review | before-merge --run <id>");
-const ctx = runContext(), s = readJson(ctx.state), wt = ctx.worktree, pr = readJson(path.join(ctx.runDir, "pr.json"));
+const ctx = runContext(), wt = ctx.worktree;
 const RUN_STATE = fileURLToPath(new URL("run-state.mjs", import.meta.url));
 const runState = (...a) => spawnSync(process.execPath, [RUN_STATE, ...a, "--run", ctx.id], { encoding: "utf8" });
+// A stacked run whose PR underneath has merged goes back onto its trunk first (#81), so it syncs with what it merges into.
+const restacked = readJson(ctx.state)?.stack && runState("stack");
+if (restacked?.stdout.startsWith("restacked")) console.log(restacked.stdout.trim());
+const s = readJson(ctx.state), pr = readJson(path.join(ctx.runDir, "pr.json"));
 const contains = (rev, commit) => { try { git(wt, "merge-base", "--is-ancestor", commit, rev); return true; } catch { return false; } };
 
 // Writes attention-sync.md and ends the run needs-human.

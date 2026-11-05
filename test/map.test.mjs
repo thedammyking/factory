@@ -190,6 +190,7 @@ const CANNED = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "factory-ca
 const canned = (body) => { const f = path.join(CANNED, `${Math.random()}`); fs.writeFileSync(f, JSON.stringify(body)); return f; };
 // A project on `tracker` whose origin is github.com/o/r, with a fake gh answering the map issue #40, the request issue
 // #12, the user `me` and every write; on local, main holds the CRM map with its run list.
+const PR60 = canned({ number: 60, state: "open", merged_at: null });
 function tracked(tracker) {
   const p = project({ config: { tracker } });
   githubOrigin(p);
@@ -200,6 +201,7 @@ function tracked(tracker) {
     { match: /^api repos\/o\/r\/issues\/7$/, file: canned({ number: 7, title: "A PR", body: LISTED, pull_request: {}, assignees: [] }) },
     { match: /^api repos\/o\/r\/issues\/12$/, file: canned({ number: 12, title: "Build me a CRM", body: "Contacts first.", html_url: "https://github.com/o/r/issues/12", assignees: [] }) },
     { match: /^api user$/, file: canned({ login: "me" }) },
+    { match: /^api repos\/o\/r\/pulls\/60$/, file: PR60 },
     { match: /^api -X POST repos\/o\/r\/issues -f /, file: canned({ number: 50, id: 9050, html_url: "https://github.com/o/r/issues/50" }) },
     { match: /^api -X /, file: canned({}) },
   ] });
@@ -286,6 +288,32 @@ test("once its spec is approved, a map run files its request issue as a sub-issu
   assert.deepEqual(calls.map((c) => c.slice(0, 6)), [["api", "-X", "POST", "repos/o/r/issues", "-f", "title=Run 1: Add contacts"],
     ["api", "-X", "POST", "repos/o/r/issues/40/sub_issues", "-F", "sub_issue_id=9050"]]);
   assert.equal(JSON.parse(rs("get")).request_issue.key, "#50");
+});
+
+test("chain works a map's run list: each entry with its run and PR, the next stacked on an open PR, and back on the trunk once it merges (#81)", () => {
+  fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "open", merged_at: null }));
+  const t = tracked("github"), chain = () => ok(t.rs(["chain", "--map", "#40"])).split("\n");
+  assert.deepEqual(chain(), ["ENTRY 1 none: Add contacts with name, email and company", "ENTRY 2 none: Import contacts from a CSV file", "START 1"]);
+  const one = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "1"])));
+  const rs = (s, ...args) => ok(t.rs([...args, "--run", s.id]));
+  write(one.run_dir, { "triage.md": "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch: "feature/add-contacts", route: "build" }) + "\n```\n" });
+  rs(one, "set", "route", "build");
+  rs(one, "lane");
+  assert.equal(chain().at(-1), `RESUME ${one.id}`, "an entry with no PR yet goes on");
+  write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: false }) });
+  assert.deepEqual(chain(), [`ENTRY 1 ${one.id} start PR #60 open`, "ENTRY 2 none: Import contacts from a CSV file", `START 2 --on ${one.id}`]);
+  const two = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "2", "--on", one.id])));
+  assert.deepEqual([two.base_branch, two.trunk, two.stack], ["feature/add-contacts", "main", { run: one.id, branch: "feature/add-contacts", pr: 60, repo: "o/r" }]);
+  assert.equal(two.base_sha, t.p.git("rev-parse", "feature/add-contacts"), "it branches from the entry under it");
+  assert.equal(chain().at(-1), `RESUME ${two.id}`);
+  assert.match(rs(two, "stack"), /^stacked on feature\/add-contacts \(PR #60 open\)$/);
+  fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "closed", merged_at: "2026-11-05T12:00:00Z" }));
+  assert.deepEqual(chain(), [`RESTACK ${two.id}`, `ENTRY 1 ${one.id} start PR #60 merged`, `ENTRY 2 ${two.id} start`, `RESUME ${two.id}`]);
+  assert.equal(rs(two, "stack"), "restacked onto main, feature/add-contacts's PR having merged");
+  const after = JSON.parse(rs(two, "get"));
+  assert.deepEqual([after.base_branch, after.stack], ["main", undefined]);
+  fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "closed", merged_at: null }));
+  assert.match(chain().at(-1), /^STOP 1: .+ PR #60 was closed unmerged/, "only the human goes on past a rejected entry");
 });
 
 test("a request at the map gate is mid-run, and once charted its closing comment links the map", () => {

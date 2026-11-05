@@ -212,6 +212,8 @@ const unverified = unverifiedNative(recipe, ev?.platform ?? null, changed.map(([
 fact("no_unverified_native", !unverified.length, unverified.map((u) => `${u.files.join(", ")} change${u.files.length === 1 ? "s" : ""} ${PLATFORM_NAMES[u.platform]}'s native code, `
   + `which the run didn't verify (${on ? `it verified on ${on}` : "it had no device"})`).join("; ") || "none", [at("evidence.json"), diffAt]);
 const branching = config.branching || {};
+// A run stacked on another entry's open PR merges after it, into the trunk, never into that PR's branch (#81).
+fact("not_stacked", !s.stack, s.stack ? `stacked on ${s.stack.branch}${s.stack.pr ? ` (PR #${s.stack.pr})` : ""}, which merges first` : "on its trunk", [at("state.json")]);
 fact("not_git_flow_main", !(branching.model === "git-flow" && s.target_branch === (branching.main || "main")),
   `${branching.model || "trunk"}, targeting ${s.target_branch}`, [path.join(ctx.MAIN, ".factory", "config.json")]);
 

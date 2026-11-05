@@ -11,7 +11,9 @@ import fs from "node:fs";
 import path from "node:path";
 import { readJson, git, runContext, runDiff, PRODUCT } from "./lib.mjs";
 
-const TOUCHES = ["auth", "data", "migrations", "network", "files", "crypto", "config", "deps", "native", "api_contract", "ui", "tests"];
+const TOUCHES = ["auth", "data", "migrations", "network", "files", "crypto", "config", "deps", "native", "api_contract", "ui", "tests", "ci"];
+// ci: a CI workflow or action, which a ticket may write when its plan names it (#81), so the security lens reads it.
+const BUILT_IN = { ci: { paths: [".github/workflows/", ".github/actions/"] } };
 const ctx = runContext(), BASE = readJson(ctx.state).base_branch;
 let rules; try { rules = JSON.parse(git(ctx.worktree, "show", `refs/heads/${BASE}:.factory/touch-rules.json`)); } catch {}
 if (!rules) { console.error(`classify-diff: no .factory/touch-rules.json on ${BASE}: run /setup-factory`); process.exit(2); }
@@ -19,7 +21,7 @@ const { base, files, added } = runDiff(ctx), lines = Object.values(added).flat()
 
 const segment = (p) => (/^[/.]/.test(p) ? p : `/${p}`).toLowerCase();
 const touches = Object.fromEntries(TOUCHES.map((t) => {
-  const { paths: ps = [], content = [] } = rules[t] || {};
+  const { paths: ps = [], content = [] } = rules[t] || BUILT_IN[t] || {};
   const paths = files.filter((f) => ps.some((p) => `/${f}`.toLowerCase().includes(segment(p))));
   const patterns = content.filter((re) => { const r = new RegExp(re, "i"); return lines.some((l) => r.test(l)); });
   return [t, { hit: paths.length > 0 || patterns.length > 0, paths: paths.slice(0, 20), patterns }];
