@@ -266,7 +266,7 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   fs.mkdirSync(path.dirname(log), { recursive: true });
   const fd = fs.openSync(log, "w");
   const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", config.models?.implement || "sonnet", "--max-turns", String(MAX_TURNS),
-    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), "--disallowedTools", denylist().join(","), "--strict-mcp-config",
+    "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), ...(denylist().length ? ["--disallowedTools", denylist().join(",")] : []), "--strict-mcp-config",
     "--add-dir", ctx.runDir, "--output-format", "stream-json", "--verbose", ...(last ? ["--resume", session] : ["--session-id", session])],
     { cwd: ctx.worktree, stdio: ["pipe", fd, fd], env: { ...process.env, FACTORY_CHILD: "1" } });
   fs.closeSync(fd);
@@ -364,7 +364,7 @@ const log = path.join(ctx.runDir, "logs", `implement-${n}.${attempts + 1}.jsonl`
 fs.mkdirSync(path.dirname(log), { recursive: true });
 const fd = fs.openSync(log, "w");
 const child = spawn("claude", ["-p", "--agent", "factory:implementer", "--plugin-dir", PLUGIN, "--model", model, "--max-turns", String(MAX_TURNS),
-  "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), "--disallowedTools", denylist().join(","), "--strict-mcp-config",
+  "--permission-mode", "acceptEdits", "--permission-prompts", "none", "--allowedTools", allowlist().join(","), ...(denylist().length ? ["--disallowedTools", denylist().join(",")] : []), "--strict-mcp-config",
   "--add-dir", ctx.runDir, "--output-format", "stream-json", "--verbose", ...(fresh ? ["--session-id", session] : ["--resume", session])],
   { cwd: wt, stdio: ["pipe", fd, fd], env: { ...process.env, FACTORY_CHILD: "1" } });
 fs.closeSync(fd);
