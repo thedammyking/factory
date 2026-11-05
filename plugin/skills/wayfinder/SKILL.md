@@ -121,7 +121,7 @@ Ruling something out of scope is a scoping act, not a step on the route. When a 
 
 ## Invocation
 
-Two modes. Either way, **never resolve more than one ticket per session**, with the exception of research tickets.
+Two modes, and one session works the whole map (#81): charting goes straight on to working through it, research and AFK task tickets run as background agents while grilling tickets are put to the human one after another, and the written run list starts the runs. The human answers decisions; they never have to say "continue" or start a session per ticket.
 
 ### Chart the map
 
@@ -132,7 +132,7 @@ The human invokes it with a loose idea, or the factory's map gate sends a run's 
 3. **Create the map**: Destination and Notes (with its `Slug:` line) filled in, Decisions-so-far and Run list empty, the fog sketched into **Not yet specified**.
 4. **Create the tickets you can specify now** as child issues of the map, then wire blocking edges in a **second pass** (issues need ids before they can reference each other). Write cross-references in that pass too, with real ids: a placeholder `#<n>` auto-links to an unrelated issue. Wiring sorts them into the frontier and the blocked; everything you can't yet specify stays in the fog: the **Not yet specified** section.
 5. **Fire the research.** Resolve each `research` ticket you just created, as [Research tickets](#research-tickets) says, all at once.
-6. Stop: charting is one session's work; it hand-resolves nothing.
+6. Go on to [Work through the map](#work-through-the-map) in this session, without asking: charting hand-resolves nothing itself.
 
 ### Work through the map
 
@@ -143,6 +143,7 @@ The human invokes it with a map (its reference, as the doc's **Map** gives it). 
 3. Resolve it as the type its `Type:` line names (see [Ticket Types](#ticket-types)). **Zoom as needed**: fetch the full body of any related or closed ticket on demand; load whichever skills the `## Notes` block names. If in doubt, load `factory:grilling`.
 4. Record the resolution as the doc's **Resolve** says: the answer recorded on the ticket, the ticket closed, and a **context pointer** appended to the map's Decisions-so-far.
 5. Add newly-surfaced tickets (create-then-wire); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals that a ticket (this one or another) sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets.
-6. **The run list is the last decision.** Once the frontier and the fog are empty, ticket it like any other grilling decision: which runs, each one line a `/factory` request could start, sized to one run's spec, and in what order. When it resolves, write its entries into the map's `## Run list` as `N. <request>` lines, then tell the human to start each with `/factory map <the map's reference> <N>`, one at a time. The factory starts no run on its own and never records which have run.
+6. **Next.** Fire every research ticket now on the frontier, as [Research tickets](#research-tickets) says, and an AFK task's agent, in the background, then go back to step 2 for the next grilling ticket, in the same turn: a research ticket resolves when its notification arrives, whatever you're asking then. With only claimed or blocked tickets left, end your turn: a notification brings you back. Another session's claim is skipped, never waited on.
+7. **The run list is the last decision.** Once the frontier and the fog are empty, ticket it like any other grilling decision: which runs, each one line a `/factory` request could start, sized to one run's spec, and in what order. When it resolves, write its entries into the map's `## Run list` as `N. <request>` lines. That ends the human's grill: in this session, without asking, read `${CLAUDE_PLUGIN_ROOT}/skills/factory/SKILL.md` and follow it with `map <the map's reference>` as its arguments (its **The run list** in `references/map.md`), which builds every entry in order, hands off, to its PR.
 
 The human may run unblocked tickets in parallel, so expect other sessions to be editing the tracker concurrently.

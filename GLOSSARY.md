@@ -15,7 +15,7 @@ The tracker issue a run belongs to: the one it was started from, or, for a run s
 _Avoid_: source issue, linked issue, ticket
 
 **Orchestrator**:
-The skill that drives exactly one run from its own session: it routes between stages, dispatches each one and records progress, and it is where the human answers the grill, the spec gate and any question the run stops on. Several runs at once means several orchestrators.
+The skill that drives exactly one run from its own session: it routes between stages, dispatches each one and records progress, and it is where the human answers the grill and any question the run stops on. A map's runs go one after another under one orchestrator; several unrelated runs at once means several orchestrators.
 _Avoid_: supervisor, controller, driver
 
 **Stage**:
@@ -31,7 +31,7 @@ The branch a run works on and the base it starts from, chosen at triage by the b
 _Avoid_: branch strategy
 
 **Gate**:
-A point where the run stops until the human decides, such as approving the spec.
+A point where the run stops until the human decides, such as whether to chart a map. Once the grill is over, a run has none until its PR.
 _Avoid_: checkpoint, approval step
 
 **Cap**:
@@ -52,8 +52,12 @@ _Avoid_: postmortem, review (a lens's job), golden task
 ### Work
 
 **Grill**:
-The decisions a run puts to the human before its spec is written, each with options. Questions come one at a time or all at once, as the project chose at setup. Facts are researched, never asked.
+The decisions a run puts to the human before its spec is written, each with options. Questions come one at a time or all at once, as the project chose at setup. Facts are researched, never asked. A run from a map's run list has none of its own: the map was its grill.
 _Avoid_: interview, Q&A, questionnaire
+
+**Factory's call**:
+A decision the factory makes in the human's place once the grill is over, taking the recommended answer, and lists on the PR for the human to review.
+_Avoid_: default (a recommended answer before it is taken), assumption (an implementer's)
 
 **Spec**:
 The approved statement of what a run delivers: requirements, numbered success criteria and anti-goals.
@@ -90,12 +94,16 @@ One question on a map whose answer is a decision, not a slice of work.
 _Avoid_: ticket (a run's slice), issue
 
 **Tracker**:
-Where a project's maps live (local files, GitHub Issues, Linear, or another tracker the human describes) and, on any but local files, its request issues with their tickets as sub-issues. What the tracker shows is a copy: the run's own files stay the record.
+Where a project's maps live (local files, GitHub Issues, Linear, or another tracker the human describes) and, on any but local files, its request issues with their tickets as sub-issues, each showing the phase its run or ticket is in. What the tracker shows is a copy: the run's own files stay the record.
 _Avoid_: board, issue tracker
 
 **Run list**:
-A cleared map's destination: ordered one-line requests, each sized to one run's spec.
+A cleared map's destination: ordered one-line requests, each sized to one run's spec, built in order, each on the one before.
 _Avoid_: backlog, queue
+
+**Stack**:
+A run built on an earlier run of its list whose PR hasn't merged yet: it starts from that run's branch and its PR goes into it, until that PR merges and the run goes back onto the trunk.
+_Avoid_: chain, dependent PR
 
 ### Proof
 
