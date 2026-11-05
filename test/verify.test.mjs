@@ -67,7 +67,8 @@ test("an app without a test check fails it, since a required check missing from 
   assert.equal(r.status, 1);
   assert.deepEqual(statuses(r.evidence), ["web/lint=pass", "web/test=fail", "api/test=pass"]);
   const missing = r.evidence.checks[1];
-  assert.deepEqual([missing.cmd, missing.log, missing.digest], [null, null, "required check not in recipe"]);
+  assert.deepEqual([missing.cmd, missing.log], [null, null]);
+  assert.match(missing.digest, /^required check not in recipe: give the app a test script in its manifest/);
   assert.deepEqual([r.evidence.green, r.evidence.red_cause], [false, "inherited"], "the base's recipe lacks it too");
 });
 

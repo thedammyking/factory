@@ -33,8 +33,11 @@ let pr = readJson(file);
 const save = () => fs.writeFileSync(file, JSON.stringify(pr, null, 2) + "\n");
 const label = (n, names) => gh("-X", "POST", `repos/${repo}/issues/${n}/labels`, ...names.flatMap((l) => ["-f", `labels[]=${l}`]));
 
-// A PR the factory merged is never pushed to again: GitHub may have deleted its branch on merge.
-if (!decision?.merged) try { git(ctx.worktree, "push", "-q", "origin", `HEAD:refs/heads/${s.branch}`); } catch (e) { die(`can't push ${s.branch} to origin: ${gitError(e)}`, 1); }
+// A PR the factory merged is never pushed to again: GitHub may have deleted its branch on merge. Before the run's PR
+// exists, the branch on origin is only the base its ticket PRs merged into (#81), which the review's rebase rewrote, so it
+// is forced; after, never.
+const force = pr ? [] : ["--force"];
+if (!decision?.merged) try { git(ctx.worktree, "push", "-q", ...force, "origin", `HEAD:refs/heads/${s.branch}`); } catch (e) { die(`can't push ${s.branch} to origin: ${gitError(e)}`, 1); }
 const stopped = ["needs-human", "failed"].includes(s.stage);  // not suspended, which resume carries on to the PR stage
 if (!pr) {
   const made = gh("-X", "POST", `repos/${repo}/pulls`, "-f", `title=${title}`, "-f", `head=${s.branch}`, "-f", `base=${s.target_branch}`, "-F", `draft=${stopped}`, "-f", `body=${body}`);

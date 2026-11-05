@@ -772,7 +772,7 @@ async function mobile(P) {
 // alone. Each new command is proven in wt first, one that fails is left out, and a new app's pinned directory joins the
 // list. The recipe is committed on wt's branch, and a run's worktree keeps what was added and left out in its run dir's
 // redetect.json, for the PR.
-async function redetect(wt) {
+async function redetect(wt, runDirArg) {
   const file = ".factory/setup.json", recipe = exists(wt, file) ? kept(wt, file) : die(`no ${file} in ${wt}`);
   const since = git(wt, "log", "-1", "--format=%H", "--", file) || die(`${file} isn't committed in ${wt}`);
   const changed = git(wt, "diff", "--name-only", since, "HEAD").split("\n").filter((f) => MANIFEST.test(f));
@@ -806,7 +806,8 @@ async function redetect(wt) {
   const lines = [...added.map((a) => `added  ${a.name}  (${a.type}, ${a.path})`), ...gained.map(([k, c]) => `added  ${k}  \`${c}\``),
     ...left.map(([k, c]) => `left out  ${k}  \`${c}\`: it failed its proof`)];
   for (const l of lines) console.log(l);
-  const runDir = path.join(wt, ".factory", "runs", path.basename(wt)), state = readJson(path.join(runDir, "state.json"));
+  // a ticket's worktree names its run's dir with --run-dir (#81); the run worktree holds its own
+  const runDir = runDirArg || path.join(wt, ".factory", "runs", path.basename(wt)), state = readJson(path.join(runDir, "state.json"));
   if (state && lines.length) {
     const record = path.join(runDir, "redetect.json"), r = readJson(record, { added: [], left_out: {} });
     r.added = [...new Set([...r.added, ...added.map((a) => a.name), ...gained.map(([k]) => k)])];
@@ -849,7 +850,7 @@ switch (cmd) {
   }
   case "redetect": {
     const wt = arg("--worktree", null, argv) || die("redetect --worktree <run worktree>");
-    await redetect(path.resolve(wt));
+    await redetect(path.resolve(wt), arg("--run-dir", null, argv));
     break;
   }
   case "mobile": {

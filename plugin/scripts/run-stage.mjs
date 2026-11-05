@@ -23,12 +23,14 @@
 //        RESEARCH   NEEDS_CONTEXT: one researcher dispatch answers its question in tickets/NN/context.md
 //        ATTENTION  for the human: a red inherited or environment, BLOCKED: intent_gap or environment, a bad plan after
 //                   the amendment, NEEDS_CONTEXT after the researcher's answer, no evidence, or a setup that failed
-//   run-stage.mjs merge <NN> -> after MERGE: merges factory/<run>/NN into the run branch. When the merge added or changed
+//   run-stage.mjs merge <NN> -> after MERGE: on a GitHub origin, pushes the run branch and factory/<run>/NN and opens the
+//      ticket's PR into the run branch, stacked on the run's own PR (#81), recorded in tickets/NN/pr.json; a push or call
+//      that fails is printed and the merge goes on. It merges factory/<run>/NN into the run branch. When the merge added or changed
 //      an app manifest (lib's MANIFEST) or a lockfile, it runs the recipe's setup in the run worktree, else the package
 //      manager's install (logs/install-NN.log); for a manifest, `setup-factory.mjs redetect` then re-detects and commits
 //      the recipe there. It runs verify --full at the new head, then takes the ticket's apps and database down (run-apps
 //      down --drop there) and removes its worktree and branch. MERGED (the ticket marked done) when the run head is
-//      green; ATTENTION when it's red, when the install or re-detecting fails, or on a conflict, which is aborted and
+//      green, once the run branch is pushed, which GitHub reads as the ticket PR's merge; ATTENTION when it's red, when the install or re-detecting fails, or on a conflict, which is aborted and
 //      leaves everything as it was. Merges of one run wait on each other, and none goes into a run head whose evidence
 //      is red.
 //   run-stage.mjs verify <NN> -> after qa:NN is done: verify --full judges the ticket's worktree again, qa's pinned tests
@@ -51,7 +53,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed, MANIFEST, LOCKFILE, SETTINGS, factoryRules } from "./lib.mjs";
+import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed, githubRepo, ghApi, pushBranch, MANIFEST, LOCKFILE, SETTINGS, factoryRules } from "./lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
@@ -131,10 +133,36 @@ function verdict(s) {
   return ["MERGE", `DONE, and verify --full is green at ${sha.slice(0, 7)}`];
 }
 
+// The ticket's PR into the run branch (#81): the run branch and the ticket's pushed, then the PR opened, or found when
+// an earlier merge attempt opened it. Best effort: no GitHub origin, or a push or call that fails, prints why and leaves
+// the merge as it was, local alone.
+function ticketPr(s) {
+  const repo = githubRepo(ctx.MAIN), file = path.join(dir, "pr.json");
+  if (!repo || readJson(file)) return readJson(file);
+  for (const b of [s.branch, branch]) { const why = pushBranch(ctx.MAIN, b); if (why) return console.log(`ticket PR skipped: ${b} couldn't be pushed: ${why}`), null; }
+  const name = fs.readdirSync(path.join(ctx.runDir, "tickets")).find((f) => f.startsWith(`${n}-`) && f.endsWith(".md")) ?? `${n}.md`;
+  const title = fs.readFileSync(path.join(ctx.runDir, "tickets", name), "utf8").match(/^# (.+)$/m)?.[1].trim() || name.slice(0, -3);
+  const commits = (fs.existsSync(IMPL) ? fs.readFileSync(IMPL, "utf8") : "").split("\n").filter((l) => /^- [0-9a-f]{7,} /.test(l));
+  const body = `Ticket ${n} of run \`${ctx.id}\`, stacked on \`${s.branch}\`, whose own PR goes to \`${s.target_branch || s.base_branch}\`. `
+    + "The factory merges it once verify is green at the merged head; review the run's PR.\n\n"
+    + (commits.length ? `## Commits\n${commits.join("\n")}\n` : "") + (s.ticket_issues?.[n]?.key ? `\nTicket: ${s.ticket_issues[n].key}\n` : "");
+  let r = ghApi("-X", "POST", `repos/${repo}/pulls`, "-f", `title=${title}`, "-f", `head=${branch}`, "-f", `base=${s.branch}`, "-f", `body=${attributed(body, "pr", s)}`);
+  if (!r.ok) {
+    const found = ghApi(`repos/${repo}/pulls?head=${repo.split("/")[0]}:${encodeURIComponent(branch)}&state=open`);
+    if (!found.ok || !found.json?.[0]) return console.log(`ticket PR skipped: GitHub refused it: ${r.message}`), null;
+    r = { json: found.json[0] };
+  }
+  const pr = { repo, number: r.json.number, url: r.json.html_url, head: branch, base: s.branch };
+  fs.writeFileSync(file, JSON.stringify(pr, null, 2) + "\n");
+  console.log(`ticket PR #${pr.number} into ${s.branch}: ${pr.url}`);
+  return pr;
+}
+
 if (cmd === "merge") {
   lock(`${ctx.runDir}.merge.lock`);  // one ticket branch at a time, its verify --full included
   const s = state(), [word, why] = verdict(s);
   if (word !== "MERGE") die(`ticket ${n} isn't ready to merge: ${why}`);
+  const pr = ticketPr(s);
   // Nothing merges into a red run head, so a red after a merge is always one between two green sides.
   const runEv = readJson(path.join(ctx.runDir, "evidence.json")), tip = git(ctx.worktree, "rev-parse", "HEAD");
   if (runEv?.sha === tip && !runEv.green) say("ATTENTION", `the run head is red at ${tip.slice(0, 7)}, so ${branch} isn't merged into it`);
@@ -168,6 +196,12 @@ if (cmd === "merge") {
   const ev = readJson(path.join(ctx.runDir, "evidence.json"));
   if (!ev?.green || ev.sha !== sha) say("ATTENTION", `verify --full is red at the run head ${sha.slice(0, 7)} after merging two green sides${redetected ? " and re-detecting the recipe" : ""}, red_cause ${ev?.red_cause}`);
   if (told(runState("ticket", n, "done")).status) say("ATTENTION", `merged at ${sha.slice(0, 7)} and green, but ticket ${n} couldn't be marked done`);
+  // The push GitHub reads as the ticket PR's merge, since its head is now in the run branch; its branch then goes.
+  if (pr) {
+    const why = pushBranch(ctx.MAIN, s.branch);
+    if (why) console.log(`ticket PR #${pr.number} left open: ${s.branch} couldn't be pushed: ${why}`);
+    else { spawnSync("git", ["push", "-q", "origin", "--delete", branch], { cwd: ctx.MAIN, timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }); console.log(`ticket PR #${pr.number} merged by the push of ${s.branch}`); }
+  }
   say("MERGED", `at ${sha.slice(0, 7)} on ${s.branch}, where verify --full is green`);
 }
 
@@ -338,6 +372,13 @@ const denials = fs.readFileSync(log, "utf8").split("\n").flatMap((l) => { try { 
 if (denials.length) fs.appendFileSync(IMPL, `\nDenied, as the child's result records it:\n${denials.map((x) => `- \`${x.tool_name}: ${x.tool_input?.command ?? x.tool_input?.file_path ?? JSON.stringify(x.tool_input)}\``).join("\n")}\n`);
 if (atUsageLimit(log)) say(...verdict(state()));  // SUSPENDED, unverified and not done
 const { status } = report();
+// A ticket that adds or changes an app's manifest re-detects the recipe in its own worktree first (#81), so verify judges
+// it with the app it added, and what that app lacks (a test script, say) is this ticket's to fix in a round, before it
+// merges. A re-detect that fails is printed, and the merge's own re-detect stops on it.
+if (!["BLOCKED", "NEEDS_CONTEXT"].includes(status) && git(wt, "diff", "--name-only", cut, "HEAD").split("\n").some((f) => MANIFEST.test(f))) {
+  const r = node("setup-factory.mjs", ["redetect", "--worktree", wt, "--run-dir", ctx.runDir]);
+  console.log(`${r.stdout}${r.status ? r.stderr : ""}`.trim());
+}
 if (!["BLOCKED", "NEEDS_CONTEXT"].includes(status)) console.log(node("verify.mjs", ["--full", "--run", ctx.id], { cwd: wt }).stdout.split("\n")[0]);
 if (status) told(runState("done", stage));
 const [word, why] = verdict(state());

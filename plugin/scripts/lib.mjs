@@ -107,7 +107,7 @@ export function freshTip(cwd, branch) {
   try { git(cwd, "merge-base", "--is-ancestor", local, remote); return remote; } catch { return local; }
 }
 
-// A ticket's worktree, .factory/worktrees/<run>-NN/, on its local branch factory/<run>/NN (never pushed).
+// A ticket's worktree, .factory/worktrees/<run>-NN/, on its branch factory/<run>/NN, pushed only for its PR (#81).
 export const ticketWorktree = (main, id, n) => path.join(worktreesDir(main), `${id}-${n}`);
 export const ticketBranch = (id, n) => `factory/${id}/${n}`;
 

@@ -7,7 +7,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { project, sh, write, STUB_SERVER } from "./harness.mjs";
+import { project, sh, write, fakeClis, githubOrigin, STUB_SERVER } from "./harness.mjs";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const PLUGIN = path.join(ROOT, "plugin"), SCRIPTS = path.join(PLUGIN, "scripts");
@@ -179,6 +179,26 @@ function green(t) {
   return r;
 }
 
+test("on a GitHub origin a ticket is its own PR into the run branch, stacked on the run's PR, and the push of the green run head merges it (#81)", (t) => {
+  const r = green(t), remote = githubOrigin(r.p);
+  const pr = path.join(r.fake, "pr.json");
+  fs.writeFileSync(pr, JSON.stringify({ number: 41, html_url: "https://github.com/o/r/pull/41" }));
+  const gh = fakeClis({ gh: [{ match: /^api -X POST repos\/o\/r\/pulls /, file: pr }] });
+  r.env.PATH = gh.bin + path.delimiter + r.env.PATH;
+  const out = r.stage("merge", "01");
+  assert.match(lastLine(out), /^MERGED 01:/);
+  const [call] = gh.calls("gh");
+  const field = (k) => call.find((a) => a.startsWith(`${k}=`))?.slice(k.length + 1);
+  assert.deepEqual([field("head"), field("base"), field("title")], [r.branch, "feature/csv-export", "01: CSV export"]);
+  assert.match(field("body"), /^Ticket 01 of run `[^`]+`, stacked on `feature\/csv-export`, whose own PR goes to `main`\./);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(r.tickets, "pr.json"), "utf8")),
+    { repo: "o/r", number: 41, url: "https://github.com/o/r/pull/41", head: r.branch, base: "feature/csv-export" });
+  assert.match(out.stdout, /^ticket PR #41 merged by the push of feature\/csv-export$/m);
+  const head = git(r.s.worktree, "rev-parse", "HEAD");
+  assert.equal(sh(remote, "git", ["rev-parse", "refs/heads/feature/csv-export"]), head, "the green run head is on origin");
+  assert.equal(sh(remote, "git", ["for-each-ref", `refs/heads/${r.branch}`]), "", "the ticket's branch is gone from origin");
+});
+
 test("merge takes only a MERGE ticket into the run branch, runs verify --full at the new head, removes the ticket's worktree and branch, and marks it done", (t) => {
   const early = ticketReady(t);
   const refused = early.stage("merge", "01");
@@ -215,21 +235,22 @@ test("a merge that conflicts is aborted and left as it was, and a run head that 
   assert.match(fs.readFileSync(path.join(red.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: in-progress$/m, "the ticket isn't done");
 });
 
-test("a merged ticket that adds an app runs the recipe's setup in the run worktree, then re-detects the recipe on the run branch before verify, leaving out a script that fails its proof, which the PR lists; one that changes no manifest commits nothing", (t) => {
+test("a ticket that adds an app re-detects the recipe in its own worktree before its verify (#81), leaving out a script that fails its proof, which the PR lists, and its merge runs the recipe's setup in the run worktree; one that changes no manifest commits nothing", (t) => {
   const r = ticketReady(t);
   // its test passes only where the recipe's setup ran: in the run worktree, that's the merge's, before the proof
   const api = { name: "api", scripts: { test: "test -f ../../.deps", lint: "node -e 'process.exit(1)'" }, dependencies: { fastify: "4.0.0" } };
   r.play([{ files: { "csv.js": "1\n", "package.json": JSON.stringify({ ...JSON.parse(PACKAGE), workspaces: ["apps/*"] }), "apps/api/package.json": JSON.stringify(api) },
     commit: "Add the API", write: { [r.impl]: report("DONE") } }]);
-  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
+  const implemented = r.stage("implement", "01");
+  assert.match(lastLine(implemented), /^MERGE 01:/);
+  assert.match(implemented.stdout, /^added +api +\(backend, apps\/api\)$/m);
+  assert.match(implemented.stdout, /^left out +api\.lint +`npm run lint`: it failed its proof$/m);
+  assert.equal(git(r.wt, "log", "-1", "--format=%s"), "factory(run): re-detect the recipe", "committed on the ticket's branch");
   const ticketHead = git(r.wt, "rev-parse", "HEAD");
   const out = r.stage("merge", "01");
   const head = git(r.s.worktree, "rev-parse", "HEAD");
   assert.equal(lastLine(out), `MERGED 01: at ${head.slice(0, 7)} on feature/csv-export, where verify --full is green`);
-  assert.equal(git(r.s.worktree, "rev-parse", "HEAD~1"), ticketHead);
-  assert.equal(git(r.s.worktree, "log", "-1", "--format=%s"), "factory(run): re-detect the recipe", "committed on the run branch");
-  assert.match(out.stdout, /^added +api +\(backend, apps\/api\)$/m);
-  assert.match(out.stdout, /^left out +api\.lint +`npm run lint`: it failed its proof$/m);
+  assert.equal(head, ticketHead, "the merge's own re-detect finds the recipe as the ticket left it");
   const recipe = JSON.parse(git(r.s.worktree, "show", "HEAD:.factory/setup.json"));
   assert.deepEqual(recipe.apps, [RECIPE.apps[0], { name: "api", type: "backend", path: "apps/api", checks: { test: "npm run test" } }]);
   assert.deepEqual([recipe.setup, recipe.pinned], [RECIPE.setup, ["apps/api/e2e"]]);

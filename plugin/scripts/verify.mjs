@@ -178,7 +178,8 @@ for (const app of onlyTest ? [] : recipe.apps || []) {
       ? { status: "skipped", ...NOT_RUN, digest: `${unavailable.join(", ")} not available in .factory/env.local` }
       : needsApps ? withApps(app.name, check, cmd) : execute(appDir(tree, app.name), cmd, `${app.name}-${check}`)) });
   }
-  if (!defs.test) checks.push({ app: app.name, check: "test", cmd: null, status: "fail", ...NOT_RUN, digest: "required check not in recipe" });
+  if (!defs.test) checks.push({ app: app.name, check: "test", cmd: null, status: "fail", ...NOT_RUN,
+    digest: "required check not in recipe: give the app a test script in its manifest (package.json's scripts.test, say), which the recipe's re-detect picks up" });
 }
 // ponytail: the apps go up and down around each pinned test; bring them up once for all if the minutes show it.
 for (const rel of pinnedTests) {
@@ -198,9 +199,11 @@ const failed = checks.filter((c) => c.status === "fail");
 // the base worktree if that ever costs a round.
 const rerun = failed.filter((c) => c.cmd && !c.needs_apps);
 if (rerun.length) atBase(rerun);
-// A check missing from the recipe was missing at the base too: the guard keeps a run from writing the recipe.
+// A check missing from the recipe was missing at the base too, for an app the base's recipe had: the guard keeps a run
+// from writing the recipe. An app the run added (a re-detect, #78) is the run's to give its checks (#81).
+const baseApps = (() => { try { return new Set(JSON.parse(git(tree, "show", `${git(tree, "merge-base", "HEAD", s.base_sha)}:${RECIPE}`)).apps.map((a) => a.name)); } catch { return new Set(); } })();
 const red_cause = green ? null
-  : failed.length ? (failed.every((c) => !c.cmd || c.at_base?.status === "fail") ? "inherited" : "introduced")
+  : failed.length ? (failed.every((c) => (!c.cmd && baseApps.has(c.app)) || c.at_base?.status === "fail") ? "inherited" : "introduced")
   : dirty || !trusted ? "incomplete" : "environment";
 const pinned_only = !green && !dirty && trusted && failed.length > 0 && checks.every((c) => c.status === "pass" || c.pinned);
 // A recipe with a mobile app records the one platform the run verified it on (lib's device): null unless a check of it
