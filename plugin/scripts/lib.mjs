@@ -346,6 +346,9 @@ export function githubRepo(cwd) {
 // has (`gh api graphql`, the one exception, docs/adr/0001; where it's refused they fall back to REST, failing closed):
 // { ok, json, text, message }, text being the body as it came (a job's log isn't JSON) and message
 // GitHub's own words on a refusal (its message, then each error's), else gh's, else why gh didn't start.
+// What installs a worktree's dependencies: the recipe's setup, else its package manager's install, else null. A fresh
+// worktree has none of its own, and the main checkout's, found by walking up, lack whatever the run added.
+export const installOf = (recipe) => recipe?.setup || (recipe?.package_manager && `${recipe.package_manager} install`) || null;
 export function ghApi(...args) {
   const r = spawnSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
   let json = null; try { json = JSON.parse(r.stdout); } catch {}

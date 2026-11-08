@@ -32,6 +32,19 @@ const gh = (...a) => { const r = ghApi(...a); if (!r.ok) die(`GitHub refused ${a
 let pr = readJson(file);
 const save = () => fs.writeFileSync(file, JSON.stringify(pr, null, 2) + "\n");
 const label = (n, names) => gh("-X", "POST", `repos/${repo}/issues/${n}/labels`, ...names.flatMap((l) => ["-f", `labels[]=${l}`]));
+// The PR pr.json records, as GitHub has it now (#81): one a human merged before the run's last commits leaves those
+// commits a PR of their own, and one closed unmerged is the human's to reopen. pr.json may still say draft of either.
+let after = "";
+if (pr && !decision?.merged) {
+  const now = ghApi(`repos/${repo}/pulls/${pr.number}`);
+  if (now.ok && now.json.merged_at) {
+    let carried = false; try { git(ctx.worktree, "merge-base", "--is-ancestor", "HEAD", now.json.head.sha); carried = true; } catch {}
+    if (carried) { console.log(`PR #${pr.number} merged already, with everything on ${s.branch}: nothing to open`); process.exit(0); }
+    console.log(`PR #${pr.number} was merged before the run's last commits, so they get a PR of their own`);
+    after = `#${pr.number} merged before these commits of the run, so this PR carries them.\n\n`;
+    pr = null;
+  } else if (now.ok && now.json.state === "closed") die(`PR #${pr.number} was closed unmerged: reopening it is the human's call`, 1);
+}
 
 // A PR the factory merged is never pushed to again: GitHub may have deleted its branch on merge. Before the run's PR
 // exists, the branch on origin is only the base its ticket PRs merged into (#81), which the review's rebase rewrote, so it
@@ -42,7 +55,7 @@ const force = pr ? [] : [`--force-with-lease=refs/heads/${s.branch}:${seen}`];
 if (!decision?.merged) try { git(ctx.worktree, "push", "-q", ...force, "origin", `HEAD:refs/heads/${s.branch}`); } catch (e) { die(`can't push ${s.branch} to origin: ${gitError(e)}`, 1); }
 const stopped = ["needs-human", "failed"].includes(s.stage);  // not suspended, which resume carries on to the PR stage
 if (!pr) {
-  const made = gh("-X", "POST", `repos/${repo}/pulls`, "-f", `title=${title}`, "-f", `head=${s.branch}`, "-f", `base=${s.target_branch}`, "-F", `draft=${stopped}`, "-f", `body=${body}`);
+  const made = gh("-X", "POST", `repos/${repo}/pulls`, "-f", `title=${title}`, "-f", `head=${s.branch}`, "-f", `base=${s.target_branch}`, "-F", `draft=${stopped}`, "-f", `body=${after}${body}`);
   pr = { repo, number: made.number, url: made.html_url, head: s.branch, base: s.target_branch, draft: stopped, labels: [], comments: [] };
   save();
   console.log(`PR #${pr.number} opened${stopped ? " as a draft" : ""}: ${pr.url}`);

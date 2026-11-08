@@ -61,7 +61,7 @@ When the run will use the tracker (`tracker` in `.factory/config.json` isn't `lo
 
 Every `run-state dispatch <stage>` that starts a stage (not the `--agent` call that follows it) first measures the run's spend from the session's transcripts and checks its caps. Its output decides what you do:
 
-- A `WARN` line: print it to the human as it is and carry on. The cap stops the run on its own if it's crossed.
+- A `WARN` line: print it to the human as it is and carry on. The cap stops the run on its own if it's crossed, but for the minute cap, which only warns while the run's tokens can be read (#81): the token and dispatch caps bound what a run costs.
 - Exit 4 with `BUDGET <cap> <used>/<limit>: <stage> not dispatched` lines, then the spend by stage: the stage wasn't dispatched. Write `attention-cap.md`: the headline says which caps were crossed; What happened quotes the `BUDGET` lines and names the stage; the evidence is `<run_dir>/state.json`; the recommendation is to lift the caps, or to abandon the run and split the work when much of it is left; the options are `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-state.mjs override <cap> "<reason>" --run <id>` for every crossed cap, followed by `/factory resume <id>`, as one option, and `/factory abandon <id>`. Print it with the spend lines, run `run-state set stage needs-human --run <id>` and the snapshot after it (see **Ending a run**), and stop.
 
 Only the human lifts a cap. Never run `override` on your own: only on the option the human selected, or their words in this session naming the cap, and then with their reason in their words, else `selected at <the attention item's file name>`. A run with an override never ends `delivered`.

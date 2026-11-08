@@ -32,6 +32,7 @@ if (step.commit) { execFileSync("git", ["add", "--", ...Object.keys(step.files)]
 for (const [f, text] of Object.entries(step.write || {})) fs.writeFileSync(f, text);
 console.log(JSON.stringify({ type: "system", subtype: "init", session_id: session }));
 for (const e of step.print || []) console.log(JSON.stringify({ session_id: session, ...e }));
+if (step.leave) { const { spawn } = require("node:child_process"); const c = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { detached: true, stdio: "ignore" }); c.unref(); fs.writeFileSync(path.join(dir, "left.pid"), String(c.pid)); }
 if (step.hang) { fs.writeFileSync(path.join(dir, "hanging"), ""); Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0); }
 const permission_denials = (step.denied || []).map((command) => ({ tool_name: "Bash", tool_input: { command } }));
 console.log(JSON.stringify({ type: "result", subtype: "success", session_id: session, permission_denials, modelUsage: { [at("--model")]: { inputTokens: 10, outputTokens: 5, cacheCreationInputTokens: 0 } } }));
@@ -138,7 +139,7 @@ test("a crossed cap passes run-state's BUDGET refusal through before any worktre
 
   const failing = ticketReady(t, { recipe: { ...RECIPE, setup: "echo 'npm ERR! missing lockfile'; exit 1" } });
   const out = failing.stage("implement", "01");
-  assert.equal(lastLine(out), "ATTENTION 01: the recipe's setup failed in the ticket's worktree");
+  assert.equal(lastLine(out), "ATTENTION 01: `echo 'npm ERR! missing lockfile'; exit 1` failed in the ticket's worktree");
   assert.match(out.stdout, /npm ERR! missing lockfile\nfull output: .*setup-01\.log/);
   assert.deepEqual([fs.existsSync(failing.wt), branches(failing), failing.calls()], [false, "", []], "the next attempt cuts it again");
 });
@@ -157,6 +158,31 @@ test("verify --full judges the ticket's own worktree and keeps its evidence besi
   assert.equal(fs.readFileSync(where.log, "utf8"), r.wt + "\n", "the checks ran in the ticket's worktree");
   assert.ok(!fs.existsSync(path.join(r.s.run_dir, "evidence.json")), "the run head's evidence is the merge's");
   assert.ok(r.state().stages_done.includes("implement:01"), "a report with a status line is a done stage");
+});
+
+test("what the child left running in its worktree is stopped once it exits, before verify, and nothing else (#81)", async (t) => {
+  const r = ticketReady(t);
+  const elsewhere = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { cwd: r.p.dir, detached: true, stdio: "ignore" });
+  t.after(() => { try { process.kill(elsewhere.pid, "SIGKILL"); } catch {} });
+  r.play([{ ...CSV, leave: true, write: { [r.impl]: report("DONE") } }]);
+  const out = r.stage("implement", "01");
+  const left = Number(fs.readFileSync(path.join(r.fake, "left.pid"), "utf8"));
+  t.after(() => { try { process.kill(left, "SIGKILL"); } catch {} });
+  assert.match(out.stdout, new RegExp(`^stopped what the child left running in its worktree: pid ${left}$`, "m"));
+  await new Promise((done) => setTimeout(done, 200));
+  const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+  assert.ok(!alive(left), "the server the child started in its worktree");
+  assert.ok(alive(elsewhere.pid), "a process outside the worktree is left alone");
+  assert.match(lastLine(out), /^MERGE 01: /);
+});
+
+test("with no setup in the recipe, a ticket's worktree gets its package manager's install, so verify judges the ticket and not a missing install (#81)", (t) => {
+  const r = ticketReady(t, { recipe: { ...RECIPE, setup: undefined, package_manager: "npm" } });
+  const bin = r.env.PATH.split(path.delimiter)[0];  // the fake claude's
+  fs.writeFileSync(path.join(bin, "npm"), `#!/bin/sh\n[ "$1" = install ] && echo "$PWD" > "${r.fake}/npm-install" && exit 0\nexec "${process.execPath}" -e "process.exit(require('node:fs').existsSync('csv.js') ? 0 : 1)"\n`, { mode: 0o755 });
+  r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }]);
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01: /);
+  assert.equal(fs.readFileSync(path.join(r.fake, "npm-install"), "utf8").trim(), fs.realpathSync(r.wt), "installed in the ticket's worktree");
 });
 
 test("a report with no status line, a named concern and a red the ticket introduced each go round again; a red the base had too is the human's", (t) => {
@@ -285,12 +311,12 @@ test("a ticket that adds an app re-detects the recipe in its own worktree before
 
 test("a merged lockfile installs the run worktree's dependencies with the package manager when the recipe has no setup, a failed install stops for the human, and a merge touching neither installs nothing", (t) => {
   const { setup, ...noSetup } = RECIPE;
-  // a fake pnpm, first on the ticket's PATH, recording each call's argv and cwd and exiting `status`
+  // a fake pnpm, first on the ticket's PATH, recording each call's argv and cwd and exiting `status` in the run worktree
   const ready = (status = 0) => {
     const r = ticketReady(t, { recipe: { ...noSetup, package_manager: "pnpm" } });
     fs.writeFileSync(path.join(r.env.PATH.split(path.delimiter)[0], "pnpm"), `#!${process.execPath}
 require("node:fs").appendFileSync(${JSON.stringify(path.join(r.fake, "pnpm.jsonl"))}, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd() }) + "\\n");
-console.log("ERR_PNPM_OUTDATED_LOCKFILE"); process.exitCode = ${status};
+console.log("ERR_PNPM_OUTDATED_LOCKFILE"); process.exitCode = process.cwd() === ${JSON.stringify(fs.realpathSync(r.s.worktree))} ? ${status} : 0;
 `, { mode: 0o755 });
     const pnpm = () => { try { return fs.readFileSync(path.join(r.fake, "pnpm.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)); } catch { return []; } };
     return { ...r, pnpm };
@@ -301,7 +327,8 @@ console.log("ERR_PNPM_OUTDATED_LOCKFILE"); process.exitCode = ${status};
   r.play([{ ...LOCKED, write: { [r.impl]: report("DONE") } }]);
   assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
   assert.match(lastLine(r.stage("merge", "01")), /^MERGED 01:/);
-  assert.deepEqual(r.pnpm(), [{ argv: ["install"], cwd: r.s.worktree }], "once, in the run worktree");
+  assert.deepEqual(r.pnpm(), [{ argv: ["install"], cwd: r.wt }, { argv: ["install"], cwd: r.s.worktree }],
+    "in the ticket's new worktree (#81), then once in the run worktree");
 
   const failing = ready(1);
   failing.play([{ ...LOCKED, write: { [failing.impl]: report("DONE") } }]);
@@ -314,7 +341,7 @@ console.log("ERR_PNPM_OUTDATED_LOCKFILE"); process.exitCode = ${status};
   plain.play([{ ...CSV, write: { [plain.impl]: report("DONE") } }]);
   assert.match(lastLine(plain.stage("implement", "01")), /^MERGE 01:/);
   assert.match(lastLine(plain.stage("merge", "01")), /^MERGED 01:/);
-  assert.deepEqual(plain.pnpm(), []);
+  assert.deepEqual(plain.pnpm(), [{ argv: ["install"], cwd: plain.wt }], "none in the run worktree");
 });
 
 // An attempt that commits csv.js with index.js broken by `word`, so each word fails the typecheck its own way.

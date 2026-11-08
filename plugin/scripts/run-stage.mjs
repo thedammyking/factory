@@ -53,7 +53,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed, githubRepo, ghApi, pushBranch, MANIFEST, LOCKFILE, SETTINGS, factoryRules } from "./lib.mjs";
+import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ticketBranch, events, atUsageLimit, lock, attributed, githubRepo, ghApi, pushBranch, installOf, MANIFEST, LOCKFILE, SETTINGS, factoryRules } from "./lib.mjs";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
@@ -87,13 +87,33 @@ const managers = (rules) => [...new Set(rules.map((r) => r.match(/^Bash\((npm|pn
 const denylist = () => managers(allowlist()).flatMap((pm) => ["publish", "unpublish", "-r publish", "--recursive publish", "--workspaces publish", "-ws publish", "npm publish"]
   .map((c) => `Bash(${pm} ${c}:*)`)).concat(managers(allowlist()).includes("npm") ? ["dist-tag", "deprecate", "owner", "token", "access"].map((c) => `Bash(npm ${c}:*)`) : []);
 const config = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {});
-const node = (script, args, opts) => spawnSync(process.execPath, [path.join(HERE, script), ...args], { encoding: "utf8", ...opts });
+// From the main checkout, never this process's cwd, which a merge may have just removed (a ticket's worktree, #81).
+const node = (script, args, opts) => spawnSync(process.execPath, [path.join(HERE, script), ...args], { encoding: "utf8", cwd: ctx.MAIN, ...opts });
 const runState = (...args) => node("run-state.mjs", [...args, "--run", ctx.id]);
 const told = (r) => { if (r.status) console.log(`${r.stdout}${r.stderr}`.trim()); return r; };  // a run-state refusal, printed
 const state = () => readJson(ctx.state);
 const say = (word, why) => { console.log(`${word} ${n}: ${why}`); process.exit(0); };
 const die = (msg) => { console.error(`run-stage: ${msg}`); process.exit(2); };
 const head = () => fs.existsSync(wt) ? git(wt, "rev-parse", "HEAD") : null;
+// What a child left running in its worktree once it exits (#81), such as a server it started and never stopped, which
+// would hold the ticket's ports through verify: every process whose working directory is inside `dir`, but this one and
+// its ancestors, gets SIGTERM. Nothing outside the factory's own worktree is touched. Prints what it stopped.
+function sweep(dir) {
+  const real = fs.realpathSync(dir), inside = (p) => p === real || p.startsWith(real + path.sep), mine = new Set();
+  for (let p = process.pid; p > 1 && !mine.has(p);) { mine.add(p); p = Number(spawnSync("ps", ["-o", "ppid=", "-p", String(p)], { encoding: "utf8" }).stdout?.trim()) || 0; }
+  const found = [];
+  if (fs.existsSync("/proc/self/cwd")) {
+    for (const d of fs.readdirSync("/proc").filter((d) => /^\d+$/.test(d))) { try { if (inside(fs.readlinkSync(`/proc/${d}/cwd`))) found.push(Number(d)); } catch {} }
+  } else {
+    let pid;
+    for (const l of (spawnSync("lsof", ["-d", "cwd", "-F", "pn"], { encoding: "utf8", maxBuffer: 1 << 26 }).stdout || "").split("\n")) {
+      if (l[0] === "p") pid = Number(l.slice(1)); else if (l[0] === "n" && inside(l.slice(1))) found.push(pid);
+    }
+  }
+  const left = [...new Set(found)].filter((p) => p && !mine.has(p));
+  for (const p of left) { try { process.kill(p, "SIGTERM"); } catch {} }
+  if (left.length) console.log(`stopped what the child left running in its worktree: pid ${left.join(", ")}`);
+}
 // The recipe's setup, or an install, under bash in cwd with lib's runEnv and its output saved to log. One that fails
 // prints the digest of its output and returns false.
 function runSetup(cwd, command, log) {
@@ -191,7 +211,7 @@ if (cmd === "merge") {
   // the recipe's setup, else its package manager's install: the run worktree has no dependencies of its own, and the
   // main checkout's it finds by walking up lack the ticket's (in an empty repo, there are none).
   const touched = git(ctx.worktree, "diff", "--name-only", tip, "HEAD").split("\n"), recipe = readJson(path.join(ctx.worktree, ".factory", "setup.json"), {});
-  const install = touched.some((f) => MANIFEST.test(f) || LOCKFILE.test(f)) && (recipe.setup || (recipe.package_manager && `${recipe.package_manager} install`));
+  const install = touched.some((f) => MANIFEST.test(f) || LOCKFILE.test(f)) && installOf(recipe);
   if (install && !runSetup(ctx.worktree, install, path.join(ctx.runDir, "logs", `install-${n}.log`))) {
     say("ATTENTION", `merged ${branch}, but \`${install}\` failed in the run worktree, as printed above, so verify didn't run`);
   }
@@ -283,6 +303,7 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   child.stdin.end(last ? `${message}\n` : `${lines.join("\n")}\n\n${message}\n`);
   told(runState("dispatch", cmd, "--log", log, "--pid", String(child.pid), "--session", session));
   await exited;
+  sweep(ctx.worktree);
 
   const denials = fs.readFileSync(log, "utf8").split("\n").flatMap((l) => { try { const e = JSON.parse(l); return e.type === "result" ? e.permission_denials || [] : []; } catch { return []; } });
   if (denials.length) fs.appendFileSync(REPORT, `\nDenied, as the child's result records it:\n${denials.map((x) => `- \`${x.tool_name}: ${x.tool_input?.command ?? x.tool_input?.file_path ?? JSON.stringify(x.tool_input)}\``).join("\n")}\n`);
@@ -337,11 +358,12 @@ if (!fs.existsSync(wt)) {
   const unmade = (e) => say("ATTENTION", `the ticket's worktree couldn't be made: ${gitError(e)}`);
   try { git(ctx.MAIN, "branch", branch, cut); } catch (e) { unmade(e); }
   try { git(ctx.MAIN, "worktree", "add", "-q", wt, branch); } catch (e) { try { git(ctx.MAIN, "branch", "-q", "-D", branch); } catch {} unmade(e); }
-  const setup = readJson(path.join(wt, ".factory", "setup.json"), {}).setup;
+  // Every app's dependencies, so verify judges the ticket and not a missing install (#81).
+  const setup = installOf(readJson(path.join(wt, ".factory", "setup.json"), {}));
   if (setup && !runSetup(wt, setup, path.join(ctx.runDir, "logs", `setup-${n}.log`))) {
     // Nothing is committed yet, so the next attempt cuts the worktree again and reruns the setup.
     git(ctx.MAIN, "worktree", "remove", "--force", wt); git(ctx.MAIN, "branch", "-q", "-D", branch);
-    say("ATTENTION", "the recipe's setup failed in the ticket's worktree");
+    say("ATTENTION", `\`${setup}\` failed in the ticket's worktree`);
   }
 }
 
@@ -380,6 +402,7 @@ if (!child.pid) say("ATTENTION", `claude couldn't start: ${(await exited)?.messa
 child.stdin.end(fresh ? `${lines.join("\n")}\n\n${message()}\n` : `${retry}${message()}\n`);
 told(runState("dispatch", stage, "--log", log, "--pid", String(child.pid), "--session", session));
 await exited;
+sweep(wt);
 
 // The child is judged by what it left, never by its exit code: a child out of turns exits 1 (docs/platform-facts.md).
 // What Claude Code denied it is copied into its report from its result, so a stop names what to allow even when the

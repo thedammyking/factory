@@ -1,6 +1,6 @@
 # PR and the merge decision
 
-`references/review.md` sends you here when synthesis says `ship`: the run has reached the PR stage. Scripts render the PR, open it and decide it, for no tokens. You write no word of the PR, and the decision is `merge-decision.mjs`'s, computed from facts, never yours. The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<script> --run <id>`, written out in full, and print what it prints.
+`references/review.md` sends you here when synthesis says `ship`, or when the review's rounds are spent with no P0 open: the run has reached the PR stage. Scripts render the PR, open it and decide it, for no tokens. You write no word of the PR, and the decision is `merge-decision.mjs`'s, computed from facts, never yours. The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<script> --run <id>`, written out in full, and print what it prints.
 
 1. **Render.** `pr-render.mjs` writes `pr.md`.
 2. **Open.** `pr-open.mjs` pushes the run branch and opens the PR ready, labelled `factory`. On a hotfix lane it also opens the back-merge PR into `develop`. When the run has a request issue, `run-state track --run <id>` then moves it to `in-pr` (**Phase** in `references/tracker.md`).

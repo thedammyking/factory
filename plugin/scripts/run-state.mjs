@@ -388,8 +388,9 @@ function measure(ctx, s) {
   }
   for (const [stage, tokens] of children.values()) by_stage[stage].tokens += tokens;
   const tokens = sum(Object.values(by_stage).map((x) => x.tokens));
-  // tokens_at_pr: the total when pr.json was first seen; what is spent after it is the post-PR allowance's.
-  const pr = s.spend?.tokens_at_pr ?? (fs.existsSync(path.join(ctx.runDir, "pr.json")) ? tokens : undefined);
+  // tokens_at_pr: the total when a ready pr.json was first seen; what is spent after it is the post-PR allowance's. A draft
+  // is a stopped run's (#81): the review it carries on with is still the tokens cap's.
+  const opened = readJson(path.join(ctx.runDir, "pr.json")), pr = s.spend?.tokens_at_pr ?? (opened && !opened.draft ? tokens : undefined);
   s.spend = { tokens, ...(pr !== undefined && { tokens_at_pr: pr }), by_stage, ...(!read && { unread: true }) };
 }
 // A session's transcript, <config dir>/projects/<folder>/<session>.jsonl, or undefined when there is none here.
@@ -859,7 +860,11 @@ switch (cmd) {
       const warned = s.warned ||= {}, crossed = [];
       for (const [name, used, limit] of caps(ctx, s)) {
         if (s.overrides?.[name]) continue;
-        if (used >= limit) crossed.push(`BUDGET ${name} ${used}/${limit}: ${stage} not dispatched`);
+        // Wall time is a cost only when the tokens can't be read (#81): verify, a mobile build or a slow install spend
+        // minutes, not usage, so a run whose spend is read only hears of its minutes.
+        if (used >= limit && name === "minutes" && !s.spend.unread) {
+          if (warned.over_minutes !== limit) { warned.over_minutes = limit; console.log(`WARN minutes ${used}/${limit}: past the minute cap, which stops a run only when its tokens can't be read`); }
+        } else if (used >= limit) crossed.push(`BUDGET ${name} ${used}/${limit}: ${stage} not dispatched`);
         // once per cap and limit: a cap that scales with the ticket count can warn again
         else if (used >= 0.7 * limit && warned[name] !== limit) { warned[name] = limit; console.log(`WARN 70% of the ${name} cap: ${used}/${limit}`); }
       }

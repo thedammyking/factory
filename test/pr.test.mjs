@@ -527,6 +527,33 @@ test("pr-open opens the PR ready at the PR stage, over REST only: the branch pus
   assert.deepEqual([pr.repo, pr.number, pr.url, pr.head, pr.base, pr.draft, pr.labels], ["o/r", 7, "https://github.com/o/r/pull/7", "feature/signup", "main", false, ["factory"]]);
 });
 
+test("pr-open reads the recorded PR first: merged by hand with all of the branch, nothing to do; before the run's last commits, they get a PR of their own; closed unmerged, the human's (#81)", () => {
+  const r = ready(), pr7 = (change) => write(r.s.run_dir, { "../pr7.json": JSON.stringify({ number: 7, draft: true, state: "closed", base: { ref: "main" }, head: { ref: "feature/signup", sha: r.head() }, ...change }) });
+  render(r);
+  pr7({ merged_at: "2026-11-07T21:44:54Z" });
+  let res = open(r);
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  assert.equal(res.stdout.trim(), "PR #7 merged already, with everything on feature/signup: nothing to open");
+  assert.deepEqual(posts(r, "pulls"), [], "no push, no PR");
+
+  pr7({ merged_at: "2026-11-07T21:44:54Z" });
+  r.s.commit({ "src/signup.js": "export const signup = () => 'Welcome back';\n" }, "Fix the review's finding");
+  write(r.s.run_dir, { "../created.json": JSON.stringify({ number: 9, html_url: "https://github.com/o/r/pull/9" }) });
+  res = open(r);
+  assert.equal(res.status, 0, res.stderr + res.stdout);
+  assert.match(res.stdout, /^PR #7 was merged before the run's last commits, so they get a PR of their own\nPR #9 opened: /);
+  assert.match(flag(posts(r, "POST repos/o/r/pulls$")[0], "-f")[3], /^body=#7 merged before these commits of the run, so this PR carries them\.\n\n/);
+  assert.equal(r.read("pr.json").number, 9);
+
+  r.put("pr.json", { number: 7 });
+  pr7({ merged_at: null });
+  const before = posts(r, "pulls").length;
+  res = open(r);
+  assert.equal(res.status, 1);
+  assert.match(res.stderr, /PR #7 was closed unmerged: reopening it is the human's call/);
+  assert.equal(posts(r, "pulls").length, before, "nothing opened over the human's close");
+});
+
 test("pr-open opens a stopped run's PR as a draft carrying its attention item, labelled needs-human", () => {
   const r = ready();
   fs.rmSync(path.join(r.s.run_dir, "pr.json"));

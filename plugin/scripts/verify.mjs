@@ -37,7 +37,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, worktreesDir, runContext, runEnv, digest, fill, device, NO_DEVICE } from "./lib.mjs";
+import { readJson, arg, git, worktreesDir, runContext, runEnv, digest, fill, device, NO_DEVICE, installOf } from "./lib.mjs";
 
 const mode = ["fast", "full", "pinned"].find((m) => process.argv.includes(`--${m}`));
 if (!mode) { console.error("verify: usage: verify.mjs --fast | --full | --pinned <path> [--run <id>]"); process.exit(2); }
@@ -74,14 +74,16 @@ function execute(cwd, cmd, name, cmdEnv = env) {
 }
 
 // Each failing check's result at the commit the run branched from, the base's merge-base with HEAD, as c.at_base.
-// Nothing is recorded when there's no merge-base, its worktree can't be made, or the recipe's setup fails there.
+// Nothing is recorded when there's no merge-base, its worktree can't be made, or its install fails there: a check that
+// can't run at the base proves nothing about it.
 // ponytail: reruns the failing checks at the base on every red, --fast too; cache by base commit if it shows in the minutes.
 function atBase(failing) {
   let sha; try { sha = git(tree, "merge-base", "HEAD", `refs/heads/${s.base_branch}`); } catch { return; }
   const wt = fs.mkdtempSync(path.join(worktreesDir(ctx.MAIN), ".at-base-"));
   try { git(ctx.MAIN, "worktree", "add", "-q", "--detach", wt, sha); } catch { fs.rmSync(wt, { recursive: true, force: true }); return; }
   try {
-    if (recipe.setup && execute(wt, recipe.setup, "setup.at-base").status === "fail") return;
+    const install = installOf(recipe);
+    if (install && execute(wt, install, "setup.at-base").status === "fail") return;
     for (const c of failing) c.at_base = execute(appDir(wt, c.app), c.cmd, `${c.app}-${c.check}.at-base`);
   } finally { git(ctx.MAIN, "worktree", "remove", "--force", wt); }
 }

@@ -59,6 +59,8 @@ export async function signIn(page) {
 
 Commit each file as soon as it's written, before its first run, and every later change to it: `git -C {worktree} add -- <path>`, then `git -C {worktree} commit -m "<what it pins>"`. Stage by path, never with `-A`, `.` or `commit -a`. Every test you write is committed, passing or failing.
 
+Your tests are code the app's own checks read too, so a lint or type error in one turns the ticket red with nobody but you able to fix it. Before you return, run `(cd {worktree} && node ${CLAUDE_PLUGIN_ROOT}/scripts/verify.mjs --fast)` and fix what its typecheck and lint say of your files (the form: an unawaited promise, an unused import), never an expected value, committing as above. A failure in a file that isn't yours isn't yours to fix: leave it.
+
 ## Rule
 
 When `{evidence}` has failing checks marked `"pinned": true`, rule on each before you walk. Run it again (below), read the criterion its title names in the spec its header names, and judge it against the current `{run_dir}/spec.md`:

@@ -559,12 +559,15 @@ test("fix 12: override records who lifted which cap and why, later checks honour
   age(s, 91);
   const refused = run("dispatch", "answer");
   assert.equal(refused.status, 4);
-  assert.deepEqual(refused.stdout.match(/^BUDGET .*$/gm), ["BUDGET minutes 91/90: answer not dispatched", "BUDGET tokens 49845/40000: answer not dispatched"]);
+  assert.deepEqual(refused.stdout.match(/^BUDGET .*$/gm), ["BUDGET tokens 49845/40000: answer not dispatched"], "with its tokens read, the minutes only warn (#81)");
+  assert.match(refused.stdout, /^WARN minutes 91\/90: past the minute cap, which stops a run only when its tokens can't be read$/m);
   assert.equal(run("override", "tokens").status, 2, "an override needs a reason");
   assert.equal(run("override", "budget", "why not").status, 2, "and a cap");
   const minutes = run("override", "minutes", "the spec grew");
   assert.equal(minutes.status, 0, minutes.stderr);
-  assert.deepEqual(run("dispatch", "answer").stdout.match(/^BUDGET .*$/gm), ["BUDGET tokens 49845/40000: answer not dispatched"]);
+  const still = run("dispatch", "answer").stdout;
+  assert.deepEqual(still.match(/^BUDGET .*$/gm), ["BUDGET tokens 49845/40000: answer not dispatched"]);
+  assert.doesNotMatch(still, /WARN minutes/, "lifted, it stops warning");
   run("override", "tokens", "the spec grew");
   for (const stage of ["answer", "review", "pr", "ci"]) assert.equal(run("dispatch", stage).status, 0, stage);
   const st = stateOf(p, s, c.env);

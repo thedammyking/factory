@@ -14,7 +14,7 @@ import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { readJson, git, gitError, runContext, liveBase, pause, ghApi, shellQuote as q, attentionItem, attributed, runEnv, LOCKFILE } from "./lib.mjs";
+import { readJson, git, gitError, runContext, liveBase, pause, ghApi, shellQuote as q, attentionItem, attributed, runEnv, installOf, LOCKFILE } from "./lib.mjs";
 
 const mode = process.argv[2];
 const die = (msg) => { console.error(`sync-base: ${msg}`); process.exit(2); };
@@ -63,7 +63,7 @@ function throughLockfiles(cmd) {
       if (r.status !== 0 && !unmerged().length) return false;
     }
   } catch { return false; }
-  const recipe = readJson(path.join(wt, ".factory", "setup.json"), {}), install = recipe.setup || (recipe.package_manager && `${recipe.package_manager} install`);
+  const recipe = readJson(path.join(wt, ".factory", "setup.json"), {}), install = installOf(recipe);
   if (install) {
     const r = spawnSync("bash", ["-c", install], { cwd: wt, env: runEnv(ctx.MAIN), encoding: "utf8", timeout: 10 * 60_000 });
     const changed = git(wt, "diff", "--name-only").split("\n").filter((f) => LOCKFILE.test(f));
