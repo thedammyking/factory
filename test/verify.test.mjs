@@ -342,6 +342,48 @@ test("fix 4: a pinned test named <run>-<NN>-<slug>.<profile>.<ext> runs with the
   assert.equal(one.status, 0, one.stdout + one.stderr);
 });
 
+// A pinned test that appends its profile and the pid of the app it reached to $SEEN.
+const PINNED_SEEN = 'import { test } from "node:test";\nimport fs from "node:fs";\n'
+  + 'test("[r1] SC-001: the app answers", async () => {\n  const { pid } = await (await fetch(`${process.env.BASE_URL}/`)).json();\n'
+  + '  fs.appendFileSync(process.env.SEEN, `${process.env.FACTORY_PROFILE} ${pid}\\n`);\n});\n';
+
+test("verify --full brings the apps up once per profile for all of its pinned tests, and down before the next, keeping the tests' order in the evidence", (t) => {
+  const seen = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "factory-seen-")), "seen");
+  const p = withApps(t, { ...API(), profiles: { slow: { api: { MODE: "slow" } } } }, {
+    "e2e/r1-01-a.test.mjs": PINNED_SEEN, "e2e/r1-01-b.slow.test.mjs": PINNED_SEEN, "e2e/r1-01-c.test.mjs": PINNED_SEEN }, { SEEN: seen });
+  const r = p.verify("--full");
+  assert.equal(r.status, 0, r.stdout);
+  assert.deepEqual(statuses(r.evidence), ["api/test=pass", "api/e2e/r1-01-a.test.mjs=pass", "api/e2e/r1-01-b.slow.test.mjs=pass", "api/e2e/r1-01-c.test.mjs=pass"]);
+  const [a, c, b] = fs.readFileSync(seen, "utf8").trim().split("\n").map((l) => l.split(" "));
+  assert.deepEqual([a[0], c[0], b[0]], ["default", "default", "slow"], "a profile's tests run together");
+  assert.equal(a[1], c[1], "one stack for both default tests");
+  assert.notEqual(b[1], a[1], "a stack of its own for the slow profile");
+  for (const [, pid] of [a, b]) assert.ok(!alive(Number(pid)), `${pid} went down`);
+  assert.deepEqual(JSON.parse(fs.readFileSync(path.join(p.s.run_dir, "apps.json"), "utf8")).apps, {});
+});
+
+test("a mobile app is built and put on the device only for a profile whose pinned tests include one of its own", (t) => {
+  const d = fakeDevice(t);
+  const p = withApps(t, { apps: [API().apps[0], { ...MOBILE_APP, path: "mobile" }], pinned: ["e2e", "mobile/.maestro"] },
+    { "e2e/r1-01-total.test.mjs": PINNED_OK, "mobile/.keep": "", ".gitignore": ".factory/runs/\n.factory/worktrees/\n.factory/env.local\nbuild/\n" },
+    { FACTORY_IOS_DEVICE: DEVICES.ios.udid });
+  const r = p.verify("--full", d.env);
+  assert.equal(r.status, 0, r.stdout);
+  assert.deepEqual(statuses(r.evidence), ["api/test=pass", "mobile/test=pass", "api/e2e/r1-01-total.test.mjs=pass"]);
+  for (const cli of ["xcrun", "maestro"]) assert.deepEqual(d.calls(cli), [], `${cli}: an API test never takes the device`);
+  assert.ok(!fs.existsSync(path.join(p.s.run_dir, "logs/mobile.build.log")), "nor builds the mobile app");
+  assert.equal(r.evidence.platform, null);
+
+  fs.mkdirSync(path.join(p.wt, "mobile/.maestro"));
+  fs.writeFileSync(path.join(p.wt, "mobile/.maestro/r1-01-total-SC-001.yaml"), FLOW(1, "the total shows"));
+  git(p.wt, "add", "."); git(p.wt, "commit", "-qm", "flows");
+  const flows = p.verify("--full", d.env);
+  assert.equal(flows.status, 0, flows.stdout);
+  assert.deepEqual(statuses(flows.evidence).slice(-2), ["api/e2e/r1-01-total.test.mjs=pass", "mobile/mobile/.maestro=pass"]);
+  assert.equal(d.calls("xcrun").filter((c) => c[1] === "install").length, 1, "built and installed once for the API test and the flows");
+  assert.equal(flows.evidence.platform, "ios");
+});
+
 test("a pinned .spec.ts runs with the project's Playwright from the directory of the app that holds it", (t) => {
   const bin = fs.mkdtempSync(path.join(os.tmpdir(), "factory-bin-"));
   fs.writeFileSync(path.join(bin, "npx"), `#!${process.execPath}\nconsole.log(JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), BASE_URL: process.env.BASE_URL }));\n`, { mode: 0o755 });

@@ -1,15 +1,16 @@
 #!/usr/bin/env node
-// run-apps.mjs up [--profile <name>] | down [--drop] | status | shot <name> | look <light|dark> <default|largest> —
+// run-apps.mjs up [--profile <name>] [--skip <app,…>] | down [--drop] | status | shot <name> | look <light|dark> <default|largest> —
 // starts the run worktree's apps on ports of its own, with a database of its own when the recipe can make one, without
 // touching a sibling worktree or the developer's shell, and leaves the developer's device as it found it.
 // Takes --run <id>, or derives the run from the run worktree it runs in. Run in a ticket's worktree, it starts that
 // worktree's apps instead, and keeps its apps.json, logs and captures in tickets/<NN>/ in the run dir (lib's out).
 //   - up starts each app in .factory/setup.json that has a `dev` command, under bash in its path, in a process group of
 //     its own. Its env is lib's runEnv, then the `default` profile's env for it, then the named profile's; a profile
-//     that sets the app to null leaves it stopped. Each app gets a port the OS picks, and {port:<app>} in a dev command,
-//     a health URL or an env value is that port; {db} is the worktree's database. An app is healthy once its health URL
-//     answers, within 2 minutes; one without a health URL fails. Its output is saved to logs/<app>.up.log, and a failing
-//     one prints lib's digest of it.
+//     that sets the app to null leaves it stopped, as does --skip naming it (verify's, for a mobile app no pinned test
+//     of its needs, which then never builds or takes the device). Each app gets a port the OS picks, and {port:<app>}
+//     in a dev command, a health URL or an env value is that port; {db} is the worktree's database. An app is healthy
+//     once its health URL answers, within 2 minutes; one without a health URL fails. Its output is saved to
+//     logs/<app>.up.log, and a failing one prints lib's digest of it.
 //   - An app whose dev command and env take no {port:<app>} keeps its health URL's port; up refuses it while another
 //     process holds that port.
 //   - With the recipe's db.create and db.drop, the worktree's database is factory_<run>, or factory_<run>_<NN> in a
@@ -52,7 +53,7 @@ import { readJson, arg, worktreesDir, runContext, runEnv, digest, fill, device, 
 const cmd = process.argv[2];
 if (!["up", "down", "status", "shot", "look"].includes(cmd) || (cmd === "shot" && !/^[\w-]+$/.test(process.argv[3] ?? ""))
   || (cmd === "look" && !(["light", "dark"].includes(process.argv[3]) && ["default", "largest"].includes(process.argv[4])))) {
-  console.error("run-apps: usage: run-apps.mjs up [--profile <name>] | down [--drop] | status | shot <name> | look <light|dark> <default|largest> [--run <id>]"); process.exit(2);
+  console.error("run-apps: usage: run-apps.mjs up [--profile <name>] [--skip <app,…>] | down [--drop] | status | shot <name> | look <light|dark> <default|largest> [--run <id>]"); process.exit(2);
 }
 const ctx = runContext();
 let recipe; try { recipe = JSON.parse(fs.readFileSync(path.join(ctx.tree, ".factory/setup.json"), "utf8")); } catch (e) {
@@ -324,9 +325,11 @@ async function onDevice(mobiles, target, envFor, failed, exits) {
   }
 }
 
-async function up(profile) {
+async function up(profile, skip) {
   const profiles = recipe.profiles || {};
   if (profile !== "default" && !Object.hasOwn(profiles, profile)) { console.error(`run-apps: no profile ${profile} in the recipe`); process.exit(2); }
+  const unknown = skip.filter((n) => !recipe.apps?.some((a) => a.name === n));
+  if (unknown.length) { console.error(`run-apps: no app ${unknown.join(", ")} in the recipe`); process.exit(2); }
   if (!await down()) process.exit(1);  // a device's settings are never recorded over ones not given back yet
   fs.mkdirSync(logs, { recursive: true });
   const envOf = (a) => ({ ...(profile !== "default" && profiles.default?.[a.name]), ...profiles[profile]?.[a.name] });
@@ -335,11 +338,12 @@ async function up(profile) {
   const fixed = all.filter((a) => a.dev && !JSON.stringify([a.dev, envOf(a)]).includes(`{port:${a.name}}`));
   const ports = await freePorts(all.filter((a) => a.dev).length - fixed.length);
   for (const a of all) record.apps[a.name] = { port: !a.dev ? null : fixed.includes(a) ? portOf(a.health) : ports.pop() };
-  const target = all.some(mobile) ? device(runEnv(ctx.MAIN)) : null;
-  for (const a of all.filter(mobile)) if (!target) console.log(`run-apps: ${a.name} skipped: ${NO_DEVICE}`);
+  const wanted = all.filter((a) => profiles[profile]?.[a.name] !== null && !skip.includes(a.name));
+  const target = wanted.some(mobile) ? device(runEnv(ctx.MAIN)) : null;
+  for (const a of wanted.filter(mobile)) if (!target) console.log(`run-apps: ${a.name} skipped: ${NO_DEVICE}`);
   const envFor = (a) => Object.fromEntries(Object.entries(runEnv(ctx.MAIN, { ...envOf(a), ...(mobile(a) && { FACTORY_PLATFORM: target.platform }) }))
     .filter(([, v]) => v != null).map(([k, v]) => [k, fill(String(v), record)]));
-  const apps = all.filter((a) => profiles[profile]?.[a.name] !== null && (!mobile(a) || target));
+  const apps = wanted.filter((a) => !mobile(a) || target);
   for (const a of all) if (!apps.includes(a)) record.apps[a.name].ok = "skip";
   record.profile = profile;
   const holdLock = apps.length > 0 && ((recipe.db && !pair) || apps.some((a) => fixed.includes(a)));
@@ -382,7 +386,7 @@ async function up(profile) {
   process.exit(Object.keys(failed).length ? 1 : 0);
 }
 
-if (cmd === "up") await up(arg("--profile", "default"));
+if (cmd === "up") await up(arg("--profile", "default"), (arg("--skip") ?? "").split(",").filter(Boolean));
 else if (cmd === "down") {
   const given = await down();
   if (process.argv.includes("--drop") && record.db) {

@@ -478,6 +478,22 @@ test("a mobile build runs under the device lock, and one that fails fails up wit
   assert.ok(!fs.existsSync(p.d.lock), "down releases it");
 });
 
+test("up --skip leaves the apps it names stopped, as a profile's null does, so a skipped mobile app is never built and never takes the device", async (t) => {
+  const p = mobile(t, "ios", { apps: [WEB_API.apps[1], MOBILE({ dev: DEV_SERVER })] });
+  const s = p.start("Show the cart total");
+  let r = await p.apps(s, "up", "--skip", "mobile");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^run-apps up: profile=default api=\S+ mobile=skip$/m);
+  assert.doesNotMatch(r.stdout, /no device/, "a device it never asked for isn't missed");
+  const { apps } = p.recorded(s);
+  assert.ok(!("pid" in apps.mobile), "its dev server isn't started either");
+  assert.deepEqual([p.d.calls("xcrun"), fs.existsSync(path.join(s.run_dir, "logs/mobile.build.log")), fs.existsSync(p.d.lock)], [[], false, false]);
+  assert.ok(await answers(apps.api.url));
+  r = await p.apps(s, "up", "--skip", "mobile,nope");
+  assert.deepEqual([r.status, r.stderr.trim()], [2, "run-apps: no app nope in the recipe"]);
+  assert.ok(await answers(apps.api.url), "an unknown app leaves the apps as they were");
+});
+
 test("a mobile app with no device in .factory/env.local is skipped, and a project without a mobile app never touches a device", async (t) => {
   const d = fakeDevice(t);
   const p = stack(t, { apps: [WEB_API.apps[1], MOBILE()] }, { files: { "mobile/.keep": "" }, cli: d.env });

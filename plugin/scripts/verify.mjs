@@ -6,7 +6,9 @@
 // instead, and writes to tickets/<NN>/ in the run dir.
 //   - --full also runs each pinned test: a file qa named <run>-<NN>-<slug>.test.mjs (node:test) or .spec.ts (Playwright,
 //     the project's own) in one of the recipe's `pinned` directories. Each is a check of its own, marked pinned, run in
-//     the app whose path holds it while the apps are up, with that app's URL as BASE_URL. A test named
+//     the app whose path holds it while the apps are up, with that app's URL as BASE_URL. The apps go up once for all
+//     of a profile's tests and down before the next profile's, a mobile app only when one of them is its own, so an
+//     API test never builds it or takes the device. A test named
 //     <run>-<NN>-<slug>.<profile>.<ext> runs with the apps up in that profile, FACTORY_PROFILE in its env (design fix 4);
 //     a profile the recipe lacks skips it with up's reason. --pinned <path> runs only that test, in the worktree holding
 //     it, wherever it's called from, into evidence-pinned.json.
@@ -56,6 +58,7 @@ const env = runEnv(ctx.MAIN, { FACTORY_BASE: s.base_branch });
 const logs = path.join(out, "logs");
 fs.mkdirSync(logs, { recursive: true });
 const appDir = (root, name) => path.join(root, recipe.apps.find((a) => a.name === name).path || ".");
+const mobiles = (recipe.apps || []).filter((a) => a.type === "mobile").map((a) => a.name);
 const NOT_RUN = { exit: null, seconds: 0, log: null };
 const logOf = (name) => path.join(logs, `${name.replace(/[^\w.-]/g, "_")}${mode === "full" ? "" : `.${mode}`}.log`);
 const RUN_APPS = fileURLToPath(new URL("run-apps.mjs", import.meta.url));
@@ -88,37 +91,43 @@ function atBase(failing) {
   } finally { git(ctx.MAIN, "worktree", "remove", "--force", wt); }
 }
 
-// Runs a check that needs apps between run-apps up and down. A pinned test gets its path, from its app's, as
-// $FACTORY_PINNED, never spliced into the command, its app's URL as BASE_URL, and its profile, the one the apps are
-// up in, as FACTORY_PROFILE.
-function withApps(app, check, cmd, pinnedPath, extra = {}) {
-  const profile = profileOf(pinnedPath ?? ""), up = apps("up", "--profile", profile);
-  try {
-    if (up.status !== 0) {
-      const log = logOf(`${app}-${check}`), output = `run-apps up failed\n${up.stdout}${up.stderr}`;
-      fs.writeFileSync(log, output);
-      return { status: "skipped", ...NOT_RUN, log, digest: digest(output, log) };
-    }
-    const recorded = readJson(path.join(out, "apps.json"));
-    const filled = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, typeof v === "string" ? fill(v, recorded) : v]));
-    const url = recorded?.apps?.[app]?.url;
-    if (pinnedPath) Object.assign(filled, { FACTORY_PINNED: pinnedPath, FACTORY_PROFILE: profile }, url && { BASE_URL: new URL(url).origin }, extra);
-    return execute(appDir(tree, app), fill(cmd, recorded), `${app}-${check}`, filled);
-  } finally {
+// Brings the apps up in `profile`, hands up's result to run, and brings them down after. A mobile app none of
+// `holders`, the apps whose checks run, is left stopped, so it's never built and never takes the device.
+// ponytail: every other app goes up, since a web test reaches the API behind it; name each test's apps in the recipe
+// if starting one a test doesn't need ever shows in the minutes.
+function upFor(profile, holders, run) {
+  const skip = mobiles.filter((m) => !holders.includes(m));
+  const up = apps("up", "--profile", profile, ...(skip.length ? ["--skip", skip.join(",")] : []));
+  try { return run(up); } finally {
     // a down that fails leaves the developer's device unrestored, which the human sees here
     const down = apps("down");
     if (down.status) console.log(`run-apps down failed\n${down.stdout}${down.stderr}`.trim());
   }
 }
 
-// A Maestro check of the flows at `flows` (from its app's path), as withApps runs one, skipped as the environment's
-// with no device or no maestro; a red's digest is its JUnit report's failures, when it wrote one.
-function maestro(app, check, cmd, flows) {
-  const skip = (why) => ({ status: "skipped", ...NOT_RUN, digest: why });
-  if (!device(env)) return skip(NO_DEVICE);
-  if (!maestroVersion) return skip("maestro --version failed: is Maestro installed?");
+// Runs a check that needs apps once upFor's `up` brought them up, skipped with up's output when that failed. A pinned
+// test gets its path, from its app's, as $FACTORY_PINNED, never spliced into the command, its app's URL as BASE_URL,
+// and its profile, the one the apps are up in, as FACTORY_PROFILE.
+function withApps(up, app, check, cmd, pinnedPath, extra = {}) {
+  if (up.status !== 0) {
+    const log = logOf(`${app}-${check}`), output = `run-apps up failed\n${up.stdout}${up.stderr}`;
+    fs.writeFileSync(log, output);
+    return { status: "skipped", ...NOT_RUN, log, digest: digest(output, log) };
+  }
+  const recorded = readJson(path.join(out, "apps.json"));
+  const filled = Object.fromEntries(Object.entries(env).map(([k, v]) => [k, typeof v === "string" ? fill(v, recorded) : v]));
+  const url = recorded?.apps?.[app]?.url;
+  if (pinnedPath) Object.assign(filled, { FACTORY_PINNED: pinnedPath, FACTORY_PROFILE: profileOf(pinnedPath) }, url && { BASE_URL: new URL(url).origin }, extra);
+  return execute(appDir(tree, app), fill(cmd, recorded), `${app}-${check}`, filled);
+}
+
+// A Maestro check of the flows at `flows` (from its app's path), as withApps runs one; a red's digest is its JUnit
+// report's failures, when it wrote one. maestroSkip says why one is skipped as the environment's, never brought up for:
+// no device, or no maestro.
+const maestroSkip = (rel) => isMaestro(rel) && (!device(env) ? NO_DEVICE : !maestroVersion ? "maestro --version failed: is Maestro installed?" : null);
+function maestro(up, app, check, cmd, flows) {
   const junit = logOf(`maestro-${app}`).replace(/\.log$/, ".xml");
-  const c = withApps(app, check, cmd, flows, { FACTORY_JUNIT: junit, MAESTRO_CLI_NO_ANALYTICS: "1" });
+  const c = withApps(up, app, check, cmd, flows, { FACTORY_JUNIT: junit, MAESTRO_CLI_NO_ANALYTICS: "1" });
   const failures = c.status === "fail" ? junitFailures(junit) : [];
   return failures.length ? { ...c, digest: digest(failures.join("\n"), c.log) } : c;
 }
@@ -178,16 +187,28 @@ for (const app of onlyTest ? [] : recipe.apps || []) {
     const needsApps = !!app.needs_apps?.includes(check);
     checks.push({ app: app.name, check, cmd, ...(needsApps && { needs_apps: true }), ...(unavailable.length
       ? { status: "skipped", ...NOT_RUN, digest: `${unavailable.join(", ")} not available in .factory/env.local` }
-      : needsApps ? withApps(app.name, check, cmd) : execute(appDir(tree, app.name), cmd, `${app.name}-${check}`)) });
+      : needsApps ? upFor("default", [app.name], (up) => withApps(up, app.name, check, cmd)) : execute(appDir(tree, app.name), cmd, `${app.name}-${check}`)) });
   }
   if (!defs.test) checks.push({ app: app.name, check: "test", cmd: null, status: "fail", ...NOT_RUN,
     digest: "required check not in recipe: give the app a test script in its manifest (package.json's scripts.test, say), which the recipe's re-detect picks up" });
 }
-// ponytail: the apps go up and down around each pinned test; bring them up once for all if the minutes show it.
+// A profile's pinned tests run with the apps up once for all of them, and down before the next profile's; the
+// evidence keeps the tests' own order.
+const ran = {}, byProfile = {};
+for (const rel of pinnedTests.filter((rel) => holder(rel))) (byProfile[profileOf(rel)] ||= []).push(rel);
+for (const [profile, rels] of Object.entries(byProfile)) {
+  for (const rel of rels) if (maestroSkip(rel)) ran[rel] = { status: "skipped", ...NOT_RUN, digest: maestroSkip(rel) };
+  const live = rels.filter((rel) => !ran[rel]);
+  if (live.length) upFor(profile, live.map((rel) => holder(rel).name), (up) => {
+    for (const rel of live) {
+      const app = holder(rel), flows = path.relative(path.normalize(app.path || "."), rel);
+      ran[rel] = isMaestro(rel) ? maestro(up, app.name, rel, MAESTRO, flows) : withApps(up, app.name, rel, runner(rel), flows);
+    }
+  });
+}
 for (const rel of pinnedTests) {
-  const app = holder(rel), cmd = isMaestro(rel) ? MAESTRO : runner(rel), check = { check: rel, cmd, needs_apps: true, pinned: true };
-  checks.push(app ? { app: app.name, ...check, ...(isMaestro(rel) ? maestro : withApps)(app.name, rel, cmd, path.relative(path.normalize(app.path || "."), rel)) }
-    : { app: null, ...check, status: "fail", ...NOT_RUN, digest: "no app's path holds this pinned directory" });
+  const app = holder(rel), check = { check: rel, cmd: isMaestro(rel) ? MAESTRO : runner(rel), needs_apps: true, pinned: true };
+  checks.push(app ? { app: app.name, ...check, ...ran[rel] } : { app: null, ...check, status: "fail", ...NOT_RUN, digest: "no app's path holds this pinned directory" });
 }
 // The run's bookkeeping under .factory/ isn't product, but the recipe is. Not lib's git(), whose trim would eat the
 // first line's leading status column.
@@ -210,7 +231,6 @@ const red_cause = green ? null
 const pinned_only = !green && !dirty && trusted && failed.length > 0 && checks.every((c) => c.status === "pass" || c.pinned);
 // A recipe with a mobile app records the one platform the run verified it on (lib's device): null unless a check of it
 // ran with the apps up there.
-const mobiles = (recipe.apps || []).filter((a) => a.type === "mobile").map((a) => a.name);
 const onDevice = checks.some((c) => mobiles.includes(c.app) && c.needs_apps && c.status !== "skipped");
 const evidence = { mode, sha, green, dirty, trusted, red_cause, pinned_only, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString(),
   ...(maestroVersion !== undefined && { maestro_version: maestroVersion }),
