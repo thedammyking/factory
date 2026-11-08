@@ -11,7 +11,7 @@ One request carried through the factory, from the prompt to a terminal outcome (
 _Avoid_: job, session, pipeline execution
 
 **Request issue**:
-The tracker issue a run belongs to: the one it was started from, or, for a run started from plain text, the one it files when its spec is approved. The run's tickets hang off it as sub-issues.
+The tracker issue a run belongs to: the one it was started from, its run-list entry's own issue, or, for a run started from plain text, the one it files when its spec is approved. The run's tickets hang off it as sub-issues.
 _Avoid_: source issue, linked issue, ticket
 
 **Orchestrator**:
@@ -98,7 +98,7 @@ Where a project's maps live (local files, GitHub Issues, Linear, or another trac
 _Avoid_: board, issue tracker
 
 **Run list**:
-A cleared map's destination: ordered one-line requests, each sized to one run's spec, built in order, each on the one before.
+A cleared map's destination: ordered one-line requests, each sized to one run's spec, built in order, each on the one before. On a tracker each entry is an issue under the map from the start, queued until its run takes it.
 _Avoid_: backlog, queue
 
 **Stack**:

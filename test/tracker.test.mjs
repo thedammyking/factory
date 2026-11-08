@@ -463,7 +463,7 @@ test("on github, each ticket checked at done tickets becomes a sub-issue of the 
   assert.equal(writes(t).length, 10);
 });
 
-test("on github, the request issue moves through its phases as factory:<phase> labels, and a ticket's sub-issue to building once it starts (#81)", () => {
+test("on github, the request issue moves through its phases as factory:<phase> labels, a ticket's sub-issue from planning to building to done, and a factory merge takes the label off (#81)", () => {
   const t = setup(), s = started(t, "#12");
   routed(t, s);
   const moves = () => t.gh.calls("gh").filter(labelled).filter((c) => c[3] !== "repos/o/r/labels")
@@ -474,15 +474,21 @@ test("on github, the request issue moves through its phases as factory:<phase> l
   assert.deepEqual(moves(), ["POST #12 factory:planning"], "once, from triage to the cut");
   ok(t, s, ["ticket", "01", "in-progress"]);
   ok(t, s, ["dispatch", "plan:01"]);
+  ok(t, s, ["dispatch", "implement:01"]);
+  ok(t, s, ["close-ticket", "01"]);
   ok(t, s, ["dispatch", "review-code"]);
   write(s.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 7, draft: false }) });
   assert.equal(ok(t, s, ["track"]), "phase in-pr");
   ok(t, s, ["set", "stage", "needs-human"]);
-  assert.deepEqual(moves().slice(1), ["POST #30 factory:building", "POST #12 factory:building", "DELETE #12/factory%3Aplanning",
+  assert.deepEqual(moves().slice(1), ["POST #30 factory:planning", "POST #12 factory:building", "DELETE #12/factory%3Aplanning",
+    "POST #30 factory:building", "DELETE #30/factory%3Aplanning", "DELETE #30/factory%3Abuilding",
     "POST #12 factory:reviewing", "DELETE #12/factory%3Abuilding", "POST #12 factory:in-pr", "DELETE #12/factory%3Areviewing"],
-    "the last phase's label goes; a stop with a ready PR stays in-pr");
+    "the last phase's label goes; a merged ticket's closed sub-issue keeps none; a stop with a ready PR stays in-pr");
   assert.equal(state(t, s).tracked.phase, "in-pr");
   assert.ok(logged(s).includes(`run: ${s.id} #12 moved to reviewing`));
+  write(s.run_dir, { "decision.json": JSON.stringify({ decision: "merge", merged: "abc123" }) });
+  assert.equal(ok(t, s, ["track"]), "phase done");
+  assert.deepEqual(moves().at(-1), "DELETE #12/factory%3Ain-pr", "merged by the factory: its issue closes with no phase left on it");
 });
 
 test("on github, a merged ticket's sub-issue closes as completed; abandon closes the open ones, and a request issue the run filed, as not planned", () => {
@@ -578,8 +584,9 @@ test("on linear and other, each command prints its work as JSON for the orchestr
   assert.deepEqual(state(t, s).ticket_issues, { "01": { key: "ENG-131" }, "02": { failed: "the MCP refused the parent" }, "03": { key: "ENG-133" } });
   assert.deepEqual(JSON.parse(ok(t, s, ["close-ticket", "01"])), { close: "ENG-131", as: "completed" });
   assert.equal(ok(t, s, ["close-ticket", "01", "filed"]), "closed ticket 01's sub-issue ENG-131");
-  const [ended, closes] = ok(t, s, ["abandon"]).split("\n");
+  const [ended, move, closes] = ok(t, s, ["abandon"]).split("\n");
   assert.equal(ended, `abandoned ${s.id}; its branch is kept`);
+  assert.equal(move, "TRACK ENG-130 failed (was planning)", "moved before it's closed, so the close is the last word");
   assert.deepEqual(JSON.parse(closes), { close: ["ENG-133", "ENG-130"], as: "not planned" }, "02 was never filed, and 01 is closed");
   assert.equal(ok(t, s, ["abandon", "failed", "the MCP refused ENG-130"]), "closing ENG-133, ENG-130 as not planned failed: the MCP refused ENG-130");
   assert.match(ok(t, s, ["abandon", "filed"]), /^skip: /, "once");

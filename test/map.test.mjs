@@ -191,7 +191,12 @@ const canned = (body) => { const f = path.join(CANNED, `${Math.random()}`); fs.w
 // A project on `tracker` whose origin is github.com/o/r, with a fake gh answering the map issue #40, the request issue
 // #12, the user `me` and every write; on local, main holds the CRM map with its run list.
 const PR60 = canned({ number: 60, state: "open", merged_at: null });
+// The map #40's sub-issues, rewritten by a test: none at first.
+const SUBS = canned([]);
+const sub = (n, entry, phase = "queued", state = "open") => ({ number: n, id: 9000 + n, title: `Run ${entry}: ${entry === 1 ? "Add contacts" : "Import contacts"}`,
+  state, html_url: `https://github.com/o/r/issues/${n}`, labels: phase ? [{ name: `factory:${phase}` }] : [] });
 function tracked(tracker) {
+  fs.writeFileSync(SUBS, "[]");
   const p = project({ config: { tracker } });
   githubOrigin(p);
   if (tracker === "local") { write(p.dir, { [`${M}/map.md`]: LISTED }); p.git("add", "-A"); p.git("commit", "-qm", "map"); }
@@ -202,7 +207,8 @@ function tracked(tracker) {
     { match: /^api repos\/o\/r\/issues\/12$/, file: canned({ number: 12, title: "Build me a CRM", body: "Contacts first.", html_url: "https://github.com/o/r/issues/12", assignees: [] }) },
     { match: /^api user$/, file: canned({ login: "me" }) },
     { match: /^api repos\/o\/r\/pulls\/60$/, file: PR60 },
-    { match: /^api -X POST repos\/o\/r\/issues -f /, file: canned({ number: 50, id: 9050, html_url: "https://github.com/o/r/issues/50" }) },
+    { match: /^api repos\/o\/r\/issues\/40\/sub_issues\?per_page=100$/, file: SUBS },
+    { match: /^api -X POST repos\/o\/r\/issues -f /, file: [50, 51, 52].map((n) => canned({ number: n, id: 9000 + n, html_url: `https://github.com/o/r/issues/${n}` })) },
     { match: /^api -X /, file: canned({}) },
   ] });
   const env = { ...process.env, PATH: gh.env.PATH };
@@ -238,7 +244,8 @@ test("a run started from a map's run list reads the map's body once into map.md,
   assert.deepEqual(gs.map, { tracker: "github", ref: "#40", url: "https://github.com/o/r/issues/40", entry: 2 });
   assert.equal(read(gs.run_dir, "map.md"), LISTED);
   assert.equal(read(gs.run_dir, "prompt.md"), prompt("#40", " (https://github.com/o/r/issues/40)"));
-  assert.deepEqual(g.gh.calls("gh"), [["api", "repos/o/r/issues/40"]], "one read of the map, and none of its tickets");
+  assert.deepEqual(g.gh.calls("gh"), [["api", "repos/o/r/issues/40"], ["api", "repos/o/r/issues/40/sub_issues?per_page=100"]],
+    "one read of the map, and one of its sub-issues for the entry's own issue, never its tickets");
   assert.match(g.rs(["init", "--map", "https://github.com/x/y/issues/3", "--entry", "1"]).stderr, /an issue of x\/y/);
   assert.match(g.rs(["init", "--map", "#7", "--entry", "1"]).stderr, /#7 on o\/r is a pull request/);
   assert.equal(read(JSON.parse(ok(g.rs(["init", "--map", "#41", "--entry", "2"]))).run_dir, "map.md"), LISTED, "a body with CRLF line ends, as GitHub's web editor saves it");
@@ -264,7 +271,8 @@ test("a map run writes nothing to the tracker before its spec is approved, and n
     assert.match(rs("unclaim"), /^skip: no request issue/);
     assert.match(rs("comment"), /^skip: no request issue/);
     assert.match(rs("snapshot"), /worktree removed/);
-    assert.deepEqual(t.gh.calls("gh"), tracker === "github" ? [["api", "repos/o/r/issues/40"]] : [], `${tracker}: the map's one read, and no write`);
+    assert.deepEqual(t.gh.calls("gh"), tracker === "github" ? [["api", "repos/o/r/issues/40"], ["api", "repos/o/r/issues/40/sub_issues?per_page=100"]] : [],
+      `${tracker}: the map's one read, and no write when chain filed no issue for the entry`);
     assert.equal(t.p.git("rev-parse", "main"), before, `${tracker}: main gets nothing but through a PR`);
     const changed = t.p.git("diff", "--name-only", records, "factory/records").split("\n");
     assert.deepEqual(changed.filter((f) => !f.startsWith(`.factory/history/${s.id}/`)), [".factory/log.md"], `${tracker}: nothing under .factory/maps/`);
@@ -286,13 +294,14 @@ test("once its spec is approved, a map run files its request issue as a sub-issu
   assert.equal(rs("file-issue"), "filed #50: Run 1: Add contacts");
   const calls = t.gh.calls("gh").filter((c) => c[1] === "-X" && !c.some((a) => /labels/.test(a)));
   assert.deepEqual(calls.map((c) => c.slice(0, 6)), [["api", "-X", "POST", "repos/o/r/issues", "-f", "title=Run 1: Add contacts"],
-    ["api", "-X", "POST", "repos/o/r/issues/40/sub_issues", "-F", "sub_issue_id=9050"]]);
+    ["api", "-X", "POST", "repos/o/r/issues/40/sub_issues", "-F", "sub_issue_id=9050"]], "with no issue chain filed for its entry, it files one");
   assert.equal(JSON.parse(rs("get")).request_issue.key, "#50");
 });
 
 test("chain works a map's run list: each entry with its run and PR, the next stacked on an open PR, and back on the trunk once it merges (#81)", () => {
   fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "open", merged_at: null }));
   const t = tracked("github"), chain = () => ok(t.rs(["chain", "--map", "#40"])).split("\n");
+  fs.writeFileSync(SUBS, JSON.stringify([sub(51, 1, "in-pr"), sub(52, 2)]));
   assert.deepEqual(chain(), ["ENTRY 1 none: Add contacts with name, email and company", "ENTRY 2 none: Import contacts from a CSV file", "START 1"]);
   const one = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "1"])));
   const rs = (s, ...args) => ok(t.rs([...args, "--run", s.id]));
@@ -307,18 +316,65 @@ test("chain works a map's run list: each entry with its run and PR, the next sta
   write(one.run_dir, { "decision.json": JSON.stringify({ decision: "needs-human" }) });
   assert.deepEqual(chain(), [`ENTRY 1 ${one.id} start PR #60 open`, "ENTRY 2 none: Import contacts from a CSV file", `START 2 --on ${one.id}`]);
   const two = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "2", "--on", one.id])));
-  assert.deepEqual([two.base_branch, two.trunk, two.stack], ["feature/add-contacts", "main", { run: one.id, branch: "feature/add-contacts", pr: 60, repo: "o/r" }]);
-  assert.equal(two.base_sha, t.p.git("rev-parse", "feature/add-contacts"), "it branches from the entry under it");
+  assert.deepEqual([two.base_branch, two.trunk, two.stack], ["feature/51-add-contacts", "main", { run: one.id, branch: "feature/51-add-contacts", pr: 60, repo: "o/r" }],
+    "the branch carries the entry's issue");
+  assert.equal(two.base_sha, t.p.git("rev-parse", "feature/51-add-contacts"), "it branches from the entry under it");
   assert.equal(chain().at(-1), `RESUME ${two.id}`);
-  assert.match(rs(two, "stack"), /^stacked on feature\/add-contacts \(PR #60 open\)$/);
+  assert.match(rs(two, "stack"), /^stacked on feature\/51-add-contacts \(PR #60 open\)$/);
   fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "closed", merged_at: "2026-11-05T12:00:00Z" }));
   write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: true }) });  // readied and merged by hand
+  const unlabel = (c) => c.join(" ") === "api -X DELETE repos/o/r/issues/51/labels/factory%3Ain-pr";
+  assert.ok(!t.gh.calls("gh").some(unlabel));
   assert.deepEqual(chain(), [`RESTACK ${two.id}`, `ENTRY 1 ${one.id} start PR #60 merged`, `ENTRY 2 ${two.id} start`, `RESUME ${two.id}`]);
-  assert.equal(rs(two, "stack"), "restacked onto main, feature/add-contacts's PR having merged");
+  assert.ok(t.gh.calls("gh").some(unlabel), "merged by hand: its issue closes with no phase left on it");
+  assert.equal(rs(two, "stack"), "restacked onto main, feature/51-add-contacts's PR having merged");
   const after = JSON.parse(rs(two, "get"));
   assert.deepEqual([after.base_branch, after.stack], ["main", undefined]);
   fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "closed", merged_at: null }));
   assert.match(chain().at(-1), /^STOP 1: .+ PR #60 was closed unmerged/, "only the human goes on past a rejected entry");
+});
+
+test("on github, chain files each entry of the run list as a queued issue under the map, which a run of the entry takes as its request issue (#81)", () => {
+  const t = tracked("github"), writes = () => t.gh.calls("gh").filter((c) => c[1] === "-X" && !/labels/.test(c[3]));
+  const lines = ok(t.rs(["chain", "--map", "#40"])).split("\n");
+  assert.deepEqual(lines.slice(0, 2), ["FILED 1 #50", "FILED 2 #51"]);
+  assert.equal(lines.at(-1), "START 1");
+  const body = (n, entry) => `body=Entry ${n} of the run list of the map #40:\n\n> ${entry}\n\n\`/factory map #40\` builds the entries in order. `
+    + "Its run moves this issue's `factory:` label as it goes, replaces this body with the run's spec once it's written, files its tickets as sub-issues here, and its PR closes it.\n";
+  assert.deepEqual(writes(), [
+    ["api", "-X", "POST", "repos/o/r/issues", "-f", "title=Run 1: Add contacts with name, email and company", "-f", body(1, "Add contacts with name, email and company"),
+      "-f", "labels[]=factory:queued", "-f", "assignees[]=me"],
+    ["api", "-X", "POST", "repos/o/r/issues/40/sub_issues", "-F", "sub_issue_id=9050"],
+    ["api", "-X", "POST", "repos/o/r/issues", "-f", "title=Run 2: Import contacts from a CSV file", "-f", body(2, "Import contacts from a CSV file"),
+      "-f", "labels[]=factory:queued", "-f", "assignees[]=me"],
+    ["api", "-X", "POST", "repos/o/r/issues/40/sub_issues", "-F", "sub_issue_id=9051"],
+    ["api", "-X", "POST", "repos/o/r/issues/51/dependencies/blocked_by", "-F", "issue_id=9050"],
+  ], "the whole list on the tracker, in its order");
+  fs.writeFileSync(SUBS, JSON.stringify([sub(50, 1), sub(51, 2)]));
+  const before = writes().length;
+  assert.deepEqual(ok(t.rs(["chain", "--map", "#40"])).split("\n").filter((l) => l.startsWith("FILED")), [], "once");
+
+  const s = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "1"])));
+  assert.deepEqual(s.request_issue, { tracker: "github", key: "#50", url: "https://github.com/o/r/issues/50", closing: "Closes #50", id: 9050, filed: true, entry: true });
+  assert.equal(s.tracked.phase, "queued");
+  const rs = (...args) => ok(t.rs([...args, "--run", s.id]));
+  write(s.run_dir, { "triage.md": "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch: "feature/add-contacts", route: "build" }) + "\n```\n" });
+  rs("set", "route", "build");
+  rs("lane");
+  assert.match(rs("claim"), /^skip: the run filed #50/);
+  for (const stage of ["research", "spec", "builder-check"]) {
+    rs("dispatch", stage);
+    write(s.run_dir, { [`${stage}.md`]: stage === "spec" ? "# Add contacts\n\n- **SC-001** (profile: default, live-safe: yes): /contacts lists them.\n" : `# ${stage}\n` });
+    rs("done", stage);
+  }
+  const labels = () => t.gh.calls("gh").filter((c) => /^repos\/o\/r\/issues\/50\/labels/.test(c[3] ?? "")).map((c) => `${c[2]} ${c[5] ?? c[3].split("/").at(-1)}`);
+  assert.deepEqual(labels(), ["POST labels[]=factory:planning", "DELETE factory%3Aqueued"], "out of the queue once its run starts");
+  rs("approve", "spec", "approved");
+  assert.equal(rs("file-issue"), "updated #50: Run 1: Add contacts");
+  assert.deepEqual(writes().slice(before).map((c) => c.slice(0, 7)), [["api", "-X", "PATCH", "repos/o/r/issues/50", "-f", "title=Run 1: Add contacts", "-f"]], "the spec over the entry's body");
+  assert.match(rs("spec-comment"), /^skip: the run filed #50, whose body is the spec/);
+  assert.equal(rs("abandon"), `abandoned ${s.id}; its branch is kept`, "an entry's issue isn't closed with its run");
+  assert.deepEqual(labels().slice(2), ["POST labels[]=factory:queued", "DELETE factory%3Aplanning"], "back in the queue for the entry's next run");
 });
 
 test("a request at the map gate is mid-run, and once charted its closing comment links the map", () => {

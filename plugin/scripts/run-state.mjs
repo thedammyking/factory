@@ -12,7 +12,8 @@
 //                                                stdin; a Linear reference without it is refused. --map <ref> --entry <N>
 //                                                starts a run from entry N of a map's run list: the map's body, read once
 //                                                (on local and github by init, else from stdin), becomes map.md and the
-//                                                entry prompt.md, and the run has no request issue
+//                                                entry prompt.md, and its request issue is the entry's own: on github the
+//                                                open `Run <N>: …` sub-issue of the map, elsewhere --issue <key> [--url]
 //   run-state.mjs claim [claimed | failed "<why>"] [--state "<s>"] [--assigned] -> a run's request issue, once the run has
 //                                                its lane branch, and once (again only after an undo): on github assigns it
 //                                                to the gh user unless theirs at run start; elsewhere prints the issue for
@@ -28,8 +29,10 @@
 //                                                approved, a plain run's request issue, once: on github files it with the
 //                                                spec's title, spec.md as its body and the gh user assigned; elsewhere
 //                                                prints the title and body for the orchestrator to file and record. It's
-//                                                recorded as request_issue with filed: true, which nothing claims. Never on
-//                                                local, nor for a run from a map's run list
+//                                                recorded as request_issue with filed: true, which nothing claims. A run
+//                                                of a run-list entry whose issue chain filed puts the spec's title and body
+//                                                over that issue instead (elsewhere prints them with `update`). Never on
+//                                                local
 //   run-state.mjs spec-comment [filed | failed "<why>"] -> once the spec is approved, posts it as one comment on the
 //                                                request issue the run started from, once (elsewhere prints it)
 //   run-state.mjs file-tickets [filed <NN> <key> [--url <url>] | failed <NN> "<why>"] -> after `done tickets`, each
@@ -55,7 +58,9 @@
 //                                                oneshot/, so the caps scale with the build's tickets once they're cut
 //   run-state.mjs chain --map <map>           -> a map's run list, each entry with its run and PR, then what comes next:
 //                                                RESTACK, then RESUME, START, STOP or DONE, which the orchestrator acts on
-//                                                to work the whole list (#81)
+//                                                to work the whole list (#81). On github it first files each entry with no
+//                                                issue as `Run <N>: …` under the map, queued (FILED lines), and takes the
+//                                                phase label off an entry's issue once its PR has merged
 //   run-state.mjs stack [--on <run>]          -> a run stacked on an earlier entry's open PR, or, without --on, put back
 //                                                on its trunk once that PR has merged, its own PR retargeted
 //   run-state.mjs track                       -> the request issue's phase recomputed and moved, as dispatch and set stage
@@ -560,12 +565,16 @@ const ghWrite = (...args) => { const r = ghApi(...args); return r.ok ? null : r.
 const ghClose = (ctx, key, reason) => ghWrite("-X", "PATCH", `repos/${githubRepo(ctx.MAIN)}/issues/${key.slice(1)}`, "-f", "state=closed", "-f", `state_reason=${reason}`);
 // A tracker write's outcome, once recorded in s: saved, logged and printed.
 const report = (ctx, s, line) => { save(ctx.state, s); log(ctx.runDir, `run: ${ctx.id} ${line}`); console.log(line); };
-// The run's phase as its request issue shows it (#81), in the order a run goes: planning (triage to the cut), building
-// (its tickets), reviewing (the review and its fixes), in-pr (its PR open for the human's review), and needs-you or failed
-// when it stops. The issue closes when its PR merges ("Closes …"). A run that stopped with a ready PR is in-pr.
-const PHASES = { planning: "1d76db", building: "0e8a16", reviewing: "fbca04", "in-pr": "5319e7", "needs-you": "d93f0b", failed: "b60205" };
+// The run's phase as its request issue shows it (#81), in the order a run goes: queued (a run-list entry filed before
+// its run starts), planning (triage to the cut), building (its tickets), reviewing (the review and its fixes), in-pr (its
+// PR open for the human's review), and needs-you or failed when it stops. done takes the label off: the issue closes when
+// its PR merges ("Closes …"). A run that stopped with a ready PR is in-pr. A ticket's sub-issue is planning, then building
+// once implemented, then done when it merges.
+const PHASES = { queued: "c5def5", planning: "1d76db", building: "0e8a16", reviewing: "fbca04", "in-pr": "5319e7", "needs-you": "d93f0b", failed: "b60205" };
+const TICKET_PHASE = { plan: "planning", context: "building", implement: "building", qa: "building" };
 function phaseOf(ctx, s) {
   const pr = readJson(path.join(ctx.runDir, "pr.json"));
+  if (readJson(path.join(ctx.runDir, "decision.json"))?.merged) return "done";
   if (["failed", "abandoned"].includes(s.stage)) return "failed";
   if (s.stage === "delivered" || (pr && !pr.draft)) return "in-pr";
   if (["needs-human", "suspended"].includes(s.stage)) return "needs-you";
@@ -582,14 +591,64 @@ function track(ctx, s, phase = phaseOf(ctx, s), ticket = null) {
   if (!issue?.key || !["github", "linear", "other"].includes(issue.tracker) || was === phase) return;
   let failed = null;
   if (issue.tracker !== "github") console.log(`TRACK ${issue.key} ${phase}${was ? ` (was ${was})` : ""}`);
-  else {
-    const repo = githubRepo(ctx.MAIN), n = issue.key.slice(1), label = (p) => `factory:${p}`;
-    ghApi("-X", "POST", `repos/${repo}/labels`, "-f", `name=${label(phase)}`, "-f", `color=${PHASES[phase]}`);  // refused when it exists
-    failed = ghWrite("-X", "POST", `repos/${repo}/issues/${n}/labels`, "-f", `labels[]=${label(phase)}`);
-    if (!failed && was) ghApi("-X", "DELETE", `repos/${repo}/issues/${n}/labels/${encodeURIComponent(label(was))}`);
-  }
+  else failed = relabel(ctx.MAIN, issue.key, phase, was);
   if (ticket) at[ticket] = phase; else s.tracked = { phase, at: now(), ...(failed && { failed }) };
   log(ctx.runDir, `run: ${ctx.id} ${issue.key} ${failed ? `couldn't move to ${phase}: ${failed}` : `moved to ${phase}`}`);
+}
+// A GitHub issue's factory:<phase> label in place of factory:<was>, made in the repo when it lacks it; done only takes
+// <was> off. Why the add failed, or null.
+function relabel(main, key, phase, was) {
+  const repo = githubRepo(main), n = key.slice(1), label = (p) => `factory:${p}`;
+  if (phase !== "done") {
+    ghApi("-X", "POST", `repos/${repo}/labels`, "-f", `name=${label(phase)}`, "-f", `color=${PHASES[phase]}`);  // refused when it exists
+    const failed = ghWrite("-X", "POST", `repos/${repo}/issues/${n}/labels`, "-f", `labels[]=${label(phase)}`);
+    if (failed) return failed;
+  }
+  if (was) ghApi("-X", "DELETE", `repos/${repo}/issues/${n}/labels/${encodeURIComponent(label(was))}`);
+  return null;
+}
+// The issues a GitHub map holds for its run list (#81), as { <N>: { key, id, url, open, phase } }: its sub-issues titled
+// `Run <N>: …`, an open one winning; null when they can't be read.
+// ponytail: one page of 100 sub-issues; paginate if a map ever holds more.
+function entryIssues(main, map) {
+  const r = ghApi(`repos/${githubRepo(main)}/issues/${map.ref.slice(1)}/sub_issues?per_page=100`);
+  if (!r.ok) return null;
+  const out = {};
+  for (const i of Array.isArray(r.json) ? r.json : []) {
+    const n = i.title?.match(/^Run (\d+): /)?.[1];
+    if (!n || out[n]?.open) continue;
+    out[n] = { key: `#${i.number}`, id: i.id, url: i.html_url, open: i.state === "open",
+      phase: (i.labels || []).map((l) => l.name ?? l).find((l) => /^factory:/.test(l))?.slice(8) };
+  }
+  return out;
+}
+// Each entry of a GitHub map's run list that has no issue yet, filed as one (#81): `Run <N>: <the entry>`, cut to a
+// short title, the entry whole in its body, assigned to the gh user, labelled factory:queued, a sub-issue of the map and
+// blocked by the entry before it. Each filing's line goes in `out`; the entries' issues are returned, null when the map's
+// sub-issues can't be read.
+function fileEntries(main, map, entries, out) {
+  const issues = entryIssues(main, map);
+  if (!issues) { out.push(`WARN the sub-issues of the map ${map.ref} can't be read, so its entries aren't filed`); return null; }
+  const repo = githubRepo(main), todo = entries.filter(({ n }) => !issues[n]);
+  if (todo.length) ghApi("-X", "POST", `repos/${repo}/labels`, "-f", "name=factory:queued", "-f", `color=${PHASES.queued}`);  // refused when it exists
+  const user = todo.length ? ghApi("user") : null;
+  let prev = null;
+  for (const { n, line } of entries) {
+    if (!issues[n]) {
+      const short = line.length <= 90 ? line : `${line.slice(0, 90).replace(/\s+\S*$/, "")}…`;
+      const body = `Entry ${n} of the run list of the map ${map.ref}:\n\n> ${line}\n\n\`/factory map ${map.ref}\` builds the entries in order. `
+        + "Its run moves this issue's `factory:` label as it goes, replaces this body with the run's spec once it's written, files its tickets as sub-issues here, and its PR closes it.\n";
+      const r = ghApi("-X", "POST", `repos/${repo}/issues`, "-f", `title=Run ${n}: ${short}`, "-f", `body=${body}`, "-f", "labels[]=factory:queued",
+        ...(user?.ok ? ["-f", `assignees[]=${user.json.login}`] : []));
+      if (!r.ok) { out.push(`WARN filing entry ${n} failed: ${r.message || "no reason given"}`); prev = null; continue; }
+      issues[n] = { key: `#${r.json.number}`, id: r.json.id, url: r.json.html_url, open: true, phase: "queued" };
+      const why = [ghWrite("-X", "POST", `repos/${repo}/issues/${map.ref.slice(1)}/sub_issues`, "-F", `sub_issue_id=${r.json.id}`) && "making it a sub-issue of the map",
+        prev?.id && ghWrite("-X", "POST", `repos/${repo}/issues/${r.json.number}/dependencies/blocked_by`, "-F", `issue_id=${prev.id}`) && `marking it blocked by ${prev.key}`].filter(Boolean);
+      out.push(`FILED ${n} ${issues[n].key}${why.length ? `; these failed: ${why.join(", ")}` : ""}`);
+    }
+    prev = issues[n];
+  }
+  return issues;
 }
 // The run's newest attention item, but the snapshot's own stops, which aren't the run's.
 function newestAttention(ctx) {
@@ -651,6 +710,11 @@ switch (cmd) {
     const on = arg("--on") && stackOn(MAIN, base, arg("--on"));
     let sha; try { sha = freshTip(MAIN, on?.branch ?? base); } catch { die(`base branch '${on?.branch ?? base}' doesn't exist`); }
     const run = mapped && mapRun(MAIN, config.tracker, base, sha, stdin);
+    // A map entry's own issue (#81) is the run's request issue: on github the open one chain filed under the map, elsewhere
+    // the one the orchestrator passes as --issue. The factory filed it, so nothing claims it, and its body becomes the spec.
+    const found = run && config.tracker === "github" && entryIssues(MAIN, run.map)?.[run.map.entry];
+    const entryIssue = found?.open ? { tracker: "github", key: found.key, url: found.url, closing: `Closes ${found.key}`, id: found.id }
+      : run && ["linear", "other"].includes(config.tracker) && arg("--issue") ? trackerIssue(config.tracker, arg("--issue")) : null;
     const slug = (from?.title ?? run?.entry ?? request).toLowerCase().split(/[^a-z0-9]+/).filter(Boolean).slice(0, 4).join("-").slice(0, 32).replace(/-$/, "") || "run";
     // mkdir is the claim, so two runs started at once never take the same id; git worktree add accepts the empty dir.
     fs.mkdirSync(worktreesDir(MAIN), { recursive: true });
@@ -671,7 +735,8 @@ switch (cmd) {
     if (run) fs.writeFileSync(path.join(runDir, "map.md"), run.body);
     if (answersFile) fs.writeFileSync(path.join(runDir, "grill-answers.md"), answers);
     const s = {
-      id, request: key ?? run?.entry ?? request, ...(from && { request_issue: from.issue }), ...(run && { map: run.map }), session: process.env.CLAUDE_CODE_SESSION_ID || null,
+      id, request: key ?? run?.entry ?? request, ...(from && { request_issue: from.issue }), ...(run && { map: run.map }),
+      ...(entryIssue && { request_issue: { ...entryIssue, filed: true, entry: true } }), ...(found?.open && found.phase && { tracked: { phase: found.phase, at: now() } }), session: process.env.CLAUDE_CODE_SESSION_ID || null,
       stage: "start", route: null, base_branch: on?.branch ?? base, base_sha: sha, worktree, run_dir: runDir,
       ...(on && { trunk: on.trunk, stack: on.stack }), dispatches: [], stages_done: [], created_at: now(),
     };
@@ -743,6 +808,7 @@ switch (cmd) {
     const { map, body } = readMap(MAIN, config.tracker, base, fs.readFileSync(0, "utf8")), entries = runList(body);
     if (!entries.length) die(`the map ${map.ref} has no run list yet`);
     const all = mapRuns(MAIN, base, map.ref), out = [];
+    const issues = map.tracker === "github" ? fileEntries(MAIN, map, entries, out) : null;
     for (const { s: r } of all) if (r.stack && !FINISHED.includes(r.stage) && prMerged({ repo: r.stack.repo, number: r.stack.pr })?.merged) out.push(`RESTACK ${r.id}`);
     let under = null, next = null;  // under: the built entry the next one stacks on, while its PR is open
     for (const { n, line } of entries) {
@@ -751,6 +817,7 @@ switch (cmd) {
       // Built: a PR that merged, whatever pr.json last said of it (a draft readied by hand included), or a ready one whose
       // run got as far as its merge decision. One cut off between opening its PR and deciding it still has its PR stage.
       const { s: r, pr, decided } = mine, m = pr ? prMerged(pr) : null, built = !!m?.merged || (!!pr && !pr.draft && !m?.closed && decided);
+      if (m?.merged && issues?.[n]?.phase) relabel(MAIN, issues[n].key, "done", issues[n].phase);  // merged by hand: its issue closed
       out.push(`ENTRY ${n} ${r.id} ${r.stage}${pr ? ` PR #${pr.number}${m?.merged ? " merged" : m?.closed ? " closed unmerged" : pr.draft ? " draft" : " open"}` : ""}`);
       if (next) continue;
       if (m?.closed && !m.merged) next = `STOP ${n}: ${r.id}'s PR #${pr.number} was closed unmerged, so the entries after it have nothing to build on`;
@@ -813,7 +880,11 @@ switch (cmd) {
       s.stages_done = s.stages_done.filter((d) => d !== stage);
     }
     s.stage = stage;
-    if (!agent && !child) track(ctx, s);
+    if (!agent && !child) {
+      track(ctx, s);
+      const [name, n] = stage.split(":");
+      if (n && TICKET_PHASE[name]) track(ctx, s, TICKET_PHASE[name], n);
+    }
     save(ctx.state, s);
     console.log(`dispatched ${stage} #${s.dispatches.length}${agent ? ` agent ${agent}` : ""}`);
     break;
@@ -1037,13 +1108,18 @@ switch (cmd) {
     const [ctx, s] = load(), tracker = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {}).tracker;
     if (!specApproved(ctx, s)) die(`the spec of ${ctx.id} isn't approved, and nothing reaches the tracker before it is`);
     const skip = !["github", "linear", "other"].includes(tracker) ? "the local tracker has no request issues"
-      : s.request_issue ? `${s.request_issue.key} is the run's request issue already` : s.file_issue ? "filing the request issue was tried already" : null;
+      : s.request_issue && !s.request_issue.entry ? `${s.request_issue.key} is the run's request issue already` : s.file_issue ? "filing the request issue was tried already" : null;
     if (skip) { console.log(`skip: ${skip}`); break; }
     if (what && tracker === "github") die("on github, file-issue makes its own call: run it alone");
     // A run from a map's run list files its issue as a sub-issue of the map (#81), named for its entry.
     const spec = specText(ctx), title = `${s.map ? `Run ${s.map.entry}: ` : ""}${spec.match(/^# (.+)$/m)?.[1].trim() || ctx.id}`, body = issueBody(ctx, "spec.md", spec);
     let failed;
-    if (what === "filed") s.request_issue = { ...trackerIssue(tracker, detail), filed: true };
+    // A run-list entry's issue (#81) is updated in place: the spec's title and body over the entry's.
+    const entry = s.request_issue?.entry && s.request_issue;
+    if (entry && what === "filed") { if (detail && detail !== entry.key) die(`${ctx.id}'s request issue is ${entry.key}`); }
+    else if (entry && !what && tracker !== "github") { console.log(JSON.stringify({ update: entry.key, title, body }, null, 2)); break; }
+    else if (entry && !what) failed = ghWrite("-X", "PATCH", `repos/${githubRepo(ctx.MAIN)}/issues/${entry.key.slice(1)}`, "-f", `title=${title}`, "-f", `body=${body}`);
+    else if (what === "filed") s.request_issue = { ...trackerIssue(tracker, detail), filed: true };
     else if (what === "failed") failed = detail || "no reason given";
     else if (what) die('file-issue [filed <key> [--url <url>] [--closing "<line>"] | failed "<why>"]');
     else if (tracker !== "github") { console.log(JSON.stringify({ title, body, ...(s.map && { parent: s.map.ref }) }, null, 2)); break; }  // filed through the tracker's tools
@@ -1057,6 +1133,7 @@ switch (cmd) {
     }
     s.file_issue = { at: now(), ...(failed && { failed }) };
     if (s.request_issue) track(ctx, s);
+    if (entry) { report(ctx, s, failed ? `updating ${entry.key} with the spec failed: ${failed}` : `updated ${entry.key}: ${title}`); break; }
     report(ctx, s, failed && !s.request_issue ? `filing the request issue failed: ${failed}` : `filed ${s.request_issue.key}: ${title}${failed ? `; ${failed}` : ""}`);
     break;
   }
@@ -1135,6 +1212,7 @@ switch (cmd) {
     if (!what && tracker !== "github") { console.log(JSON.stringify({ close: t.key, as: "completed" })); break; }  // closed through the tracker's tools
     const failed = what ? what === "failed" && (why || "no reason given") : ghClose(ctx, t.key, "completed");
     t.closed = { at: now(), ...(failed && { failed }) };
+    if (!failed && tracker === "github") track(ctx, s, "done", n);
     report(ctx, s, failed ? `closing ticket ${n}'s sub-issue ${t.key} failed: ${failed}` : `closed ticket ${n}'s sub-issue ${t.key}`);
     break;
   }
@@ -1179,7 +1257,7 @@ switch (cmd) {
     if (!t) die(`no ticket ${n} in ${ctx.id}`);
     fs.writeFileSync(t.file, t.text.replace(STATUS_LINE, `$1${status}`));
     s.tickets_sha256 = ticketsHash(ctx);
-    if (status === "in-progress") track(ctx, s, "building", t.n);
+    if (status === "in-progress") track(ctx, s, "planning", t.n);
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} ticket ${t.id} ${t.status} -> ${status}`);
     console.log(`ticket ${t.id} ${status}`);
@@ -1255,7 +1333,7 @@ switch (cmd) {
     const [ctx, s] = load();
     // What the run filed and left open, closed as not planned once it's abandoned: each ticket's sub-issue that no
     // close-ticket has tried, and a request issue it filed.
-    const open = [...Object.values(s.ticket_issues || {}).filter((t) => t.key && !t.closed).map((t) => t.key), ...(s.request_issue?.filed ? [s.request_issue.key] : [])];
+    const open = [...Object.values(s.ticket_issues || {}).filter((t) => t.key && !t.closed).map((t) => t.key), ...(s.request_issue?.filed && !s.request_issue.entry ? [s.request_issue.key] : [])];
     if (what) {  // on linear or other, how the orchestrator's closes went
       if (s.stage !== "abandoned") die(`run ${ctx.id} isn't abandoned`);
       if (!open.length) die(`${ctx.id} left no issues to close`);
@@ -1271,6 +1349,9 @@ switch (cmd) {
     save(ctx.state, s);
     log(ctx.runDir, `run: ${ctx.id} abandoned`);
     console.log(`abandoned ${ctx.id}; its branch is kept`);
+    // A run-list entry's issue outlives its run: back in the queue for the next run of the entry (#81).
+    track(ctx, s, s.request_issue?.entry ? "queued" : "failed");
+    save(ctx.state, s);
     if (!open.length) break;
     if (s.request_issue.tracker !== "github") { console.log(JSON.stringify({ close: open, as: "not planned" })); break; }  // through the tracker's tools
     s.abandon_closes = { at: now() };
