@@ -420,6 +420,37 @@ test("chain hands out every entry whose dependencies are built, one run per entr
   assert.match(rs(["chain", "--map", "app"]).stderr, /entry 1 of the map app is after 2, which isn't an entry before it in the run list/);
 });
 
+test("a session sees its own live runs as HERE, its own stopped run as one to resume, and chain --wait returns once the list moves (#81)", async () => {
+  const BODY = `${MAP}\n## Run list\n\n1. Scaffold the app [after none]\n2. Add sign-in\n3. Add the UI kit [after 1]\n`;
+  const p = project({ config: { tracker: "local" } });
+  githubOrigin(p);
+  write(p.dir, { ".factory/maps/app/map.md": BODY }); p.git("add", "-A"); p.git("commit", "-qm", "map");
+  const pr = canned({ number: 60, state: "open", merged_at: null });
+  const gh = fakeClis({ gh: [{ match: /^api repos\/o\/r\/pulls\/60$/, file: pr }] });
+  const env = { ...process.env, PATH: gh.env.PATH, CLAUDE_CODE_SESSION_ID: "s-me" };
+  const rs = (args) => script("run-state.mjs", p.dir, args, { env });
+  const chain = () => ok(rs(["chain", "--map", "app"])).split("\n").filter((l) => !l.startsWith("ENTRY"));
+  const one = JSON.parse(ok(rs(["init", "--map", "app", "--entry", "1"])));
+  assert.deepEqual(chain(), [`HERE 1 ${one.id}: this session is driving it`], "its own live run is never one to resume while it drives it");
+  ok(rs(["set", "stage", "needs-human", "--run", one.id]));
+  assert.deepEqual(chain(), [`RESUME ${one.id}`], "its own stopped run is its question, to ask again");
+
+  write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: false }), "decision.json": JSON.stringify({ decision: "needs-human" }) });
+  ok(rs(["set", "stage", "delivered", "--run", one.id]));
+  const waited = (args) => new Promise((done) => {
+    const c = spawn(process.execPath, [path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts/run-state.mjs"), "chain", "--map", "app", "--wait", ...args], { cwd: p.dir, env, stdio: ["ignore", "pipe", "pipe"] });
+    let out = ""; c.stdout.on("data", (d) => (out += d)); c.on("close", (code) => done({ code, out: out.trim().split("\n") }));
+  });
+  const quiet = await waited(["--every", "1", "--window", "1"]);
+  assert.equal(quiet.out[0], "UNCHANGED after 1s");
+  const moving = waited(["--every", "1", "--window", "30"]);
+  setTimeout(() => fs.writeFileSync(pr, JSON.stringify({ number: 60, state: "closed", merged_at: "2026-11-08T09:00:00Z" })), 1500);
+  const moved = await moving;
+  assert.equal(moved.code, 0);
+  assert.equal(moved.out[0], "CHANGED", "its PR merged");
+  assert.ok(moved.out.includes(`ENTRY 1 ${one.id} delivered PR #60 merged`));
+});
+
 test("a request at the map gate is mid-run, and once charted its closing comment links the map", () => {
   const t = tracked("github"), s = JSON.parse(ok(t.rs(["init"], "#12\n")));
   const rs = (...args) => ok(t.rs([...args, "--run", s.id]));

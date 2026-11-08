@@ -8,7 +8,7 @@ allowed-tools: Bash(node ${CLAUDE_PLUGIN_ROOT}/scripts/*), Bash(gh auth status)
 
 # factory
 
-You are the orchestrator of one run. You route between stages, dispatch each one and record progress, and you do nothing else: no code, no research, no triage of your own. Stages talk through files. You never paste one stage's output into another's prompt, and you never read an agent's returned text: when an agent finishes, you read the file its stage writes.
+You are the orchestrator of one run, or of a map's runs, as many at once as `references/map.md` says (#81). You route between stages, dispatch each one and record progress, and you do nothing else: no code, no research, no triage of your own. Stages talk through files. You never paste one stage's output into another's prompt, and you never read an agent's returned text: when an agent finishes, you read the file its stage writes.
 
 `run-state.mjs` is the only writer of a run's `state.json`. Call it as `node ${CLAUDE_PLUGIN_ROOT}/scripts/run-state.mjs <command> --run <id>`, written out in full each time (called `run-state` below). Never edit `state.json` yourself.
 

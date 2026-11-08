@@ -98,7 +98,7 @@ Where a project's maps live (local files, GitHub Issues, Linear, or another trac
 _Avoid_: board, issue tracker
 
 **Run list**:
-A cleared map's destination: ordered one-line requests, each sized to one run's spec and naming the earlier entries it builds on (the one before it, unless it says otherwise). Entries that don't build on each other are built side by side, each run in a session of its own. On a tracker each entry is an issue under the map from the start, queued until its run takes it.
+A cleared map's destination: ordered one-line requests, each sized to one run's spec and naming the earlier entries it builds on (the one before it, unless it says otherwise). Entries that don't build on each other are built side by side, the orchestrator deciding which go together. On a tracker each entry is an issue under the map from the start, queued until its run takes it.
 _Avoid_: backlog, queue
 
 **Stack**:

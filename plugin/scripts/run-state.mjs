@@ -56,10 +56,11 @@
 //                                                implemented: its plan is done and the route becomes build, which goes on
 //                                                at research on the same branch, and the oneshot's tickets/ is kept as
 //                                                oneshot/, so the caps scale with the build's tickets once they're cut
-//   run-state.mjs chain --map <map>           -> a map's run list, each entry with its run and PR, then what comes next:
-//                                                RESTACK, then RESUME and START lines for every run and entry ready to go
-//                                                (each session working the map takes the first), BUSY, WAIT and STOP for
-//                                                the rest, or DONE (#81). An entry's [after 2, 4] names what it builds on,
+//   run-state.mjs chain --map <map> [--wait]  -> a map's run list, each entry with its run and PR, then what comes next:
+//                                                RESTACK, then RESUME and START lines for every run and entry ready to go,
+//                                                of which the orchestrator takes as many as it judges can go together,
+//                                                HERE (its own), BUSY (another session's), WAIT and STOP for the rest, or
+//                                                DONE (#81). --wait first waits up to an hour for the list to move. An entry's [after 2, 4] names what it builds on,
 //                                                else the entry before it. On github it first files each entry with no
 //                                                issue as `Run <N>: …` under the map, queued (FILED lines), and takes the
 //                                                phase label off an entry's issue once its PR has merged
@@ -175,7 +176,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
-import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitRecord, recordsRef, freshTip, RECORDS, attributed, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock, githubRepo, ghApi, SETTINGS, settingsWith } from "./lib.mjs";
+import { readJson, arg, git, gitError, mainRoot, worktreesDir, runPaths, runContext, commitRecord, recordsRef, freshTip, RECORDS, attributed, pause, envLines, frontier, STATUS_LINE, ticketWorktree, ticketBranch, events, atUsageLimit, lock, githubRepo, ghApi, SETTINGS, settingsWith } from "./lib.mjs";
 
 const ROUTES = ["oneshot", "build", "answer", "hold", "map"];
 const OUTCOMES = ["delivered", "needs-human", "failed", "abandoned", "answered", "charted", "suspended"];
@@ -519,18 +520,25 @@ const runList = (body) => [...(body.match(/^## Run list[ \t]*\n([\s\S]*?)(?=^## 
     const raw = m[2].trim(), a = raw.match(AFTER)?.[1];
     return { n: Number(m[1]), line: raw.replace(AFTER, ""), after: a ? (/^none$/i.test(a) ? [] : a.split(",").map((x) => Number(x.trim()))) : i ? [Number(all[i - 1][1])] : [] };
   });
-// Whether another session is driving a live run of a map (#81), as that session's id, or null: a child of the run still
-// running, or the run, its log or its owner's transcript written in the last 30 minutes, or 24 hours while the run waits
-// on the human there. Past that, the owner is taken for gone and the run is anyone's to resume.
+// Who is driving a live run of a map (#81), as { session, here }, or null when nobody is: a child of the run still
+// running, or the run, its logs, its last stage's agent or its owner's transcript written in the last hour, the owner
+// then driving it (`here` when that's this session). A run waiting on the human is its owner's for 24 hours since that
+// session was last active, and then anyone's; in this session it's its question, there to ask. Past that, the owner is
+// taken for gone and the run is anyone's to resume.
 // ponytail: a guess from mtimes; ask the host which sessions are open if it ever takes a run from a live one.
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
-function drivenElsewhere(main, r) {
+function drivenBy(r) {
   const self = process.env.CLAUDE_CODE_SESSION_ID || null;
-  if (!r.session || r.session === self) return null;
-  if (r.dispatches.some((d) => d.pid && alive(d.pid))) return r.session;
-  const mtime = (f) => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } }, t = transcript(r.session);
-  const last = Math.max(Date.parse(r.updated_at) || 0, mtime(path.join(r.run_dir, "run.log")), t ? mtime(t) : 0);
-  return Date.now() - last < (WAITING.includes(r.stage) ? 24 * 60 : 30) * 60_000 ? r.session : null;
+  if (!r.session) return null;
+  const by = { session: r.session, here: r.session === self }, mtime = (f) => { try { return fs.statSync(f).mtimeMs; } catch { return 0; } };
+  const t = transcript(r.session), owner = t ? mtime(t) : 0;
+  if (WAITING.includes(r.stage)) return !by.here && Date.now() - Math.max(owner, Date.parse(r.updated_at) || 0) < 24 * 3600_000 ? by : null;
+  if (r.dispatches.some((d) => d.pid && alive(d.pid))) return by;
+  const logs = [path.join(r.run_dir, "logs"), ...(() => { try { return fs.readdirSync(path.join(r.run_dir, "tickets")).filter((d) => /^\d{2}$/.test(d)).map((d) => path.join(r.run_dir, "tickets", d, "logs")); } catch { return []; } })()]
+    .flatMap((d) => { try { return fs.readdirSync(d).map((f) => path.join(d, f)); } catch { return []; } });
+  const last = r.dispatches.at(-1), agent = last && logOf(r, last);
+  const at = Math.max(Date.parse(r.updated_at) || 0, owner, mtime(path.join(r.run_dir, "run.log")), agent ? mtime(agent) : 0, ...logs.map(mtime));
+  return Date.now() - at < 3600_000 ? by : null;
 }
 // Every run of a map, live (its worktree's state) or ended (its record on factory/records), the live one winning, each as
 // { s, pr, decided }: its state, pr.json or null, and whether its PR stage got as far as the merge decision.
@@ -832,11 +840,12 @@ switch (cmd) {
     // The run list of the map --map names, entry by entry with its run (the newest not abandoned), then what to do next
     // (#81). An entry is built once its PR merged, or is open, ready and decided. It's ready once every entry it builds on
     // is built: on the trunk when they've all merged, stacked on the one whose PR is still open, and waiting when two
-    // are. Every session working the map acts on the first RESUME or START line, so runs go side by side as far as the
-    // list's dependencies allow, one per session. After a `RESTACK <run>` line for each live run stacked on a PR that
-    // has merged since: `RESUME <run> [--on <run>]` for each run without its PR that no other session drives, `START <N>
-    // [--on <run>]` for each ready entry with no run, then `BUSY`, `WAIT` and `STOP <N>: <why>` lines for the rest (STOP
-    // where only the human can go on), and `DONE` once every entry is built.
+    // are. A session drives several runs at once and takes the RESUME and START lines it judges can go together; another
+    // session working the map sees them as BUSY. After a `RESTACK <run>` line for each live run stacked on a PR that
+    // has merged since: `RESUME <run> [--on <run>]` for each run without its PR that nobody drives, `START <N> [--on
+    // <run>]` for each ready entry with no run, then `HERE` (a run this session drives), `BUSY` (another's), `WAIT` and
+    // `STOP <N>: <why>` lines for the rest (STOP where only the human can go on), and `DONE` once every entry is built.
+    // With --wait, it first waits for the list to move (below), for a session with nothing to start.
     const MAIN = mainRoot(), config = readJson(path.join(MAIN, ".factory", "config.json")) ?? die("no .factory/config.json: run /setup-factory first");
     const branching = config.branching || {}, base = branching.model === "git-flow" ? branching.develop || "develop" : branching.main || "main";
     const { map, body } = readMap(MAIN, config.tracker, base, fs.readFileSync(0, "utf8")), entries = runList(body);
@@ -845,41 +854,60 @@ switch (cmd) {
       const bad = e.after.find((a) => !entries.some((x) => x.n === a && entries.indexOf(x) < entries.indexOf(e)));
       if (bad !== undefined) die(`entry ${e.n} of the map ${map.ref} is after ${bad}, which isn't an entry before it in the run list`);
     }
-    const all = mapRuns(MAIN, base, map.ref), out = [];
-    const issues = map.tracker === "github" ? fileEntries(MAIN, map, entries, out) : null;
-    for (const { s: r } of all) if (r.stack && !FINISHED.includes(r.stage) && prMerged({ repo: r.stack.repo, number: r.stack.pr })?.merged) out.push(`RESTACK ${r.id}`);
-    const at = {}, after = (e) => e.after.length ? ` (after ${e.after.join(", ")})` : "";
-    for (const e of entries) {
-      const { n, line } = e;
-      const mine = all.filter(({ s: r }) => r.map.entry === n && r.stage !== "abandoned").sort((a, b) => b.s.created_at.localeCompare(a.s.created_at))[0];
-      if (!mine) { out.push(`ENTRY ${n} none${after(e)}: ${line}`); at[n] = {}; continue; }
-      // Built: a PR that merged, whatever pr.json last said of it (a draft readied by hand included), or a ready one whose
-      // run got as far as its merge decision. One cut off between opening its PR and deciding it still has its PR stage.
-      const { s: r, pr, decided } = mine, m = pr ? prMerged(pr) : null, built = !!m?.merged || (!!pr && !pr.draft && !m?.closed && decided);
-      if (m?.merged && issues?.[n]?.phase) relabel(MAIN, issues[n].key, "done", issues[n].phase);  // merged by hand: its issue closed
-      const stopped = m?.closed && !m.merged ? `${r.id}'s PR #${pr.number} was closed unmerged` : !built && (FINISHED.includes(r.stage) || r.stage === "failed") ? `${r.id} ended ${r.stage} with no PR` : null;
-      at[n] = { r, pr, built, merged: !!m?.merged, stopped };
-      out.push(`ENTRY ${n} ${r.id} ${r.stage}${pr ? ` PR #${pr.number}${m?.merged ? " merged" : m?.closed ? " closed unmerged" : pr.draft ? " draft" : " open"}` : ""}${after(e)}`);
+    const filed = [], issues = map.tracker === "github" ? fileEntries(MAIN, map, entries, filed) : null;
+    // --wait: nothing to do but wait (#81), so read the list again every --every seconds (60), for --window seconds (3600)
+    // at most, until where an entry stands changes (a run made or abandoned, a PR opened, merged or closed: never a mere
+    // next stage of another session's run), then print it.
+    if (argv.includes("--wait")) {
+      const every = Number(arg("--every") ?? 60) * 1000, until = Date.now() + Number(arg("--window") ?? 3600) * 1000;
+      const stands = (lines) => lines.filter((l) => /^(RESTACK|ENTRY) /.test(l)).map((l) => l.replace(/^(ENTRY \d+ (?!none)\S+) \S+/, "$1")).join("\n");
+      const seen = stands(chainOf());
+      let lines;
+      do { pause(Math.min(every, Math.max(0, until - Date.now()))); lines = chainOf(); }
+      while (stands(lines) === seen && Date.now() < until);
+      const moved = stands(lines) !== seen;
+      console.log([moved ? "CHANGED" : `UNCHANGED after ${arg("--window") ?? 3600}s`, ...lines].join("\n"));
+      break;
     }
-    const resume = [], start = [], held = [];
-    for (const e of entries) {
-      const x = at[e.n];
-      if (x.built) continue;
-      if (x.stopped) { held.push(`STOP ${e.n}: ${x.stopped}, so the entries built on it have nothing to build on`); continue; }
-      if (e.after.some((a) => !at[a].built)) continue;  // its run starts once they're built
-      const open = e.after.filter((a) => !at[a].merged), under = open.length === 1 ? at[open[0]].r : null;
-      if (!x.r) {
-        if (open.length > 1) held.push(`WAIT ${e.n}: after ${open.map((a) => `${at[a].r.id}'s PR #${at[a].pr.number}`).join(" and ")} merge, since a run stacks on one open PR`);
-        else start.push(`START ${e.n}${under ? ` --on ${under.id}` : ""}`);
-        continue;
-      }
-      const busy = drivenElsewhere(MAIN, x.r);
-      if (busy) held.push(`BUSY ${e.n} ${x.r.id}: session ${busy} is driving it`);
-      else resume.push(`RESUME ${x.r.id}${under && x.r.base_branch !== under.branch ? ` --on ${under.id}` : ""}`);
-    }
-    const done = entries.every((e) => at[e.n].built);
-    console.log([...out, ...resume, ...start, ...held, ...(done ? ["DONE"] : resume.length + start.length + held.length ? [] : ["IDLE: every entry left waits on one still being built"])].join("\n"));
+    console.log([...filed, ...chainOf()].join("\n"));
     break;
+    // The list's lines as they stand: RESTACK, ENTRY, then what to do.
+    function chainOf() {
+      const all = mapRuns(MAIN, base, map.ref), out = [];
+      for (const { s: r } of all) if (r.stack && !FINISHED.includes(r.stage) && prMerged({ repo: r.stack.repo, number: r.stack.pr })?.merged) out.push(`RESTACK ${r.id}`);
+      const at = {}, after = (e) => e.after.length ? ` (after ${e.after.join(", ")})` : "";
+      for (const e of entries) {
+        const { n, line } = e;
+        const mine = all.filter(({ s: r }) => r.map.entry === n && r.stage !== "abandoned").sort((a, b) => b.s.created_at.localeCompare(a.s.created_at))[0];
+        if (!mine) { out.push(`ENTRY ${n} none${after(e)}: ${line}`); at[n] = {}; continue; }
+        // Built: a PR that merged, whatever pr.json last said of it (a draft readied by hand included), or a ready one whose
+        // run got as far as its merge decision. One cut off between opening its PR and deciding it still has its PR stage.
+        const { s: r, pr, decided } = mine, m = pr ? prMerged(pr) : null, built = !!m?.merged || (!!pr && !pr.draft && !m?.closed && decided);
+        if (m?.merged && issues?.[n]?.phase) { relabel(MAIN, issues[n].key, "done", issues[n].phase); delete issues[n].phase; }  // merged by hand: its issue closed
+        const stopped = m?.closed && !m.merged ? `${r.id}'s PR #${pr.number} was closed unmerged` : !built && (FINISHED.includes(r.stage) || r.stage === "failed") ? `${r.id} ended ${r.stage} with no PR` : null;
+        at[n] = { r, pr, built, merged: !!m?.merged, stopped };
+        out.push(`ENTRY ${n} ${r.id} ${r.stage}${pr ? ` PR #${pr.number}${m?.merged ? " merged" : m?.closed ? " closed unmerged" : pr.draft ? " draft" : " open"}` : ""}${after(e)}`);
+      }
+      const resume = [], start = [], held = [];
+      for (const e of entries) {
+        const x = at[e.n];
+        if (x.built) continue;
+        if (x.stopped) { held.push(`STOP ${e.n}: ${x.stopped}, so the entries built on it have nothing to build on`); continue; }
+        if (e.after.some((a) => !at[a].built)) continue;  // its run starts once they're built
+        const open = e.after.filter((a) => !at[a].merged), under = open.length === 1 ? at[open[0]].r : null;
+        if (!x.r) {
+          if (open.length > 1) held.push(`WAIT ${e.n}: after ${open.map((a) => `${at[a].r.id}'s PR #${at[a].pr.number}`).join(" and ")} merge, since a run stacks on one open PR`);
+          else start.push(`START ${e.n}${under ? ` --on ${under.id}` : ""}`);
+          continue;
+        }
+        const busy = drivenBy(x.r);
+        if (busy?.here) held.push(`HERE ${e.n} ${x.r.id}: this session is driving it`);
+        else if (busy) held.push(`BUSY ${e.n} ${x.r.id}: session ${busy.session} is driving it`);
+        else resume.push(`RESUME ${x.r.id}${under && x.r.base_branch !== under.branch ? ` --on ${under.id}` : ""}`);
+      }
+      const done = entries.every((e) => at[e.n].built);
+      return [...out, ...resume, ...start, ...held, ...(done ? ["DONE"] : resume.length + start.length + held.length ? [] : ["IDLE: every entry left waits on one still being built"])];
+    }
   }
   case "track": {
     // The request issue's phase recomputed (#81): after the PR opens, and on a resume.
