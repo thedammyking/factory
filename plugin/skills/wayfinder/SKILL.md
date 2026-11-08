@@ -8,7 +8,7 @@ license: MIT, (c) 2026 Matt Pocock. Adapted; see THIRD_PARTY_NOTICES.md
 
 A loose idea has arrived, too big for one factory run, and wrapped in fog: the way from here to the **destination** isn't visible yet. Wayfinding is about finding that way, not charging at the destination. This skill charts the way as a **shared map** on the project's tracker, then works its **decision tickets** (questions whose resolution is a decision, not slices of a build to execute) one at a time until the route is clear.
 
-Here the destination is always a **run list**: ordered one-line requests, each small enough for one run's spec, that the human starts one at a time with `/factory`. Naming what that run list must deliver is the first act of charting: it shapes every ticket.
+Here the destination is always a **run list**: ordered one-line requests, each small enough for one run's spec and naming the entries it builds on, that `/factory map` builds, side by side where they don't build on each other. Naming what that run list must deliver is the first act of charting: it shapes every ticket.
 
 ## Plan, don't do
 
@@ -57,7 +57,7 @@ Slug: <the map's slug, a few kebab-case words: its research findings live in `.f
 
 ## Run list
 
-<!-- the destination, written when its decision resolves: `N. <one-line request>` lines, in the order the runs go -->
+<!-- the destination, written when its decision resolves: `N. <one-line request> [after <the entries it builds on>]` lines, in the order the runs go -->
 ```
 
 ### Tickets
@@ -144,6 +144,6 @@ The human invokes it with a map (its reference, as the doc's **Map** gives it). 
 4. Record the resolution as the doc's **Resolve** says: the answer recorded on the ticket, the ticket closed, and a **context pointer** appended to the map's Decisions-so-far.
 5. Add newly-surfaced tickets (create-then-wire); graduate any fog the answer has made specifiable, clearing each graduated patch from **Not yet specified** so it lives only as its new ticket. If the answer reveals that a ticket (this one or another) sits beyond the destination, **rule it out of scope** rather than resolving it on the route. If the decision invalidates other parts of the map, update or delete those tickets.
 6. **Next.** Fire every research ticket now on the frontier, as [Research tickets](#research-tickets) says, and an AFK task's agent, in the background, then go back to step 2 for the next grilling ticket, in the same turn: a research ticket resolves when its notification arrives, whatever you're asking then. With only claimed or blocked tickets left, end your turn: a notification brings you back. Another session's claim is skipped, never waited on.
-7. **The run list is the last decision.** Once the frontier and the fog are empty, ticket it like any other grilling decision: which runs, each one line a `/factory` request could start, sized to one run's spec, and in what order. When it resolves, write its entries into the map's `## Run list` as `N. <request>` lines. That ends the human's grill: in this session, without asking, read `${CLAUDE_PLUGIN_ROOT}/skills/factory/SKILL.md` and follow it with `map <the map's reference>` as its arguments (its **The run list** in `references/map.md`), which builds every entry in order, hands off, to its PR.
+7. **The run list is the last decision.** Once the frontier and the fog are empty, ticket it like any other grilling decision: which runs, each one line a `/factory` request could start, sized to one run's spec, in what order, and which earlier entries each builds on: the code it needs to exist first, never a mere preference. Recommend the fewest dependencies that hold, since entries that don't build on each other run side by side (#81). When it resolves, write its entries into the map's `## Run list` as `N. <request> [after 2, 4]` lines, `[after none]` for one that builds on nothing, each naming only entries before it. That ends the human's grill: in this session, without asking, read `${CLAUDE_PLUGIN_ROOT}/skills/factory/SKILL.md` and follow it with `map <the map's reference>` as its arguments (its **The run list** in `references/map.md`), which builds every entry, side by side where the dependencies allow, hands off, to its PR.
 
 The human may run unblocked tickets in parallel, so expect other sessions to be editing the tracker concurrently.

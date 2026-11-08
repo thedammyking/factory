@@ -34,6 +34,7 @@
     "minutes_per_ticket": 45
   },
   "parallel_tickets": 2,
+  "parallel_runs": 2,
   "qa": {
     "screenshots_max": 40,
     "max_turns": 80,

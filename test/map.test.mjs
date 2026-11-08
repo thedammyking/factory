@@ -302,7 +302,7 @@ test("chain works a map's run list: each entry with its run and PR, the next sta
   fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "open", merged_at: null }));
   const t = tracked("github"), chain = () => ok(t.rs(["chain", "--map", "#40"])).split("\n");
   fs.writeFileSync(SUBS, JSON.stringify([sub(51, 1, "in-pr"), sub(52, 2)]));
-  assert.deepEqual(chain(), ["ENTRY 1 none: Add contacts with name, email and company", "ENTRY 2 none: Import contacts from a CSV file", "START 1"]);
+  assert.deepEqual(chain(), ["ENTRY 1 none: Add contacts with name, email and company", "ENTRY 2 none (after 1): Import contacts from a CSV file", "START 1"]);
   const one = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "1"])));
   const rs = (s, ...args) => ok(t.rs([...args, "--run", s.id]));
   write(one.run_dir, { "triage.md": "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch: "feature/add-contacts", route: "build" }) + "\n```\n" });
@@ -314,7 +314,7 @@ test("chain works a map's run list: each entry with its run and PR, the next sta
   write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: false }) });
   assert.equal(chain().at(-1), `RESUME ${one.id}`, "a ready PR whose run hasn't decided it yet: its PR stage goes on");
   write(one.run_dir, { "decision.json": JSON.stringify({ decision: "needs-human" }) });
-  assert.deepEqual(chain(), [`ENTRY 1 ${one.id} start PR #60 open`, "ENTRY 2 none: Import contacts from a CSV file", `START 2 --on ${one.id}`]);
+  assert.deepEqual(chain(), [`ENTRY 1 ${one.id} start PR #60 open`, "ENTRY 2 none (after 1): Import contacts from a CSV file", `START 2 --on ${one.id}`]);
   const two = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "2", "--on", one.id])));
   assert.deepEqual([two.base_branch, two.trunk, two.stack], ["feature/51-add-contacts", "main", { run: one.id, branch: "feature/51-add-contacts", pr: 60, repo: "o/r" }],
     "the branch carries the entry's issue");
@@ -325,7 +325,7 @@ test("chain works a map's run list: each entry with its run and PR, the next sta
   write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: true }) });  // readied and merged by hand
   const unlabel = (c) => c.join(" ") === "api -X DELETE repos/o/r/issues/51/labels/factory%3Ain-pr";
   assert.ok(!t.gh.calls("gh").some(unlabel));
-  assert.deepEqual(chain(), [`RESTACK ${two.id}`, `ENTRY 1 ${one.id} start PR #60 merged`, `ENTRY 2 ${two.id} start`, `RESUME ${two.id}`]);
+  assert.deepEqual(chain(), [`RESTACK ${two.id}`, `ENTRY 1 ${one.id} start PR #60 merged`, `ENTRY 2 ${two.id} start (after 1)`, `RESUME ${two.id}`]);
   assert.ok(t.gh.calls("gh").some(unlabel), "merged by hand: its issue closes with no phase left on it");
   assert.equal(rs(two, "stack"), "restacked onto main, feature/51-add-contacts's PR having merged");
   const after = JSON.parse(rs(two, "get"));
@@ -375,6 +375,49 @@ test("on github, chain files each entry of the run list as a queued issue under 
   assert.match(rs("spec-comment"), /^skip: the run filed #50, whose body is the spec/);
   assert.equal(rs("abandon"), `abandoned ${s.id}; its branch is kept`, "an entry's issue isn't closed with its run");
   assert.deepEqual(labels().slice(2), ["POST labels[]=factory:queued", "DELETE factory%3Aplanning"], "back in the queue for the entry's next run");
+});
+
+test("chain hands out every entry whose dependencies are built, one run per entry and per session: side by side on the trunk, stacked on one open PR, waiting on two (#81)", () => {
+  const BODY = `${MAP}\n## Run list\n\n1. Scaffold the app [after none]\n2. Add sign-in\n3. Add the todos API [after 2]\n4. Add the UI kit [after 1]\n5. Add web sign-in [after 2, 4]\n`;
+  const p = project({ config: { tracker: "local" } });
+  githubOrigin(p);
+  write(p.dir, { ".factory/maps/app/map.md": BODY }); p.git("add", "-A"); p.git("commit", "-qm", "map");
+  const pulls = Object.fromEntries([60, 61, 62].map((n) => [n, canned({ number: n, state: "open", merged_at: null })]));
+  const merged = (n) => fs.writeFileSync(pulls[n], JSON.stringify({ number: n, state: "closed", merged_at: "2026-11-08T09:00:00Z" }));
+  const gh = fakeClis({ gh: Object.entries(pulls).map(([n, file]) => ({ match: new RegExp(`^api repos/o/r/pulls/${n}$`), file })) });
+  const env = { ...process.env, PATH: gh.env.PATH };
+  delete env.CLAUDE_CODE_SESSION_ID;
+  const rs = (args, more = {}) => script("run-state.mjs", p.dir, args, { env: { ...env, ...more } });
+  const chain = () => ok(rs(["chain", "--map", "app"])).split("\n").filter((l) => !l.startsWith("ENTRY"));
+  const begin = (n, more) => JSON.parse(ok(rs(["init", "--map", "app", "--entry", String(n)], more)));
+  const built = (s, branch, number) => {
+    write(s.run_dir, { "triage.md": "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch, route: "build" }) + "\n```\n" });
+    ok(rs(["set", "route", "build", "--run", s.id])); ok(rs(["lane", "--run", s.id]));
+    write(s.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number, draft: false }), "decision.json": JSON.stringify({ decision: "needs-human" }) });
+  };
+
+  assert.deepEqual(chain(), ["START 1"], "nothing else is built on yet");
+  const one = begin(1);
+  assert.equal(one.request, "Scaffold the app", "the [after …] is no part of the request");
+  built(one, "feature/scaffold", 60);
+  merged(60);
+  assert.deepEqual(chain(), ["START 2", "START 4"], "both on the trunk, side by side");
+  const two = begin(2, { CLAUDE_CODE_SESSION_ID: "s-other" });
+  assert.deepEqual(chain(), ["START 4", `BUSY 2 ${two.id}: session s-other is driving it`], "another session's run is left to it");
+  const again = rs(["init", "--map", "app", "--entry", "2"]);
+  assert.equal(again.status, 2);
+  assert.match(again.stderr, new RegExp(`entry 2 of the map app has its run already, ${two.id} \\(start\\): run chain again`));
+  const four = begin(4);
+  built(two, "feature/sign-in", 61);
+  built(four, "feature/ui-kit", 62);
+  assert.deepEqual(chain(), [`START 3 --on ${two.id}`, `WAIT 5: after ${two.id}'s PR #61 and ${four.id}'s PR #62 merge, since a run stacks on one open PR`]);
+  merged(62);
+  assert.deepEqual(chain(), [`START 3 --on ${two.id}`, `START 5 --on ${two.id}`], "on the one PR still open");
+  merged(61);
+  assert.deepEqual(chain(), ["START 3", "START 5"]);
+  const bad = `${MAP}\n## Run list\n\n1. Scaffold the app [after 2]\n2. Add sign-in\n`;
+  write(p.dir, { ".factory/maps/app/map.md": bad }); p.git("add", "-A"); p.git("commit", "-qm", "loop");
+  assert.match(rs(["chain", "--map", "app"]).stderr, /entry 1 of the map app is after 2, which isn't an entry before it in the run list/);
 });
 
 test("a request at the map gate is mid-run, and once charted its closing comment links the map", () => {
