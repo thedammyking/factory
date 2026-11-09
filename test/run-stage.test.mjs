@@ -576,9 +576,11 @@ test("with an app to walk, a green DONE ticket goes to qa before it merges, veri
   assert.equal(up.status, 0, up.stdout + up.stderr);
   const { pid } = JSON.parse(fs.readFileSync(path.join(r.tickets, "apps.json"), "utf8")).apps.app;
   assert.match(lastLine(r.stage("merge", "01")), /^MERGED 01:/);
-  assert.deepEqual(pins(path.join(r.s.run_dir, "evidence.json")), [[pinned, "pass"]], "rerun at the run head");
+  const head = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence.json"), "utf8")).checks.find((c) => c.pinned);
+  assert.deepEqual([head.check, head.status, head.reused_from], [pinned, "pass", JSON.parse(fs.readFileSync(path.join(r.tickets, "evidence.json"), "utf8")).sha],
+    "at the run head, the ticket's pass, the merge having changed nothing it tested (#81)");
   assert.throws(() => process.kill(-pid, 0), { code: "ESRCH" }, "the ticket's apps went down with its worktree");
-  assert.deepEqual(fs.readdirSync(dbs), [db(r.s.id)], "and its database, the run worktree's kept");
+  assert.deepEqual(fs.readdirSync(dbs), [], "and its database; the run worktree's apps never came up, with no pinned test to run");
 });
 
 test("a red only in pinned tests goes to qa at no round's cost: a test qa rules fail is named in the fix round with verify --pinned, and one it supersedes lets the ticket merge", (t) => {

@@ -24,7 +24,9 @@
 //     to 30 minutes, so one worktree at a time has the device; with no device recorded it's "skip". Its optional dev
 //     server starts like any app's. Once the other apps are up, up takes the lock and runs its `build` in its path, with
 //     FACTORY_PLATFORM ios or android (its dev server gets it too): the build's last line is the .app or .apk it made,
-//     its output saved to logs/<app>.build.log. up then boots the device only if it isn't running (simctl boot;
+//     its output saved to logs/<app>.build.log. The last build of each app and platform is kept beside the worktrees and
+//     installed in place of another while nothing it's made from has changed (buildKey), so a verify that brings the
+//     app up for one flow doesn't rebuild it. up then boots the device only if it isn't running (simctl boot;
 //     emulator -no-window), and records its appearance and text size, and on Android its density and size, in apps.json
 //     before it changes anything. Android then gets wm size at the screen's size in dp and wm density 160, so its
 //     screencap is 1x, and adb reverse for every recorded port. up installs the app over what's there, streams the
@@ -43,12 +45,13 @@
 //     it as up, down or skip. Each worktree reads and writes only its own, so down stops only what its up started.
 // up exits 0 when every app it started is healthy, 1 when one isn't or the database or a lock failed it; down exits 1
 // when the drop failed or the device isn't restored; shot and look exit 1 without a device up; all exit 2 on bad usage.
+import crypto from "node:crypto";
 import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
-import { readJson, arg, worktreesDir, runContext, runEnv, digest, fill, device, cli, NO_DEVICE } from "./lib.mjs";
+import { readJson, arg, git, worktreesDir, runContext, runEnv, digest, fill, device, cli, NO_DEVICE } from "./lib.mjs";
 
 const cmd = process.argv[2];
 if (!["up", "down", "status", "shot", "look"].includes(cmd) || (cmd === "shot" && !/^[\w-]+$/.test(process.argv[3] ?? ""))
@@ -275,9 +278,27 @@ async function down() {
   return given;
 }
 
+// What a mobile build is made from (#81), as a key, or null when it can't be told: every file of HEAD but the other
+// apps', the pinned tests' and .factory/'s, with the platform, the build command, the app's profile env and env.local.
+// A worktree with uncommitted changes, or a build or env that takes a port or the database, always builds.
+function buildKey(a, platform) {
+  const prof = recipe.profiles || {}, env = { ...(record.profile !== "default" && prof.default?.[a.name]), ...prof[record.profile]?.[a.name] };
+  if (/\{(port:[^}]+|db)\}/.test(JSON.stringify([a.build, env]))) return null;
+  try {
+    if (git(ctx.tree, "status", "--porcelain", "--untracked-files=no")) return null;
+    const dir = (p) => `${p.replace(/\/+$/, "")}/`, own = dir(a.path || ".");
+    const skip = [...(recipe.apps || []).filter((x) => x !== a && x.path && x.path !== "." && !own.startsWith(dir(x.path))).map((x) => dir(x.path)),
+      ...(recipe.pinned || []).map(dir), ".factory/"];
+    const files = git(ctx.tree, "ls-tree", "-r", "HEAD").split("\n").filter((l) => !skip.some((s) => (l.split("\t")[1] ?? "").startsWith(s)));
+    let local = ""; try { local = fs.readFileSync(path.join(ctx.MAIN, ".factory", "env.local"), "utf8"); } catch {}
+    return crypto.createHash("sha256").update([platform, a.build, JSON.stringify(env), local, ...files].join("\n")).digest("hex").slice(0, 16);
+  } catch { return null; }
+}
 // The mobile branch, after the other apps are up, all under the device lock: each mobile app built, then the device
 // booted if it isn't running, its settings recorded, each app installed, the recorded ports reversed, and each app's
-// log streamed before it's launched, until it's in front. A step that fails fails every mobile app not up yet.
+// log streamed before it's launched, until it's in front. A step that fails fails every mobile app not up yet. The last
+// build of each app and platform is kept beside the worktrees, shared by every run, and installed again in place of a
+// build while its buildKey holds (#81): a native build is minutes a verify would spend on every ticket.
 async function onDevice(mobiles, target, envFor, failed, exits) {
   await lock(DEVICE_LOCK, "device", 30);
   const built = {}, served = {};  // the .app or .apk each build made; each dev server's log
@@ -285,14 +306,30 @@ async function onDevice(mobiles, target, envFor, failed, exits) {
     const app = record.apps[a.name], cwd = path.join(ctx.tree, a.path || ".");
     served[a.name] = app.log;
     if (!a.build) { failed[a.name] = "has no build in the recipe"; continue; }
-    const log = logOf(a, "build"), fd = fs.openSync(log, "w");
+    const log = logOf(a, "build"), key = buildKey(a, target.platform), cache = path.join(worktreesDir(ctx.MAIN), ".builds", `${a.name}-${target.platform}`);
+    const kept = key && readJson(path.join(cache, "build.json"));
+    if (kept?.key === key && fs.existsSync(kept.file)) {
+      fs.writeFileSync(log, `reused the build of ${key}: ${kept.file}\n`);
+      app.log = log; built[a.name] = kept.file;
+      continue;
+    }
+    const fd = fs.openSync(log, "w");
     const r = spawnSync("bash", ["-c", fill(a.build, record)], { cwd, env: envFor(a), stdio: ["ignore", fd, fd], timeout: 30 * 60_000 });
     fs.closeSync(fd);
     app.log = log;
     const last = fs.readFileSync(log, "utf8").trim().split("\n").at(-1).trim(), file = last && path.resolve(cwd, last);
     if (r.status !== 0) failed[a.name] = `build ${r.error ? r.error.message : `exited ${r.status ?? r.signal}`}`;
     else if (!file || !fs.existsSync(file)) failed[a.name] = "build's last line is no .app or .apk it made";
-    else built[a.name] = file;
+    else {
+      built[a.name] = file;
+      if (key) try {
+        fs.rmSync(cache, { recursive: true, force: true });
+        const copy = path.join(cache, "artifact", path.basename(file));
+        fs.mkdirSync(path.dirname(copy), { recursive: true });
+        fs.cpSync(file, copy, { recursive: true });
+        fs.writeFileSync(path.join(cache, "build.json"), JSON.stringify({ key, file: copy, at: new Date().toISOString() }) + "\n");
+      } catch {}  // a build that can't be kept is made again next time
+    }
   }
   const ready = mobiles.filter((a) => built[a.name]);
   if (!ready.length) return;

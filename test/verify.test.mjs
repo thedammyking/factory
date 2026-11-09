@@ -5,7 +5,7 @@ import fs from "node:fs";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawnSync, execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { project, sh, STUB_SERVER } from "./harness.mjs";
 import { fakeDevice, DEVICES } from "./device.mjs";
@@ -346,6 +346,29 @@ test("fix 4: a pinned test named <run>-<NN>-<slug>.<profile>.<ext> runs with the
 const PINNED_SEEN = 'import { test } from "node:test";\nimport fs from "node:fs";\n'
   + 'test("[r1] SC-001: the app answers", async () => {\n  const { pid } = await (await fetch(`${process.env.BASE_URL}/`)).json();\n'
   + '  fs.appendFileSync(process.env.SEEN, `${process.env.FACTORY_PROFILE} ${pid}\\n`);\n});\n';
+
+test("a full verify after a green one runs only the pinned tests changed since, when nothing but pinned tests changed: the rest keep their pass, with reused_from (#81)", (t) => {
+  const seen = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "factory-seen-")), "seen");
+  const p = withApps(t, API(), { "e2e/r1-01-a.test.mjs": PINNED_SEEN, "e2e/r1-01-b.test.mjs": PINNED_SEEN }, { SEEN: seen });
+  const ran = () => fs.readFileSync(seen, "utf8").trim().split("\n").length;
+  const commit = (f, text) => { fs.mkdirSync(path.dirname(path.join(p.wt, f)), { recursive: true }); fs.writeFileSync(path.join(p.wt, f), text);
+    execFileSync("git", ["add", "--", f], { cwd: p.wt }); execFileSync("git", ["commit", "-qm", f], { cwd: p.wt }); };
+  const first = p.verify("--full");
+  assert.equal(first.status, 0, first.stdout);
+  assert.equal(ran(), 2);
+  commit("e2e/r1-02-c.test.mjs", PINNED_SEEN);  // qa pins another
+  const second = p.verify("--full");
+  assert.equal(second.status, 0, second.stdout);
+  assert.equal(ran(), 3, "only the new one ran");
+  assert.deepEqual(second.evidence.checks.map((c) => c.reused_from ?? null), [null, first.evidence.sha, first.evidence.sha, null], "the unit check always runs");
+  assert.equal(second.evidence.green, true);
+  commit("e2e/r1-01-a.test.mjs", PINNED_SEEN + "// repaired\n");
+  assert.deepEqual(p.verify("--full").evidence.checks.map((c) => c.reused_from ?? null), [null, null, first.evidence.sha, second.evidence.sha], "a changed one runs, and each pass names the verify that ran it");
+  assert.equal(ran(), 4);
+  commit("lib.mjs", "export const x = 1;\n");  // the product
+  const fourth = p.verify("--full");
+  assert.deepEqual([fourth.evidence.checks.filter((c) => c.reused_from).length, ran()], [0, 7], "a product change runs every pinned test");
+});
 
 test("verify --full brings the apps up once per profile for all of its pinned tests, and down before the next, keeping the tests' order in the evidence", (t) => {
   const seen = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "factory-seen-")), "seen");

@@ -221,7 +221,8 @@ if (cmd === "merge") {
   if (redetected) console.log(`${redetected.stdout}${redetected.status ? redetected.stderr : ""}`.trim());
   if (redetected?.status) say("ATTENTION", `merged ${branch}, but re-detecting the recipe failed, as printed above: `
     + `run ${path.join(HERE, "setup-factory.mjs")} redetect --worktree ${ctx.worktree} once it's fixed`);
-  const v = node("verify.mjs", ["--full", "--run", ctx.id], { cwd: ctx.MAIN }), sha = git(ctx.worktree, "rev-parse", "HEAD");
+  // The ticket's green evidence: a merge that left its tree as it was runs none of its pinned tests again (#81).
+  const v = node("verify.mjs", ["--full", "--reuse", path.join(dir, "evidence.json"), "--run", ctx.id], { cwd: ctx.MAIN }), sha = git(ctx.worktree, "rev-parse", "HEAD");
   console.log(v.stdout.split("\n")[0]);
   // The ticket's apps go down first, and its database with its worktree; a drop that fails keeps the worktree to retry
   // from. The branch is in the run branch now, which -d can't see from the main checkout. --force: the worktree's

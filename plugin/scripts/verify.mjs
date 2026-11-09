@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// verify.mjs --fast | --full | --pinned <path> — runs every check in the run worktree's recipe (.factory/setup.json) for
+// verify.mjs --fast | --full [--reuse <evidence.json>] | --pinned <path> — runs every check in the run worktree's recipe (.factory/setup.json) for
 // every app, never stopping at the first failure, and writes the evidence to the run dir: evidence.json for --full,
 // evidence-fast.json for --fast (typecheck, lint and test only), so a fast pass never stands in for a full one. Takes
 // --run <id>, or derives the run from the run worktree it runs in. Run in a ticket's worktree, it checks that worktree
@@ -10,6 +10,8 @@
 //     of a profile's tests and down before the next profile's, a mobile app only when one of them is its own, so an
 //     API test never builds it or takes the device. A test named
 //     <run>-<NN>-<slug>.<profile>.<ext> runs with the apps up in that profile, FACTORY_PROFILE in its env (design fix 4);
+//     a pinned test that passed in the last green --full here (or --reuse's), on a commit that differs from HEAD only in
+//     other pinned tests, keeps that pass with reused_from and doesn't run again (#81);
 //     a profile the recipe lacks skips it with up's reason. --pinned <path> runs only that test, in the worktree holding
 //     it, wherever it's called from, into evidence-pinned.json.
 //   - A mobile app's pinned directory holds Maestro flows. Once qa has pinned one there (<run>-<NN>-<slug>-SC-###.yaml),
@@ -169,6 +171,22 @@ if (onlyTest && !(pinnedDirs.some((d) => pinnedTests[0].startsWith(d + path.sep)
   console.error(`verify: ${pinnedTests[0]} isn't a ${Object.keys(RUNNERS).join(" or ")} in an app's pinned directory (${pinnedDirs.join(", ") || "the recipe has none"}), nor a <run>-<NN>-<slug>-SC-###.yaml flow in a mobile app's`); process.exit(2);
 }
 pinnedTests.push(...flowDirs);
+// A pinned test that passed on this product keeps its pass (#81): when the last green full verify here, or the one
+// --reuse names (the ticket's, on its merge), is of a commit that differs from HEAD only in pinned tests, each pinned
+// test none of those changes touched is taken from it, with reused_from, and only the rest run. Every other check runs.
+const reused = (() => {
+  if (mode !== "full" || onlyTest) return {};
+  for (const f of [arg("--reuse"), path.join(out, "evidence.json")].filter(Boolean)) {
+    const e = readJson(f);
+    if (e?.mode !== "full" || !e.green) continue;
+    let changed; try { changed = execFileSync("git", ["diff", "--name-only", e.sha, "HEAD"], { cwd: tree, encoding: "utf8" }).split("\n").filter(Boolean); } catch { continue; }
+    if (!changed.every((c) => pinnedDirs.some((d) => c.startsWith(d + "/")))) continue;
+    const touched = (rel) => changed.some((c) => c === rel || c.startsWith(rel + "/"));
+    return Object.fromEntries(e.checks.filter((c) => c.pinned && c.status === "pass" && pinnedTests.includes(c.check) && !touched(c.check))
+      .map((c) => [c.check, { ...c, reused_from: c.reused_from ?? e.sha }]));
+  }
+  return {};
+})();
 
 // undefined without a Maestro check, null when maestro --version fails
 const maestroVersion = !pinnedTests.some(isMaestro) ? undefined : (() => {
@@ -194,10 +212,10 @@ for (const app of onlyTest ? [] : recipe.apps || []) {
 }
 // A profile's pinned tests run with the apps up once for all of them, and down before the next profile's; the
 // evidence keeps the tests' own order.
-const ran = {}, byProfile = {};
+const ran = { ...reused }, byProfile = {};
 for (const rel of pinnedTests.filter((rel) => holder(rel))) (byProfile[profileOf(rel)] ||= []).push(rel);
 for (const [profile, rels] of Object.entries(byProfile)) {
-  for (const rel of rels) if (maestroSkip(rel)) ran[rel] = { status: "skipped", ...NOT_RUN, digest: maestroSkip(rel) };
+  for (const rel of rels) if (!ran[rel] && maestroSkip(rel)) ran[rel] = { status: "skipped", ...NOT_RUN, digest: maestroSkip(rel) };
   const live = rels.filter((rel) => !ran[rel]);
   if (live.length) upFor(profile, live.map((rel) => holder(rel).name), (up) => {
     for (const rel of live) {

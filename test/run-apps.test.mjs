@@ -463,6 +463,29 @@ test("every simulator and emulator is behind one machine-wide lock from up to do
   assert.ok(!fs.existsSync(d.lock));
 });
 
+test("a mobile build is kept and installed again by every worktree while nothing it's made from changed, and made again once something has (#81)", async (t) => {
+  const p = mobile(t, "ios", { apps: [WEB_API.apps[0], MOBILE()] });
+  const commit = (f, text, message) => { fs.mkdirSync(path.dirname(path.join(p.dir, f)), { recursive: true }); fs.writeFileSync(path.join(p.dir, f), text); p.git("add", "--", f); p.git("commit", "-qm", message); };
+  const ups = async (request) => {
+    const s = p.start(request), r = await p.apps(s, "up");
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const log = fs.readFileSync(path.join(s.run_dir, "logs/mobile.build.log"), "utf8"), installed = p.d.calls("xcrun").filter((c) => c[1] === "install").at(-1)[3];
+    assert.equal((await p.apps(s, "down")).status, 0);
+    return { log, installed, s };
+  };
+  const first = await ups("Show the cart total");
+  assert.match(first.log, /^compiled\n/);
+  assert.equal(first.installed, path.join(first.s.worktree, "mobile/build/Shop.app"));
+  const second = await ups("Show the order history");
+  const kept = path.join(p.dir, ".factory/worktrees/.builds/mobile-ios/artifact/Shop.app");
+  assert.equal(second.log, `reused the build of ${JSON.parse(fs.readFileSync(path.join(p.dir, ".factory/worktrees/.builds/mobile-ios/build.json"), "utf8")).key}: ${kept}\n`);
+  assert.equal(second.installed, kept, "another worktree of the same tree installs the kept build");
+  commit("web/page.html", "<p>hi</p>\n", "another app's");
+  assert.match((await ups("Tweak the web page")).log, /^reused /, "a change outside what the app is made from keeps it");
+  commit("mobile/App.tsx", "export default 1;\n", "the app's");
+  assert.match((await ups("Change the app")).log, /^compiled\n/, "a change to the app builds it again");
+});
+
 test("a mobile build runs under the device lock, and one that fails fails up with its digest before the device is touched", async (t) => {
   const p = mobile(t, "ios", { apps: [MOBILE({ build: "echo 'error: no such module ExpoModulesCore'; exit 65" })] });
   const s = p.start("Show the cart total"), log = path.join(s.run_dir, "logs/mobile.build.log");
