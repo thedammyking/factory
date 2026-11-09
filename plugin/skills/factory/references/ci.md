@@ -5,7 +5,7 @@
 The scripts sit beside `run-state.mjs`. Call each as `node <that directory>/<script> --run <id>`, written out in full, and print what it prints.
 
 1. **Read.** Run `ci-watch.mjs` with Bash's `run_in_background`, since it waits for CI, up to 15 minutes, and as long again for a re-run: say `Reading CI on <id>.` and end your turn. When it wakes you, read the background task's output, ignoring the notification's text. Its last line is `CI <cause> at <sha>: <why>`:
-   - `green`, or `flake` (its re-run passed): go to step 3 of `references/pr.md`, the merge decision.
+   - `green`, or `flake` (its re-run passed), or `none` (the project has no CI workflow, which the merge decision weighs): go to step 3 of `references/pr.md`, the merge decision.
    - `ours`: step 2.
    - On exit 1 the cause was `inherited` (the base fails at the same steps) or `infra` (CI reached no result), and its last line is `needs-human: <attention item>`: it wrote `attention-ci.md` and ended the run needs-human. Run `pr-render.mjs` and `pr-open.mjs`, then the snapshot, as a stop does (below).
    - Any other non-zero exit is a factory error: stop.

@@ -10,7 +10,9 @@
 //              steps is noted in ci.json, and the red stays the run's (design fix 17)
 //   inherited  every failing step is red on the base's head too (once its pending workflow runs complete), so nothing is
 //              re-run: the base is broken, not the run
-//   infra      no workflow at the head, no workflow run in time, one not done in time, cancelled, timed out or never
+//   none       the head has no workflow in .github/workflows: CI has nothing to say, which the merge decision weighs
+//              (#81), never a stop
+//   infra      no workflow run in time, one not done in time, cancelled, timed out or never
 //              started, or GitHub refusing a call: CI reached no result
 // A failing step is <workflow> / <job> / <step>. On ours or inherited each failing job's whole log is saved as
 // logs/ci-failure.log in the run dir, timestamps and ANSI stripped, and its digest printed. The last line is the verdict,
@@ -52,7 +54,7 @@ function watch(sha, ready) {
 // re-run can tell apart.
 function classify(runs) {
   if (!runs) return ["infra", refused];
-  if (!runs.length) return ["infra", workflows ? `no workflow run appeared for ${short(head)} in ${WAIT} s` : "the head has no workflow in .github/workflows, so nothing runs CI on it"];
+  if (!runs.length) return workflows ? ["infra", `no workflow run appeared for ${short(head)} in ${WAIT} s`] : ["none", "the head has no workflow in .github/workflows, so nothing runs CI on it"];
   const pending = runs.filter((r) => !done(r)), stuck = runs.filter((r) => !OK.includes(r.conclusion)), again = runs.filter((r) => r.run_attempt > 1);
   if (pending.length) return ["infra", pending.map((r) => `${r.name} still ${r.status} after ${WAIT} s`).join(", ")];
   if (runs.some((r) => r.conclusion === "failure")) return ["failure"];

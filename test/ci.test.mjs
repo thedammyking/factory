@@ -186,7 +186,7 @@ test("fix 17: inherited only when the same failing step is red on the base's hea
   assert.equal(q.json("state.json").stage, "tickets", "ours stops nothing: the fix round comes next");
 });
 
-test("infra: a workflow run not done in time, one cancelled, none at all, GitHub refusing a call, or a head with no workflow stops the run with attention-ci.md", (t) => {
+test("infra: a workflow run not done in time, one cancelled, none at all or GitHub refusing a call stops the run with attention-ci.md; a head with no workflow is none, and no stop (#81)", (t) => {
   const r = ciReady(t), sha = r.head().slice(0, 7), item = path.join(r.s.run_dir, "attention-ci.md");
   for (const [answers, why, args = []] of [
     [{ head: [[wf(11, null, { status: "in_progress" })]] }, "CI still in_progress after 0 s", ["--wait", "0"]],
@@ -203,8 +203,9 @@ test("infra: a workflow run not done in time, one cancelled, none at all, GitHub
     assert.equal(r.json("state.json").stage, "needs-human");
   }
   const bare = ciReady(t, { workflows: false }), out = bare.ci({ head: [[]] });
-  assert.equal(out.status, 1);
-  assert.match(out.stdout, /^CI infra at \w{7}: the head has no workflow in \.github\/workflows, so nothing runs CI on it$/m);
+  assert.equal(out.status, 0, out.stdout + out.stderr);
+  assert.equal(out.stdout.trim(), `CI none at ${bare.head().slice(0, 7)}: the head has no workflow in .github/workflows, so nothing runs CI on it`);
+  assert.deepEqual([bare.json("ci.json").cause, fs.existsSync(path.join(bare.s.run_dir, "attention-ci.md")), bare.json("state.json").stage !== "needs-human"], ["none", false, true]);
   assert.deepEqual(bare.calls(), [], "nothing to wait for");
 });
 

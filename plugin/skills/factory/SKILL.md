@@ -133,7 +133,11 @@ After the grill, or for a run from a map's run list from its start, the run is t
 
 ## Attention items
 
-Every stop writes one attention item, `<run_dir>/attention-<name>.md`, with the name each step gives, as the record of its decision. Wherever a step prints one and stops, put it to the human first (see **Questions**): its headline is the question and its options are the question's, the one its recommendation names first, unless the step asks its own questions in their place. A stop with one option asks nothing: say the run waits on the human, who can take it, and end your turn. The item has this shape and no other, its recommended option listed first:
+Every stop writes one attention item, `<run_dir>/attention-<name>.md`, with the name each step gives, as the record of its decision.
+
+Before you ask, settle whether the stop is the human's (#81). When its recommended option is a reversible step inside the run (a fix round, verifying again, amending the plan or the recipe, a change to the product the map's decisions and the spec allow, opening the PR with what's left listed), it's the factory's call: append `- Q: <the headline> → A: <the option> (the factory's call)` to `grill.md` under `### Session <today's date> (attention-<name>; the factory's call)`, which the PR lists, and take that option as the step says to on the human's choice, without asking. The human's are only lifting a cap, granting a permission, a credential, a sign-in or an install the factory can't make, abandoning, and an option no recommendation names. A stop that comes back after the factory's call on it is the human's too.
+
+Wherever a step prints one and stops for the human, put it to them first (see **Questions**): its headline is the question and its options are the question's, the one its recommendation names first, unless the step asks its own questions in their place. A stop with one option asks nothing: say the run waits on the human, who can take it, and end your turn. The item has this shape and no other, its recommended option listed first:
 
 ```markdown
 # <one line: what the human needs to decide>

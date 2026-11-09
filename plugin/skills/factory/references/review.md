@@ -32,6 +32,6 @@ First, once per review and never on a re-review, run `sync-base.mjs before-revie
    - `REVIEW <lens,…>`: step 1 again, then step 2 when `ui` is among the lenses so the UI lens sees the fix, then step 3 for only the lenses it names, each with the `fix_diff` line, then step 4. `human` is no agent: leave it out of step 3 (with no other lens named, dispatch nothing and don't end your turn), and once the others are read, go to step 3 of `references/comments.md` in place of step 4.
    - `ROUND`: step 5 again.
    - `SUSPENDED`: the child stopped at the usage limit, which costs no round. Stop, with the options `/factory resume <id>` (once the limit resets) and `/factory abandon <id>`, and `run-state set stage suspended --run <id>` in place of needs-human.
-   - `ATTENTION`: stop.
+   - `ATTENTION`: with no open P0 in `findings.json`, what the fix couldn't settle is the human's to judge on the PR (#81), as on `ESCALATE`: read `references/pr.md` beside this file and follow it. With an open P0, stop.
 
 To stop, write `attention-review.md`. Its headline is the reason; What happened quotes the line that stopped it; Evidence lists `findings.json`, `deferred.md`, each `review-<lens>.md` with its `review-<lens>.round<N>.md` files, `review-fix.md`, `evidence.json` and `logs/review-fix.*.jsonl`, those that exist. The options are `/factory abandon <id>`. Run `run-state set stage needs-human --run <id>`, open the draft PR as **Draft** in `references/pr.md` says (never on `SUSPENDED`, which a resume carries on), then the snapshot; print it and stop.

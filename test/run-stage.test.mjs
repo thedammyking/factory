@@ -276,7 +276,7 @@ test("a merge that conflicts is aborted and left as it was, and a run head that 
   assert.match(fs.readFileSync(path.join(red.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: in-progress$/m, "the ticket isn't done");
 });
 
-test("a ticket that adds an app re-detects the recipe in its own worktree before its verify (#81), leaving out a script that fails its proof, which the PR lists, and its merge runs the recipe's setup in the run worktree; one that changes no manifest commits nothing", (t) => {
+test("a ticket that adds an app re-detects the recipe in its own worktree before its verify (#81), leaving out a script that fails its proof, which the PR lists, and its merge runs the recipe's setup in the run worktree; one that changes no manifest commits nothing, though its merge installs too", (t) => {
   const r = ticketReady(t);
   // its test passes only where the recipe's setup ran: in the run worktree, that's the merge's, before the proof
   const api = { name: "api", scripts: { test: "test -f ../../.deps", lint: "node -e 'process.exit(1)'" }, dependencies: { fastify: "4.0.0" } };
@@ -306,10 +306,10 @@ test("a ticket that adds an app re-detects the recipe in its own worktree before
   assert.match(lastLine(merged), /^MERGED 01:/);
   assert.doesNotMatch(merged.stdout, /re-detect|added|left out/);
   assert.equal(git(plain.s.worktree, "rev-parse", "HEAD"), plainHead, "nothing committed after the ticket's own commits");
-  assert.ok(!fs.existsSync(path.join(plain.s.worktree, ".deps")), "and no setup ran in the run worktree");
+  assert.ok(fs.existsSync(path.join(plain.s.worktree, ".deps")), "and every merge installs the run worktree, which has nothing of its own (#81)");
 });
 
-test("a merged lockfile installs the run worktree's dependencies with the package manager when the recipe has no setup, a failed install stops for the human, and a merge touching neither installs nothing", (t) => {
+test("a merge installs the run worktree's dependencies with the package manager when the recipe has no setup, whatever it touched (#81), and a failed install stops for the human", (t) => {
   const { setup, ...noSetup } = RECIPE;
   // a fake pnpm, first on the ticket's PATH, recording each call's argv and cwd and exiting `status` in the run worktree
   const ready = (status = 0) => {
@@ -341,7 +341,7 @@ console.log("ERR_PNPM_OUTDATED_LOCKFILE"); process.exitCode = process.cwd() === 
   plain.play([{ ...CSV, write: { [plain.impl]: report("DONE") } }]);
   assert.match(lastLine(plain.stage("implement", "01")), /^MERGE 01:/);
   assert.match(lastLine(plain.stage("merge", "01")), /^MERGED 01:/);
-  assert.deepEqual(plain.pnpm(), [{ argv: ["install"], cwd: plain.wt }], "none in the run worktree");
+  assert.deepEqual(plain.pnpm(), [{ argv: ["install"], cwd: plain.wt }, { argv: ["install"], cwd: plain.s.worktree }], "the run worktree's too, though no manifest changed");
 });
 
 // An attempt that commits csv.js with index.js broken by `word`, so each word fails the typecheck its own way.
@@ -512,16 +512,21 @@ test("a resumed child is told which commands it was denied are allowed now, what
   assert.ok(!again.stdin.includes("DOCKER_HOST"), "a command no rule covers isn't named");
 });
 
-test("a second attempt in a row that made no commits escalates, as a child repeating a concern it can't fix would loop", (t) => {
+test("a concern a round leaves as it was, with no commit, goes to the PR and the ticket on (#81); a ticket with no commits of its own escalates, as a child repeating a concern it can't fix would loop", (t) => {
   const r = ticketReady(t);
-  const concerned = { write: { [r.impl]: report("DONE_WITH_CONCERNS", { concerns: "- `.factory/setup.json` is locked" }) } };
-  r.play([{ ...CSV, ...concerned }, concerned, concerned]);
+  const concerned = { write: { [r.impl]: report("DONE_WITH_CONCERNS", { concerns: "- its Playwright run was denied" }) } };
+  r.play([{ ...CSV, ...concerned }, concerned]);
   assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
   assert.equal(lastLine(round(r)), "OK implement:01 round 1/3");
-  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
-  assert.equal(lastLine(round(r)), "OK implement:01 round 1/3: the last attempt made no commits, so it cost no round");
-  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
-  const stuck = round(r);
+  assert.equal(lastLine(r.stage("implement", "01")), `MERGE 01: its concern, which a round left as it was, goes to the PR, and verify --full is green at ${git(r.wt, "rev-parse", "HEAD").slice(0, 7)}`);
+
+  const idle = ticketReady(t, { recipe: { ...RECIPE, apps: [{ ...RECIPE.apps[0], checks: { ...RECIPE.apps[0].checks, test: "true" } }] } });  // green with nothing built
+  const nothing = { write: { [idle.impl]: report("DONE_WITH_CONCERNS", { concerns: "- `.factory/setup.json` is locked" }) } };
+  idle.play([nothing, nothing]);
+  assert.match(lastLine(idle.stage("implement", "01")), /^ROUND 01:/);
+  assert.equal(lastLine(round(idle)), "OK implement:01 round 0/3: the last attempt made no commits, so it cost no round");
+  assert.match(lastLine(idle.stage("implement", "01")), /^ROUND 01:/, "nothing built: never past its concern");
+  const stuck = round(idle);
   assert.equal(stuck.status, 5);
   assert.equal(stuck.stdout.trim(), "ESCALATE implement:01: two attempts in a row made no commits");
 });

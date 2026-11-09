@@ -158,11 +158,15 @@ function verdict(s) {
     + `${ev.checks.filter((c) => c.status !== "pass").map((c) => c.check).join(", ")}, so qa rules on them`];
   if (!ev.green) return [["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --full is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`];
   if (!status) return ["ROUND", "implementation.md has no status line, so the attempt is INCOMPLETE"];
-  if (status === "DONE_WITH_CONCERNS" || concerns.length) return ["ROUND", "the implementer named a concern, which is fixed before the next ticket"];
+  // A concern a round left as it was, with no commit, isn't one code fixes (a check the child may not run, say): it goes
+  // to the PR in implementation.md, and the ticket goes on, its own evidence green (#81).
+  const tries = s.dispatches.filter((d) => d.stage === stage), built = tries.length && git(wt, "rev-list", "--count", `${tries[0].sha}..HEAD`) !== "0";
+  const again = tries.length > 1 && tries.at(-1).sha === sha && built;
+  if ((status === "DONE_WITH_CONCERNS" || concerns.length) && !again) return ["ROUND", "the implementer named a concern, which is fixed before the next ticket"];
   if (!walked && (readJson(path.join(wt, ".factory", "setup.json"), {}).apps || []).some((a) => a.dev)) {
     return ["QA", `DONE, and verify --full is green at ${sha.slice(0, 7)}, so qa walks ticket ${n}'s criteria`];
   }
-  return ["MERGE", `DONE, and verify --full is green at ${sha.slice(0, 7)}`];
+  return ["MERGE", again ? `its concern, which a round left as it was, goes to the PR, and verify --full is green at ${sha.slice(0, 7)}` : `DONE, and verify --full is green at ${sha.slice(0, 7)}`];
 }
 
 // The ticket's PR into the run branch (#81): the run branch and the ticket's pushed, then the PR opened, or found when
@@ -207,11 +211,11 @@ if (cmd === "merge") {
     try { git(ctx.worktree, "merge", "--abort"); } catch {}
     say("ATTENTION", `merging ${branch} into ${s.branch} conflicts${files.length ? ` in ${files.join(", ")}` : `: ${gitError(e)}`}, so the merge was aborted`);
   }
-  // A ticket that adds or changes an app's manifest or a lockfile installs what it added in the run worktree first, by
-  // the recipe's setup, else its package manager's install: the run worktree has no dependencies of its own, and the
-  // main checkout's it finds by walking up lack the ticket's (in an empty repo, there are none).
+  // The run worktree installs before verify, by the recipe's setup, else its package manager's install: it has no
+  // dependencies of its own, and the main checkout's it finds by walking up lack the ticket's (in an empty repo, none).
   const touched = git(ctx.worktree, "diff", "--name-only", tip, "HEAD").split("\n"), recipe = readJson(path.join(ctx.worktree, ".factory", "setup.json"), {});
-  const install = touched.some((f) => MANIFEST.test(f) || LOCKFILE.test(f)) && installOf(recipe);
+  // Every merge installs: the run worktree has none of its own until it does (#81), and one that is up to date is quick.
+  const install = installOf(recipe);
   if (install && !runSetup(ctx.worktree, install, path.join(ctx.runDir, "logs", `install-${n}.log`))) {
     say("ATTENTION", `merged ${branch}, but \`${install}\` failed in the run worktree, as printed above, so verify didn't run`);
   }
