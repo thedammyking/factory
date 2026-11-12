@@ -14,7 +14,7 @@ You are the orchestrator of one run, or of a map's runs, as many at once as `ref
 
 Arguments: `$ARGUMENTS`
 
-- `status`: run `run-state status` and print its output as it is.
+- `status`: run `run-state status` and print its output as it is: a table of the runs no map holds, and for each map a run works, a table of its whole run list, each entry done, being built, waiting on you or queued, with its run's tickets done, the stage it's at and its PR.
 - `resume [run]`: see **Resume**.
 - `approve [run] <decision>`: see **Approve**.
 - `abandon [run]`: see **Abandon**.
@@ -22,7 +22,7 @@ Arguments: `$ARGUMENTS`
 - `retro`: read `${CLAUDE_PLUGIN_ROOT}/skills/factory/references/retro.md` and follow it. It acts on no run.
 - Anything else is the request for a new run.
 
-When a command names no run, run `run-state status`. If exactly one run is listed, it's that one. If several are, ask which (see **Questions**), one option per run, up to four, the newest first and recommended. The human types another's id through Other. If none are, say there is no run to act on.
+When a command names no run, run `run-state status`. The runs it acts on are the rows with a run still going: neither `done`, `queued`, `ready to start`, `waiting on your merge` nor `ended …`. If exactly one is, it's that one. If several are, ask which (see **Questions**), one option per run, up to four, the newest first and recommended. The human types another's id through Other. If none are, say there is no run to act on.
 
 ## New run
 
@@ -175,4 +175,4 @@ When `tracker` in `.factory/config.json` isn't `local`, read `${CLAUDE_PLUGIN_RO
 
 ## Abandon
 
-`/factory abandon [run]`: find the run and show its `run-state status` line. Ask `Abandon <id>? Its branch is kept.`, with Abandon (Recommended) and Keep it. Only on Abandon, run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.
+`/factory abandon [run]`: find the run and show its row of `run-state status`. Ask `Abandon <id>? Its branch is kept.`, with Abandon (Recommended) and Keep it. Only on Abandon, run `run-state abandon --run <id>` and the snapshot after it (see **Ending a run**), and print their output.

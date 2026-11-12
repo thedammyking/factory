@@ -127,7 +127,7 @@ test("dispatch records the stage, the run worktree's HEAD and the agent id; done
   assert.equal(fs.readFileSync(path.join(s.run_dir, "triage.round1.md"), "utf8"), "first triage\n");
 });
 
-test("status lists two runs started at the same moment, one line each", async () => {
+test("status lists two runs started at the same moment as a table, a row each, with where each stands", async () => {
   const p = project();
   const started = await Promise.all([1, 2].map(() => rsAsync(p.dir, ["init"], "Fix the login crash\n")));
   for (const r of started) assert.equal(r.status, 0, r.stderr);
@@ -135,9 +135,8 @@ test("status lists two runs started at the same moment, one line each", async ()
   assert.deepEqual(ids, [`${TODAY}-fix-the-login-crash`, `${TODAY}-fix-the-login-crash-2`]);
   rs(p.dir, ["set", "route", "hold", "--run", ids[1]]);
   const lines = rs(p.dir, ["status"]).stdout.trim().split("\n");
-  assert.equal(lines.length, 2);
-  assert.match(lines.find((l) => l.startsWith(`${ids[0]} `)), /^\S+\s+start\s+-\s+Fix the login crash$/);
-  assert.match(lines.find((l) => l.startsWith(`${ids[1]} `)), /^\S+\s+start\s+hold\s+Fix the login crash$/);
+  assert.deepEqual(lines.slice(0, 4), ["**Runs**", "", "| Run | Request | State | Progress | PR |", "| --- | --- | --- | --- | --- |"]);
+  assert.deepEqual(lines.slice(4), ids.map((id) => `| ${id} | Fix the login crash | planning, this session | - | - |`));
 });
 
 test("abandon ends a run abandoned and keeps its branch and worktree; a finished run takes no more dispatches", () => {
@@ -153,7 +152,7 @@ test("abandon ends a run abandoned and keeps its branch and worktree; a finished
   assert.equal(rs(p.dir, ["abandon", "--run", s.id]).status, 2, "already abandoned");
   rs(p.dir, ["set", "stage", "needs-human", "--run", waiting.id]);
   const status = () => rs(p.dir, ["status"]).stdout.split("\n").filter((l) => l && !l.startsWith("cleaned "));
-  assert.match(status()[0], new RegExp(`^${waiting.id}\\s+needs-human\\s`), "a run waiting on the human is listed; an abandoned one isn't");
+  assert.deepEqual(status().filter((l) => /^\| \d/.test(l)), [`| ${waiting.id} | Fix the login crash | needs you | - | - |`], "a run waiting on the human is listed; an abandoned one isn't");
   assert.ok(!fs.existsSync(s.worktree), "and status cleaned the abandoned one's worktree up (#81)");
   assert.equal(rs(p.dir, ["abandon", "--run", waiting.id]).status, 0, "a run waiting on the human can be abandoned");
   assert.deepEqual(status(), ["no active runs"]);
@@ -185,7 +184,7 @@ test("cleanup: a run whose PR merged since it stopped is marked pr_done, and its
   assert.ok(!fs.existsSync(orphan));
   assert.deepEqual(JSON.parse(p.git("show", `factory/records:.factory/history/${merged.id}/state.json`)).pr_done.merged, true, "its record says so");
   assert.equal(rs(p.dir, ["cleanup"], "", env).stdout.trim(), "nothing to clean up", "once");
-  assert.match(rs(p.dir, ["status"], "", env).stdout, new RegExp(`^${open.id}\\s+needs-human`, "m"));
+  assert.match(rs(p.dir, ["status"], "", env).stdout, new RegExp(`^\\| ${open.id} \\| Speed up search \\| needs you \\| - \\| #9 open \\|$`, "m"));
   assert.doesNotMatch(rs(p.dir, ["status"], "", env).stdout, new RegExp(merged.id));
 });
 
@@ -652,7 +651,7 @@ test("when the parser reads nothing it warns once, in the session and in status,
   assert.equal(first.status, 0);
   assert.match(first.stdout, /^WARN spend: no usage read from any transcript, so only the minute and dispatch caps apply$/m);
   assert.doesNotMatch(dispatch().stdout, /WARN/);
-  assert.match(rs(p.dir, ["status"], "", c.env).stdout, new RegExp(`^${s.id}\\s.*  spend unread: only the minute and dispatch caps apply$`, "m"));
+  assert.match(rs(p.dir, ["status"], "", c.env).stdout, new RegExp(`^${s.id}: spend unread, so only the minute and dispatch caps apply$`, "m"));
   age(s, 91);
   assert.match(dispatch().stdout, /^BUDGET minutes 91\/90/m);
 });

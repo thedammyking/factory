@@ -101,7 +101,7 @@ test("a subagent that stopped at the usage limit leaves its run suspended, not f
   assert.equal(ended.status, 0, ended.stderr);
   assert.match(ended.stdout, /^triage stopped at the usage limit: the run is suspended, not failed$/m);
   assert.equal(state().stage, "suspended");
-  assert.match(run(["status"]).stdout, new RegExp(`^${s.id}\\s+suspended\\s`, "m"));
+  assert.match(run(["status"]).stdout, new RegExp(`^\\| ${s.id} \\| .+ \\| paused at the usage limit \\|`, "m"));
   assert.match(run(["reconcile"]).stdout, new RegExp(`^CONTINUE triage from ${s.base_sha.slice(0, 7)}: resume agent a-9, stopped at the usage limit$`, "m"));
 });
 

@@ -471,3 +471,35 @@ test("a request at the map gate is mid-run, and once charted its closing comment
   assert.deepEqual(posted, [`body=The factory's run \`${s.id}\` ended **charted**.\n\nMap: https://github.com/o/r/issues/40\n`]);
   assert.match(rs("snapshot"), /worktree removed/);
 });
+
+test("status shows a map's whole run list as a table: an entry merged, one waiting on the human mid-tickets, one queued behind it, one ready; runs outside a map in their own (#81)", () => {
+  const BODY = `${MAP}\n## Run list\n\n1. Scaffold the app [after none]\n2. Add sign-in\n3. Add the todos API [after 2]\n4. Add the UI kit [after 1]\n`;
+  const p = project({ config: { tracker: "local" } });
+  githubOrigin(p);
+  write(p.dir, { ".factory/maps/app/map.md": BODY }); p.git("add", "-A"); p.git("commit", "-qm", "map");
+  const gh = fakeClis({ gh: [{ match: /^api repos\/o\/r\/pulls\/60$/, file: canned({ number: 60, state: "closed", merged_at: "2026-11-08T09:00:00Z" }) }] });
+  const env = { ...process.env, PATH: gh.env.PATH, CLAUDE_CODE_SESSION_ID: "s-me", CLAUDE_CONFIG_DIR: fs.mkdtempSync(path.join(os.tmpdir(), "factory-claude-")) };
+  const rs = (args, input = "") => script("run-state.mjs", p.dir, args, { env, input });
+  const one = JSON.parse(ok(rs(["init", "--map", "app", "--entry", "1"]))), two = JSON.parse(ok(rs(["init", "--map", "app", "--entry", "2"])));
+  const solo = JSON.parse(ok(rs(["init"], "Fix the login crash\n")));
+  write(one.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 60, draft: true }) });  // a draft, readied and merged by hand
+  ok(rs(["set", "stage", "needs-human", "--run", one.id]));
+  ok(rs(["dispatch", "triage", "--run", two.id]));
+  write(two.run_dir, { "tickets/01-session.md": "# Session\n\nStatus: done\n", "tickets/02-sign-in-form.md": "# Sign-in form\n\nStatus: in-progress\n",
+    "attention-implement-02.md": "# Sign the claude CLI back in, so ticket 02's implementer can run\n\nRun x.\n" });
+  ok(rs(["set", "stage", "needs-human", "--run", two.id]));
+  const out = ok(rs(["status"])).split("\n");
+  assert.deepEqual(out.filter((l) => !l.startsWith("cleaned ")), [
+    "**Runs**", "",
+    "| Run | Request | State | Progress | PR |", "| --- | --- | --- | --- | --- |",
+    `| ${solo.id} | Fix the login crash | planning, this session | - | - |`, "",
+    "**Map app**: 1 of 4 entries done", "",
+    "| Entry | Run | Request | State | Progress | PR |", "| --- | --- | --- | --- | --- | --- |",
+    `| 1 | ${one.id} | Scaffold the app | done | - | #60 merged |`,
+    `| 2 | ${two.id} | Add sign-in | needs you: Sign the claude CLI back in, so ticket 02's implementer can run | 1/2 tickets done, at triage | - |`,
+    "| 3 | - | Add the todos API | queued, after 2 | - | - |",
+    "| 4 | - | Add the UI kit | ready to start | - | - |", "",
+    `${two.id}: spend unread, so only the minute and dispatch caps apply`,
+  ]);
+  assert.deepEqual(out.filter((l) => l.startsWith("cleaned ")), [`cleaned ${one.id}: PR #60 merged, its worktrees removed`], "the merged entry's run was cleaned up first, and read from its record");
+});

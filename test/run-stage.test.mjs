@@ -733,7 +733,7 @@ test("a child that stops at the usage limit is SUSPENDED, never a round: nothing
   assert.ok(!fs.existsSync(path.join(r.tickets, "evidence.json")), "nothing was verified");
   assert.ok(!r.state().stages_done.includes("implement:01"));
   r.run("set", "stage", "suspended");
-  assert.match(r.run("status").stdout, new RegExp(`^${r.s.id}\\s+suspended\\s`, "m"));
+  assert.match(r.run("status").stdout, new RegExp(`^\\| ${r.s.id} \\| Add a CSV export \\| paused at the usage limit \\| 0/1 tickets done, at implement:01 \\|`, "m"));
   assert.match(r.run("reconcile").stdout, /^CONTINUE implement:01 from \w{7}: its child stopped at the usage limit$/m);
   assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01:/);
   const [first, second] = r.calls();

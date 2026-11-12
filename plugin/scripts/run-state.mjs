@@ -174,8 +174,9 @@
 //                                                sub-issue close-ticket hasn't tried and a request issue the run filed: on
 //                                                github itself, elsewhere printing them, and filed or failed records how
 //                                                the orchestrator's closes went
-//   run-state.mjs status                      -> one line per run not finished (needs-human and failed wait on a resume),
-//                                                from every run worktree's state.json
+//   run-state.mjs status                      -> after cleanup, a table of the runs not finished that no map holds
+//                                                (needs-human and failed wait on a resume), and for each map one works a
+//                                                table of its run list: each entry's run, state, progress and PR
 import crypto from "node:crypto";
 import fs from "node:fs";
 import os from "node:os";
@@ -738,6 +739,62 @@ function cleanup(MAIN) {
   }
   try { git(MAIN, "worktree", "prune"); } catch {}
   return said;
+}
+// /factory status as tables (#81): the runs going on that no map holds, each with where it stands, and for each map a
+// live run works its whole run list, every entry done, being built or queued. Read from the run worktrees and the
+// records; GitHub only for an ended entry's PR that cleanup never saw merge.
+const cell = (text, n = 50) => { const t = String(text).split("\n")[0].replace(/\|/g, "\\|"); return t.length > n ? `${t.slice(0, n - 1)}…` : t; };
+const row = (cells) => `| ${cells.join(" | ")} |`;
+const prCell = (pr, m) => !pr ? "-" : `#${pr.number} ${m?.merged ? "merged" : m?.closed ? "closed" : pr.draft ? "draft" : "open"}`;
+function liveState(s) {
+  const ctx = { runDir: s.run_dir };
+  if (["needs-human", "failed"].includes(s.stage)) {
+    const item = newestAttention(ctx), head = item && readText(path.join(s.run_dir, item)).match(/^# (.+)$/m)?.[1];
+    return `${s.stage === "failed" ? "failed" : "needs you"}${head ? `: ${cell(head, 90)}` : ""}`;
+  }
+  if (s.stage === "suspended") return "paused at the usage limit";
+  const by = drivenBy(s);
+  return `${phaseOf(ctx, s)}, ${by?.here ? "this session" : by ? `session ${by.session.slice(0, 8)}` : "nobody driving it"}`;
+}
+function progress(s) {
+  const tickets = readTickets({ runDir: s.run_dir }).items, at = s.dispatches.at(-1)?.stage;
+  return [tickets.length && `${tickets.filter((t) => t.status === "done").length}/${tickets.length} tickets done`, at && `at ${at}`].filter(Boolean).join(", ") || "-";
+}
+// A run's request as status shows it: a request issue's key with its title, read from prompt.md.
+const asked = (s) => s.request_issue && !s.request_issue.entry
+  ? `${s.request}: ${readText(path.join(s.run_dir, "prompt.md")).match(/^# (.+)$/m)?.[1] ?? ""}` : s.request;
+function statusTables(MAIN) {
+  const branching = readJson(path.join(MAIN, ".factory", "config.json"))?.branching || {}, dir = worktreesDir(MAIN);
+  const base = branching.model === "git-flow" ? branching.develop || "develop" : branching.main || "main";
+  const live = (fs.existsSync(dir) ? fs.readdirSync(dir) : []).map((id) => readJson(runPaths(MAIN, id).state))
+    .filter((s) => s && !FINISHED.includes(s.stage) && !s.pr_done).sort((a, b) => a.created_at.localeCompare(b.created_at));
+  if (!live.length) return ["no active runs"];
+  const out = [], table = (title, head, rows) => out.push(title, "", row(head), row(head.map(() => "---")), ...rows, "");
+  const liveRow = (s, ...first) => row([...first, s.id, cell(asked(s)), liveState(s), progress(s), prCell(readJson(path.join(s.run_dir, "pr.json")))]);
+  const solo = live.filter((s) => !s.map);
+  if (solo.length) table("**Runs**", ["Run", "Request", "State", "Progress", "PR"], solo.map((s) => liveRow(s)));
+  for (const ref of new Set(live.filter((s) => s.map).map((s) => s.map.ref))) {
+    const mine = live.filter((s) => s.map?.ref === ref), { url } = mine.at(-1).map, entries = runList(readText(path.join(mine.at(-1).run_dir, "map.md")));
+    const runs = mapRuns(MAIN, base, ref), built = {}, rows = [];
+    let done = 0;
+    for (const e of entries) {
+      const found = runs.filter(({ s: r }) => r.map.entry === e.n && r.stage !== "abandoned").sort((a, b) => b.s.created_at.localeCompare(a.s.created_at))[0];
+      const going = found && mine.find((s) => s.id === found.s.id);
+      if (going) { rows.push(liveRow(going, e.n)); continue; }
+      if (!found) { const waits = e.after.filter((a) => !built[a]); rows.push(row([e.n, "-", cell(e.line), waits.length ? `queued, after ${waits.join(", ")}` : "ready to start", "-", "-"])); continue; }
+      // an ended run: its PR as cleanup recorded it, else as GitHub says (a draft readied and merged by hand included)
+      const { s: r, pr, decided } = found, m = r.pr_done ? { merged: r.pr_done.merged, closed: true } : pr ? prMerged(pr) : null;
+      built[e.n] = !!m?.merged || (!!pr && !pr.draft && !m?.closed && decided);
+      done += !!m?.merged;
+      const state = m?.merged ? "done" : m?.closed ? "stopped: its PR was closed unmerged" : pr && !pr.draft ? "waiting on your merge" : `ended ${r.stage}${pr ? "" : " with no PR"}`;
+      rows.push(row([e.n, r.id, cell(e.line), state, "-", prCell(pr, m)]));
+    }
+    // a live run of an entry the newest run's copy of the map no longer lists
+    rows.push(...mine.filter((s) => !rows.some((l) => l.includes(` ${s.id} `))).map((s) => liveRow(s, s.map.entry)));
+    table(`**Map ${ref}**${url ? ` (${url})` : ""}: ${done} of ${entries.length} entries done`, ["Entry", "Run", "Request", "State", "Progress", "PR"], rows);
+  }
+  const unread = live.filter((s) => s.spend?.unread).map((s) => `${s.id}: spend unread, so ${UNREAD}`);
+  return unread.length ? [...out, ...unread] : out.slice(0, -1);
 }
 // The run's newest attention item, but the snapshot's own stops, which aren't the run's.
 function newestAttention(ctx) {
@@ -1649,14 +1706,9 @@ switch (cmd) {
     break;
   }
   case "status": {
-    const MAIN = mainRoot(), dir = worktreesDir(MAIN);
+    const MAIN = mainRoot();
     for (const l of cleanup(MAIN)) console.log(`cleaned ${l}`);
-    const runs = (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
-      .map((id) => readJson(runPaths(MAIN, id).state))
-      .filter((s) => s && !FINISHED.includes(s.stage) && !s.pr_done)
-      .sort((a, b) => a.created_at.localeCompare(b.created_at));
-    if (!runs.length) console.log("no active runs");
-    for (const s of runs) console.log(`${s.id}  ${s.stage}  ${s.route || "-"}  ${s.request.split("\n")[0].slice(0, 60)}${s.spend?.unread ? `  spend unread: ${UNREAD}` : ""}`);
+    console.log(statusTables(MAIN).join("\n"));
     break;
   }
   case "override": {
