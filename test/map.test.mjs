@@ -300,7 +300,7 @@ test("once its spec is approved, a map run files its request issue as a sub-issu
 
 test("chain works a map's run list: each entry with its run and PR, the next stacked on an open PR, and back on the trunk once it merges (#81)", () => {
   fs.writeFileSync(PR60, JSON.stringify({ number: 60, state: "open", merged_at: null }));
-  const t = tracked("github"), chain = () => ok(t.rs(["chain", "--map", "#40"])).split("\n");
+  const t = tracked("github"), cleaned = [], chain = () => ok(t.rs(["chain", "--map", "#40"])).split("\n").filter((l) => !l.startsWith("CLEANED ") || !cleaned.push(l));
   fs.writeFileSync(SUBS, JSON.stringify([sub(51, 1, "in-pr"), sub(52, 2)]));
   assert.deepEqual(chain(), ["ENTRY 1 none: Add contacts with name, email and company", "ENTRY 2 none (after 1): Import contacts from a CSV file", "START 1"]);
   const one = JSON.parse(ok(t.rs(["init", "--map", "#40", "--entry", "1"])));
@@ -327,6 +327,8 @@ test("chain works a map's run list: each entry with its run and PR, the next sta
   assert.ok(!t.gh.calls("gh").some(unlabel));
   assert.deepEqual(chain(), [`RESTACK ${two.id}`, `ENTRY 1 ${one.id} start PR #60 merged`, `ENTRY 2 ${two.id} start (after 1)`, `RESUME ${two.id}`]);
   assert.ok(t.gh.calls("gh").some(unlabel), "merged by hand: its issue closes with no phase left on it");
+  assert.deepEqual(cleaned, [`CLEANED ${one.id}: PR #60 merged, its worktrees removed`], "and its worktrees go (#81)");
+  assert.ok(!fs.existsSync(one.worktree));
   assert.equal(rs(two, "stack"), "restacked onto main, feature/51-add-contacts's PR having merged");
   const after = JSON.parse(rs(two, "get"));
   assert.deepEqual([after.base_branch, after.stack], ["main", undefined]);
@@ -388,7 +390,7 @@ test("chain hands out every entry whose dependencies are built, one run per entr
   const env = { ...process.env, PATH: gh.env.PATH };
   delete env.CLAUDE_CODE_SESSION_ID;
   const rs = (args, more = {}) => script("run-state.mjs", p.dir, args, { env: { ...env, ...more } });
-  const chain = () => ok(rs(["chain", "--map", "app"])).split("\n").filter((l) => !l.startsWith("ENTRY"));
+  const chain = () => ok(rs(["chain", "--map", "app"])).split("\n").filter((l) => !/^(ENTRY|CLEANED) /.test(l));
   const begin = (n, more) => JSON.parse(ok(rs(["init", "--map", "app", "--entry", String(n)], more)));
   const built = (s, branch, number) => {
     write(s.run_dir, { "triage.md": "```json\n" + JSON.stringify({ type: "feature", in_production: false, branch, route: "build" }) + "\n```\n" });
@@ -417,6 +419,7 @@ test("chain hands out every entry whose dependencies are built, one run per entr
   assert.deepEqual(chain(), ["START 3", "START 5"]);
   const bad = `${MAP}\n## Run list\n\n1. Scaffold the app [after 2]\n2. Add sign-in\n`;
   write(p.dir, { ".factory/maps/app/map.md": bad }); p.git("add", "-A"); p.git("commit", "-qm", "loop");
+  p.git("branch", "-f", "factory/records", "main");  // a local map is read from the records, which cleanup's snapshots made
   assert.match(rs(["chain", "--map", "app"]).stderr, /entry 1 of the map app is after 2, which isn't an entry before it in the run list/);
 });
 
@@ -429,7 +432,7 @@ test("a session sees its own live runs as HERE, its own stopped run as one to re
   const gh = fakeClis({ gh: [{ match: /^api repos\/o\/r\/pulls\/60$/, file: pr }] });
   const env = { ...process.env, PATH: gh.env.PATH, CLAUDE_CODE_SESSION_ID: "s-me" };
   const rs = (args) => script("run-state.mjs", p.dir, args, { env });
-  const chain = () => ok(rs(["chain", "--map", "app"])).split("\n").filter((l) => !l.startsWith("ENTRY"));
+  const chain = () => ok(rs(["chain", "--map", "app"])).split("\n").filter((l) => !/^(ENTRY|CLEANED) /.test(l));
   const one = JSON.parse(ok(rs(["init", "--map", "app", "--entry", "1"])));
   assert.deepEqual(chain(), [`HERE 1 ${one.id}: this session is driving it`], "its own live run is never one to resume while it drives it");
   ok(rs(["set", "stage", "needs-human", "--run", one.id]));

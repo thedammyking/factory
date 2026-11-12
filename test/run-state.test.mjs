@@ -6,7 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
-import { project, sh, write, bareRemote } from "./harness.mjs";
+import { project, sh, write, bareRemote, fakeClis } from "./harness.mjs";
 
 const SCRIPT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../plugin/scripts/run-state.mjs");
 const FIXTURES = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "fixtures/spend");
@@ -152,9 +152,41 @@ test("abandon ends a run abandoned and keeps its branch and worktree; a finished
   assert.equal(rs(p.dir, ["dispatch", "triage", "--run", s.id]).status, 2);
   assert.equal(rs(p.dir, ["abandon", "--run", s.id]).status, 2, "already abandoned");
   rs(p.dir, ["set", "stage", "needs-human", "--run", waiting.id]);
-  assert.match(rs(p.dir, ["status"]).stdout, new RegExp(`^${waiting.id}\\s+needs-human\\s`), "a run waiting on the human is listed; an abandoned one isn't");
+  const status = () => rs(p.dir, ["status"]).stdout.split("\n").filter((l) => l && !l.startsWith("cleaned "));
+  assert.match(status()[0], new RegExp(`^${waiting.id}\\s+needs-human\\s`), "a run waiting on the human is listed; an abandoned one isn't");
+  assert.ok(!fs.existsSync(s.worktree), "and status cleaned the abandoned one's worktree up (#81)");
   assert.equal(rs(p.dir, ["abandon", "--run", waiting.id]).status, 0, "a run waiting on the human can be abandoned");
-  assert.equal(rs(p.dir, ["status"]).stdout.trim(), "no active runs");
+  assert.deepEqual(status(), ["no active runs"]);
+});
+
+test("cleanup: a run whose PR merged since it stopped is marked pr_done, and its worktrees and branch go; a closed one's go but its branch stays; a ticket worktree whose run is gone goes too (#81)", () => {
+  const p = project(), canned = (body) => { const f = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "factory-pr-")), "pr.json"); fs.writeFileSync(f, JSON.stringify(body)); return f; };
+  const gh = fakeClis({ gh: [{ match: /^api repos\/o\/r\/pulls\/7$/, file: canned({ state: "closed", merged_at: "2026-11-12T09:00:00Z" }) },
+    { match: /^api repos\/o\/r\/pulls\/8$/, file: canned({ state: "closed", merged_at: null }) }, { match: /^api repos\/o\/r\/pulls\/9$/, file: canned({ state: "open", merged_at: null }) }] });
+  const env = { ...ENV, PATH: gh.env.PATH };
+  const stopped = (request, branch, number) => {
+    const s = init(p, request);
+    git(s.worktree, "switch", "-q", "-c", branch);
+    rs(p.dir, ["set", "branch", JSON.stringify(branch), "--run", s.id]);
+    rs(p.dir, ["set", "stage", "needs-human", "--run", s.id]);
+    fs.writeFileSync(path.join(s.run_dir, "pr.json"), JSON.stringify({ repo: "o/r", number, draft: false }));
+    return s;
+  };
+  const merged = stopped("Add a CSV export", "feature/csv", 7), closed = stopped("Fix the login crash", "bugfix/login", 8), open = stopped("Speed up search", "feature/search", 9);
+  const orphan = path.join(p.dir, ".factory/worktrees", "2026-01-01-gone-run-03");
+  p.git("worktree", "add", "-q", "-b", "factory/2026-01-01-gone-run/03", orphan);
+  const r = rs(p.dir, ["cleanup"], "", env);
+  assert.equal(r.status, 0, r.stderr);
+  assert.deepEqual(r.stdout.trim().split("\n"), [`${merged.id}: PR #7 merged, its worktrees removed`, `${closed.id}: PR #8 closed, its worktrees removed`,
+    "2026-01-01-gone-run-03: removed, its run gone"].sort((a, b) => r.stdout.indexOf(a) - r.stdout.indexOf(b)));
+  assert.deepEqual([merged, closed, open].map((s) => fs.existsSync(s.worktree)), [false, false, true], "an open PR's run stays");
+  const branch = (b) => spawnSync("git", ["rev-parse", "--verify", "-q", b], { cwd: p.dir }).status === 0;
+  assert.deepEqual(["feature/csv", "bugfix/login", "feature/search", "factory/2026-01-01-gone-run/03"].map(branch), [false, true, true, false], "a merged PR's branch goes, a closed one's stays");
+  assert.ok(!fs.existsSync(orphan));
+  assert.deepEqual(JSON.parse(p.git("show", `factory/records:.factory/history/${merged.id}/state.json`)).pr_done.merged, true, "its record says so");
+  assert.equal(rs(p.dir, ["cleanup"], "", env).stdout.trim(), "nothing to clean up", "once");
+  assert.match(rs(p.dir, ["status"], "", env).stdout, new RegExp(`^${open.id}\\s+needs-human`, "m"));
+  assert.doesNotMatch(rs(p.dir, ["status"], "", env).stdout, new RegExp(merged.id));
 });
 
 test("a new run starts from origin's tip when the local base is behind it, or has parted from it by the factory's own .factory/ commits alone; never past the developer's own (#81)", () => {

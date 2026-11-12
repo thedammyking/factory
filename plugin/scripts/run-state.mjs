@@ -56,6 +56,11 @@
 //                                                implemented: its plan is done and the route becomes build, which goes on
 //                                                at research on the same branch, and the oneshot's tickets/ is kept as
 //                                                oneshot/, so the caps scale with the build's tickets once they're cut
+//   run-state.mjs cleanup                     -> what the factory left behind, removed (#81): every run whose PR merged
+//                                                or closed since it stopped is marked pr_done and snapshotted, which
+//                                                removes its worktrees, its tickets' and its branch once merged; a ticket
+//                                                worktree whose run is gone, and a temp worktree an hour old, go too.
+//                                                chain (as CLEANED lines) and status run it first
 //   run-state.mjs chain --map <map> [--wait]  -> a map's run list, each entry with its run and PR, then what comes next:
 //                                                RESTACK, then RESUME and START lines for every run and entry ready to go,
 //                                                of which the orchestrator takes as many as it judges can go together,
@@ -678,6 +683,62 @@ function fileEntries(main, map, entries, out) {
   }
   return issues;
 }
+// A done run's worktrees (#81): each ticket's the run left, with its branch, then the run's own, and the run's branch once
+// its PR merged. Every one's apps go down first, with their databases (the run's only when its worktree is clean, so a
+// worktree git won't remove keeps them all); a step that fails keeps what's left, for the next snapshot or cleanup.
+function removeTrees(ctx, s) {
+  const clean = !git(ctx.worktree, "status", "--porcelain");
+  for (const [n, wt] of ticketTrees(ctx)) {
+    const down = appsDown(ctx, wt, "--drop");
+    if (down.status) { console.log(`ticket ${n}'s worktree kept: run-apps down failed\n${down.stdout}${down.stderr}`.trim()); return; }
+    try { git(ctx.MAIN, "worktree", "remove", "--force", wt); } catch (e) { console.log(`ticket ${n}'s worktree kept: ${gitError(e)}`); return; }
+    try { git(ctx.MAIN, "branch", "-q", "-D", ticketBranch(ctx.id, n)); } catch {}
+  }
+  const down = appsDown(ctx, ctx.worktree, ...(clean ? ["--drop"] : []));
+  if (down.status) { console.log(`worktree kept: run-apps down failed\n${down.stdout}${down.stderr}`.trim()); return; }
+  try { git(ctx.MAIN, "worktree", "remove", ctx.worktree); } catch (e) { console.log(`worktree kept: ${gitError(e)}`); return; }
+  console.log("worktree removed");
+  const merged = s.pr_done?.merged || readJson(path.join(ctx.runDir, "decision.json"))?.merged;
+  if (merged && s.branch) try { git(ctx.MAIN, "branch", "-q", "-D", s.branch); console.log(`branch ${s.branch} deleted, its PR merged`); } catch {}
+}
+// What the factory leaves behind, cleaned up (#81): every live run whose PR merged or closed since it stopped is marked
+// pr_done and snapshotted, which removes its worktrees; a finished run whose worktree is still here is snapshotted again;
+// then any ticket worktree whose run is gone, and any temp worktree or claimed folder an hour old, goes, and git forgets
+// worktrees that no longer exist. Prints what it did, one line each.
+const HOUR = 3600_000;
+function cleanup(MAIN) {
+  const dir = worktreesDir(MAIN), me = process.argv[1], said = [];
+  const rs = (...a) => spawnSync(process.execPath, [me, ...a], { cwd: MAIN, encoding: "utf8" });
+  const entries = fs.existsSync(dir) ? fs.readdirSync(dir) : [], runs = new Set();
+  const old = (f) => { try { return Date.now() - fs.statSync(f).mtimeMs > HOUR; } catch { return false; } };
+  for (const id of entries) {
+    const p = runPaths(MAIN, id), s = readJson(p.state);
+    if (!s) continue;
+    runs.add(id);
+    const pr = readJson(path.join(p.runDir, "pr.json"));
+    let done = FINISHED.includes(s.stage) || s.pr_done, why = s.pr_done ? `PR #${pr?.number} ${s.pr_done.merged ? "merged" : "closed"}` : s.stage;
+    if (!done && pr) {
+      const m = prMerged(pr);
+      if (m?.merged || m?.closed) { rs("set", "pr_done", JSON.stringify({ merged: m.merged, at: now() }), "--run", id); done = true; why = `PR #${pr.number} ${m.merged ? "merged" : "closed"}`; }
+    }
+    if (!done) continue;
+    const snap = rs("snapshot", "--run", id), last = snap.stdout.trim().split("\n").at(-1) || snap.stderr.trim();
+    said.push(`${id}: ${why}, ${fs.existsSync(p.worktree) ? last : "its worktrees removed"}`);
+  }
+  // a ticket's worktree, <run>-NN, whose run is gone; a temp one (.at-base-, .preview-, .scan-…) or a folder init
+  // claimed and never made a worktree of, an hour on
+  for (const name of entries) {
+    const at = path.join(dir, name), ticket = name.match(/^(.+)-(\d{2})$/);
+    if (runs.has(name) || name === ".builds" || !fs.statSync(at, { throwIfNoEntry: false })?.isDirectory()) continue;
+    const orphan = !!ticket && !runs.has(ticket[1]), temp = name.startsWith("."), unmade = !fs.existsSync(path.join(at, ".git"));
+    if (!orphan && !((temp || unmade) && old(at))) continue;
+    try { git(MAIN, "worktree", "remove", "--force", at); } catch { fs.rmSync(at, { recursive: true, force: true }); }
+    if (orphan) try { git(MAIN, "branch", "-q", "-D", ticketBranch(ticket[1], ticket[2])); } catch {}
+    said.push(`${name}: removed, ${orphan ? "its run gone" : "left over"}`);
+  }
+  try { git(MAIN, "worktree", "prune"); } catch {}
+  return said;
+}
 // The run's newest attention item, but the snapshot's own stops, which aren't the run's.
 function newestAttention(ctx) {
   const at = (f) => fs.statSync(path.join(ctx.runDir, f)).mtimeMs;
@@ -855,7 +916,7 @@ switch (cmd) {
       const bad = e.after.find((a) => !entries.some((x) => x.n === a && entries.indexOf(x) < entries.indexOf(e)));
       if (bad !== undefined) die(`entry ${e.n} of the map ${map.ref} is after ${bad}, which isn't an entry before it in the run list`);
     }
-    const filed = [], issues = map.tracker === "github" ? fileEntries(MAIN, map, entries, filed) : null;
+    const filed = cleanup(MAIN).map((l) => `CLEANED ${l}`), issues = map.tracker === "github" ? fileEntries(MAIN, map, entries, filed) : null;
     // --wait: nothing to do but wait (#81), so read the list again every --every seconds (60), for --window seconds (3600)
     // at most, until where an entry stands changes (a run made or abandoned, a PR opened, merged or closed: never a mere
     // next stage of another session's run), then print it.
@@ -909,6 +970,12 @@ switch (cmd) {
       const done = entries.every((e) => at[e.n].built);
       return [...out, ...resume, ...start, ...held, ...(done ? ["DONE"] : resume.length + start.length + held.length ? [] : ["IDLE: every entry left waits on one still being built"])];
     }
+  }
+  case "cleanup": {
+    // What the factory leaves behind once runs and their tickets are done (#81); chain, status and init run it too.
+    const said = cleanup(mainRoot());
+    console.log(said.length ? said.join("\n") : "nothing to clean up");
+    break;
   }
   case "track": {
     // The request issue's phase recomputed (#81): after the PR opens, and on a resume.
@@ -1494,19 +1561,11 @@ switch (cmd) {
       });
     }
     console.log(sha ? `snapshot ${sha.slice(0, 7)} on ${RECORDS}` : `snapshot unchanged on ${RECORDS}`);
-    // A finished run has nothing left to resume. Without --force, git refuses a worktree holding uncommitted work.
-    if (!FINISHED.includes(s.stage)) console.log(`worktree kept (${s.stage})`);
+    // A finished run has nothing left to resume, nor one whose PR merged or closed since it stopped (pr_done, #81).
+    // Without --force, git refuses a run worktree holding uncommitted work.
+    if (!FINISHED.includes(s.stage) && !s.pr_done) console.log(`worktree kept (${s.stage})`);
     else if (issueComment && !s.issue_comment.posted && !s.issue_comment.failed) console.log(`worktree kept until the closing comment: \`${me} comment --run ${ctx.id}\`, then the snapshot again`);
-    else {
-      // Its apps go down first, and those of a ticket's worktree the run left unmerged, which nothing can reach once
-      // the run dir is gone. Their own databases go with them, so a worktree git won't remove keeps them all, and a
-      // drop that fails keeps the worktree to retry from.
-      const clean = !git(ctx.worktree, "status", "--porcelain");
-      const apps = [...ticketTrees(ctx).map(([, wt]) => wt), ctx.worktree].map((cwd) => appsDown(ctx, cwd, ...(clean ? ["--drop"] : []))).find((r) => r.status);
-      if (apps) console.log(`worktree kept: run-apps down failed\n${apps.stdout}${apps.stderr}`.trim());
-      else try { git(ctx.MAIN, "worktree", "remove", ctx.worktree); console.log("worktree removed"); }
-      catch (e) { console.log(`worktree kept: ${gitError(e)}`); }
-    }
+    else removeTrees(ctx, s);
     break;
   }
   case "reconcile": {
@@ -1591,9 +1650,10 @@ switch (cmd) {
   }
   case "status": {
     const MAIN = mainRoot(), dir = worktreesDir(MAIN);
+    for (const l of cleanup(MAIN)) console.log(`cleaned ${l}`);
     const runs = (fs.existsSync(dir) ? fs.readdirSync(dir) : [])
       .map((id) => readJson(runPaths(MAIN, id).state))
-      .filter((s) => s && !FINISHED.includes(s.stage))
+      .filter((s) => s && !FINISHED.includes(s.stage) && !s.pr_done)
       .sort((a, b) => a.created_at.localeCompare(b.created_at));
     if (!runs.length) console.log("no active runs");
     for (const s of runs) console.log(`${s.id}  ${s.stage}  ${s.route || "-"}  ${s.request.split("\n")[0].slice(0, 60)}${s.spend?.unread ? `  spend unread: ${UNREAD}` : ""}`);

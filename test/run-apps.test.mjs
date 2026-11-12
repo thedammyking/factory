@@ -105,7 +105,7 @@ test("two tickets of one run have their apps up at once, each worktree with a da
     return wt;
   });
   const apps = (wt, ...args) => script("run-apps.mjs", wt, [...args, "--run", s.id]);
-  t.after(async () => { for (const wt of [one, two]) await apps(wt, "down"); });
+  t.after(async () => { for (const wt of [one, two].filter((wt) => fs.existsSync(wt))) await apps(wt, "down"); });
   const urls = (r) => Object.fromEntries([...r.stdout.matchAll(/ (\w+)=(http\S+)/g)].map(([, name, url]) => [name, url]));
   const ups = [await apps(one, "up"), await apps(two, "up")];  // the second while the first's apps run
   for (const r of ups) assert.equal(r.status, 0, r.stdout + r.stderr);
@@ -130,6 +130,8 @@ test("two tickets of one run have their apps up at once, each worktree with a da
   const r = rs("snapshot");
   assert.equal(r.status, 0, r.stdout + r.stderr);
   assert.ok(!fs.existsSync(s.worktree));
+  assert.deepEqual([one, two].map((wt) => fs.existsSync(wt)), [false, false], "and the tickets' worktrees with it (#81)");
+  assert.deepEqual([`factory/${s.id}/01`, `factory/${s.id}/02`].map((b) => spawnSync("git", ["rev-parse", "--verify", "-q", b], { cwd: p.dir }).status), [1, 1], "and their branches");
   assert.deepEqual(await Promise.all([ub.web, ub.api].map(answers)), [false, false]);
   assert.deepEqual(fs.readdirSync(dbs), []);
 });
