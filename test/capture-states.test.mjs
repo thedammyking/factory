@@ -52,7 +52,8 @@ const browserType = (browser) => ({ async launch(options = {}) {
       waitForTimeout: async (ms) => record("waitForTimeout", { ctx, ms }),
       async screenshot(o) { record("screenshot", { ctx, options: o }); fs.writeFileSync(o.path, "png"); },
     };
-    return { newPage: async () => page, close: async () => record("context.close", { ctx }) };
+    return { newPage: async () => page, close: async () => record("context.close", { ctx }),
+      async storageState() { record("storageState", { ctx }); return { cookies: [{ name: "session", value: "signed-in" }], origins: [] }; } };
   } };
 } });
 module.exports = { chromium: browserType("chromium"), firefox: browserType("firefox"), webkit: browserType("webkit") };
@@ -77,10 +78,10 @@ function setup({ site = {}, axe = false, playwright = "node_modules/playwright",
     ...(axe && { "node_modules/@axe-core/playwright/index.js": FAKE_AXE }),
   });
   write(run.run_dir, { "apps.json": JSON.stringify({ profile: "default", apps: { web: { port: 4321, url: "http://localhost:4321/", ok: true } } }) });
-  const capture = (states) => {
+  const capture = (states, extra = {}, args = []) => {
     const file = path.join(run.run_dir, "ui-states.json");
-    fs.writeFileSync(file, JSON.stringify({ states }));
-    return script("capture-states.mjs", p.dir, [file, "--run", run.id]);
+    fs.writeFileSync(file, JSON.stringify({ ...extra, states }));
+    return script("capture-states.mjs", p.dir, [file, ...args, "--run", run.id]);
   };
   const calls = () => fs.existsSync(path.join(fake, "calls.jsonl"))
     ? fs.readFileSync(path.join(fake, "calls.jsonl"), "utf8").trim().split("\n").map((l) => JSON.parse(l)) : [];
@@ -137,6 +138,36 @@ test("design fix 11: a state is reached as the plan says: a held request for loa
   assert.deepEqual(steps("returning-visit"), ["goto http://localhost:4321/signup", "localStorage.setItem signup.email a@b.co", "reload"]);
   assert.deepEqual(steps("disabled"), ["goto http://localhost:4321/signup", "fill #email not an email", "press Tab", "focus #submit",
     "hover #submit", "click #terms", "waitForSelector #submit[disabled]", "waitForTimeout 200"]);
+});
+
+test("a pass signs in once (#81): signIn runs in a context of its own, and every signedIn state starts from its session; --only recaptures the states it names, keeping the rest", () => {
+  const run = setup({ axe: true }), SIGN_IN = "http://localhost:{port:web}/sign-in";
+  const signIn = { url: SIGN_IN, actions: [{ fill: ["#email", "qa@example.com"] }, { click: "text=Send code" }, { fill: ["#code", "000000"] }, { click: "text=Sign in" }] };
+  const states = [{ name: "sign-in-email", url: SIGN_IN }, { name: "home", url: "http://localhost:{port:web}/", signedIn: true },
+    { name: "account", url: "http://localhost:{port:web}/account", signedIn: true, actions: [{ click: "text=Theme" }] }];
+  let r = run.capture(states, { signIn });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const calls = run.calls(), made = contexts(calls);
+  assert.equal(made.length, 1 + 3 * 6, "one for signing in, one per picture");
+  const once = of(calls, made.find((c) => !c.options.viewport).ctx).map((c) => c.call);
+  assert.deepEqual(once, ["newContext", "goto", "fill", "click", "fill", "click", "waitForTimeout", "storageState", "context.close"], "signed in once");
+  assert.equal(calls.filter((c) => c.call === "fill" && c.sel === "#code").length, 1, "never again");
+  const signed = made.filter((c) => c.options.storageState);
+  assert.equal(signed.length, 12, "each signedIn picture starts from that session");
+  assert.deepEqual(signed[0].options.storageState.cookies, [{ name: "session", value: "signed-in" }]);
+  assert.match(fs.readFileSync(path.join(run.run_dir, "logs/capture-states.log"), "utf8"), /^signed in once, for every signedIn state$/m);
+
+  r = run.capture(states, { signIn }, ["--only", "account"]);
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const kept = run.read("captures/states.json").captures;
+  assert.equal(kept.length, 18, "every state's six pictures, the others' from the pass before");
+  assert.equal(kept.filter((c) => c.state === "account").length, 6);
+  assert.equal(run.read("captures/axe.json").axe.length, 18);
+  assert.equal(run.calls().length > calls.length && contexts(run.calls()).length, 1 + 18 + 1 + 6, "this time only account's, after one sign-in");
+  const bad = run.capture([{ name: "home", url: "http://localhost:{port:web}/", signedIn: true }]);
+  assert.equal(bad.status, 2);
+  assert.match(bad.stderr, /a web state is signedIn, and no signIn \{url, actions\} says how/);
+  assert.match(run.capture(states, { signIn }, ["--only", "nowhere"]).stderr, /--only names no state nowhere/);
 });
 
 test("design fix 23: the 390 px captures have touch, so (pointer: coarse) rules are pictured; 768 and 1440 px keep a fine pointer", () => {
@@ -239,15 +270,26 @@ function onDevice(t, device = {}) {
   t.after(() => apps("down"));
   const up = apps("up");
   assert.equal(up.status, 0, up.stdout + up.stderr);
-  const capture = (states) => {
+  const capture = (states, extra = {}) => {
     const file = path.join(run.run_dir, "ui-states.json");
-    fs.writeFileSync(file, JSON.stringify({ states }));
+    fs.writeFileSync(file, JSON.stringify({ ...extra, states }));
     return script("capture-states.mjs", p.dir, [file, "--run", run.id], { env: d.env });
   };
   return { ...run, d, capture, down: () => apps("down"), read: (f) => JSON.parse(fs.readFileSync(path.join(run.run_dir, f), "utf8")) };
 }
 const LOOKS = ["light-default", "light-largest", "dark-default", "dark-largest"];
 const AX5 = "accessibility-extra-extra-extra-large";
+
+test("on the device, mobileSignIn's flow runs once from a fresh launch, and each signedIn state's flow launches the app as it was left (#81)", (t) => {
+  const run = onDevice(t);
+  const r = run.capture([{ name: "02-account", app: "mobile", signedIn: true, flow: [{ tapOn: "Account" }] }],
+    { mobileSignIn: { app: "mobile", flow: [{ inputText: "qa@example.com" }, { tapOn: "Send code" }] } });
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const flows = run.d.state().flows.map((f) => f.flow);
+  assert.equal(flows.length, 1 + 4, "the sign-in once, then one per look");
+  assert.match(flows[0], /- \{"launchApp":\{"clearState":true\}\}\n- \{"inputText":"qa@example.com"\}/);
+  for (const f of flows.slice(1)) assert.match(f, /^- \{"launchApp":\{"clearState":false\}\}\n- \{"tapOn":"Account"\}/m);
+});
 
 test("the mobile branch: each mobile state is captured on the run's device in light and dark at the default and largest text size, each look set through run-apps, each state reached by its flow from a fresh launch, then shot at 1x", (t) => {
   const run = onDevice(t);

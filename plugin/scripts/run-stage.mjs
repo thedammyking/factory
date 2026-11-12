@@ -44,6 +44,10 @@
 //        ROUND            a red introduced or incomplete, or a report with no status line, for another round
 //        SUSPENDED        the child stopped at the usage limit: nothing is judged, and it costs no round
 //        ATTENTION        for the human: no commits, BLOCKED or NEEDS_CONTEXT, a red inherited or environment, no evidence
+//   run-stage.mjs resolve -> after sync-base.mjs exits 3, the merge of the base it left at its conflicts: a fresh
+//      implementer child in the run worktree resolves them so both sides' intent holds and commits the merge (#81), once,
+//      never a round. verify --full then judges the run head: RESOLVED (base_sha the base merged), or ATTENTION when the
+//      merge is still in progress, conflict markers are left, nothing was committed, or the head is red.
 //   run-stage.mjs ci-fix -> one CI fix round, once `run-state round ci` has counted it and ci-watch read CI as ours: the
 //      round's plan, ci-plan.md, names the failing steps and has logs/ci-failure.log and ci.json as its context, and the
 //      child fixes the run branch as review-fix's does, its report ci-fix.md. The verdicts are review-fix's, but for
@@ -57,7 +61,7 @@ import { readJson, git, gitError, runContext, runEnv, digest, ticketWorktree, ti
 
 const HERE = path.dirname(fileURLToPath(import.meta.url)), PLUGIN = path.dirname(HERE);
 const [cmd, n] = process.argv.slice(2);
-if (!["review-fix", "ci-fix"].includes(cmd) && (!["implement", "merge", "verify"].includes(cmd) || !/^\d{2}$/.test(n || ""))) { console.error("run-stage: usage: run-stage.mjs implement | merge | verify <NN> | review-fix | ci-fix --run <id>"); process.exit(2); }
+if (!["review-fix", "ci-fix", "resolve"].includes(cmd) && (!["implement", "merge", "verify"].includes(cmd) || !/^\d{2}$/.test(n || ""))) { console.error("run-stage: usage: run-stage.mjs implement | merge | verify <NN> | review-fix | ci-fix | resolve --run <id>"); process.exit(2); }
 const ctx = runContext(), stage = `implement:${n}`;
 const wt = ticketWorktree(ctx.MAIN, ctx.id, n), branch = ticketBranch(ctx.id, n), dir = path.join(ctx.runDir, "tickets", n);
 const IMPL = path.join(dir, "implementation.md"), EVIDENCE = path.join(dir, "evidence.json");
@@ -252,20 +256,24 @@ if (cmd === "verify") {
   say(...verdict(state()));
 }
 
-if (["review-fix", "ci-fix"].includes(cmd)) {
-  const review = cmd === "review-fix", CI = path.join(ctx.runDir, "ci.json"), CI_LOG = path.join(ctx.runDir, "logs", "ci-failure.log");
-  const FIXES = path.join(ctx.runDir, review ? "fixes.md" : "ci-plan.md"), REPORT = path.join(ctx.runDir, `${cmd}.md`), RUN_EV = path.join(ctx.runDir, "evidence.json");
+if (["review-fix", "ci-fix", "resolve"].includes(cmd)) {
+  const review = cmd === "review-fix", resolve = cmd === "resolve", CI = path.join(ctx.runDir, "ci.json"), CI_LOG = path.join(ctx.runDir, "logs", "ci-failure.log");
+  const FIXES = path.join(ctx.runDir, { "review-fix": "fixes.md", "ci-fix": "ci-plan.md", resolve: "resolve-plan.md" }[cmd]), REPORT = path.join(ctx.runDir, `${cmd}.md`), RUN_EV = path.join(ctx.runDir, "evidence.json");
   const end = (word, why) => { console.log(`${word}: ${why}`); process.exit(0); };
-  const synthesis = review && readJson(path.join(ctx.runDir, "findings.json")), ci = !review && readJson(CI);
+  const synthesis = review && readJson(path.join(ctx.runDir, "findings.json")), ci = cmd === "ci-fix" && readJson(CI);
   if (review && synthesis?.disposition !== "fix") die(`findings.json's disposition is ${synthesis?.disposition ?? "missing"}, and only fix starts a review fix round`);
-  if (!review && ci?.cause !== "ours") die(`ci.json's cause is ${ci?.cause ?? "missing"}, and only ours starts a CI fix round`);
+  if (cmd === "ci-fix" && ci?.cause !== "ours") die(`ci.json's cause is ${ci?.cause ?? "missing"}, and only ours starts a CI fix round`);
+  // resolve: the merge of the base sync-base left at its conflicts (#81), settled by a fresh child once, never a round.
+  let theirs = null; try { theirs = resolve && git(ctx.worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"); } catch {}
+  if (resolve && !theirs) die("no merge is in progress in the run worktree: sync-base.mjs leaves one at its conflicts");
+  const unmerged = resolve ? git(ctx.worktree, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean) : [];
   // Only P0 and P1 fixes loop, a lens's ask among them as a judgment call (#81): a P2 goes to the PR, a P3 to deferred.md,
   // and a human's question on the PR to them.
   const call = (f) => f.action === "ask", humans = (f) => f.lens.includes("human") && call(f);
   const fixes = review ? synthesis.findings.filter((f) => f.status === "open" && !humans(f) && (f.severity === "P0" || (f.severity === "P1" && f.action !== "note"))) : [];
   const lenses = [...new Set(fixes.flatMap((f) => f.lens))];
   // the latest attempt whose session resumes: one cut off before a message or a result left none
-  const s = state(), tries = s.dispatches.filter((d) => d.stage === cmd), last = tries.findLast((d) => d.session && events(d.log).some((e) => ["assistant", "result"].includes(e.type)));
+  const s = state(), tries = s.dispatches.filter((d) => d.stage === cmd), last = !resolve && tries.findLast((d) => d.session && events(d.log).some((e) => ["assistant", "result"].includes(e.type)));
   const statusOf = (file) => [...(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "").matchAll(/^status:[ \t]*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)[ \t]*$/gm)].at(-1)?.[1] || null;
   const was = readJson(RUN_EV), moved = fs.existsSync(REPORT) && path.join(ctx.runDir, `${cmd}.round${tries.length}.md`);
   const red = last && was && !was.green && was.sha === git(ctx.worktree, "rev-parse", "HEAD")
@@ -275,7 +283,12 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   // ci-plan.md has the failing jobs' log and ci.json as its context, which are all a CI fix goes on.
   const files = [...new Set(fixes.map((f) => f.location.replaceAll("`", "").match(/^\s*([^\s:]+)/)?.[1]))].filter((f) => f && fs.existsSync(path.join(ctx.worktree, f)));
   const verification = `\n## Verification\n- \`node ${path.join(HERE, "verify.mjs")} --fast\` from the worktree → green\n`, nth = s.rounds?.[cmd]?.n ?? tries.length + 1;
-  fs.writeFileSync(FIXES, review ? `---\nstatus: ready\nticket: review-fix\ncontext:\n${files.slice(0, 8).map((f) => `  - ${f}\n`).join("")}---\n\n`
+  fs.writeFileSync(FIXES, resolve ? `---\nstatus: ready\nticket: resolve\ncontext:\n${unmerged.slice(0, 8).map((f) => `  - ${f}\n`).join("")}  - ${path.join(ctx.runDir, "spec.md")}\n---\n\n`
+    + `# Resolve the merge of ${s.base_branch}\n\nMerging \`${s.base_branch}\` at \`${theirs.slice(0, 7)}\` into this run's branch stopped at conflicts in ${unmerged.map((f) => `\`${f}\``).join(", ")}. `
+    + `${s.base_branch}'s side is work already merged, another run's, which this run builds on; this branch's side is this run's spec. Resolve each `
+    + "conflict so both hold, change nothing else but what the resolution needs to build and pass, then run the tests that cover those files, "
+    + "`git add` each file you resolved and `git commit --no-edit`, which concludes the merge. Never abort the merge.\n" + verification
+    : review ? `---\nstatus: ready\nticket: review-fix\ncontext:\n${files.slice(0, 8).map((f) => `  - ${f}\n`).join("")}---\n\n`
     + `# Review fixes, round ${nth}\n\nThe run's review found these to fix. Fix each where its location says, with a test first where it's about behaviour, `
     + `and change nothing else. Each lens's file beside this one (review-<lens>.md) holds its findings in full. A finding marked `
     + "judgment call is yours to decide: take the option that keeps closest to spec.md and the repo's own ways, make it, and say "
@@ -292,7 +305,7 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   // The same flags as a ticket's child (below).
   // ponytail: the spawn and the denials copy the implement path's; share them once run-stage's parallel edits have landed.
   const again = moved ? ` Then write ${REPORT} again from the top: the last one is now ${moved}.` : "";
-  const message = review ? (last ? `${red || ""}The review left open what ${FIXES} now lists: fix each finding there.${again}` : "The run's review found what the plan lists. Fix each finding, and nothing else.")
+  const message = resolve ? "A merge of the base stopped at conflicts, as the plan says. Resolve them, and nothing else." : review ? (last ? `${red || ""}The review left open what ${FIXES} now lists: fix each finding there.${again}` : "The run's review found what the plan lists. Fix each finding, and nothing else.")
     : last ? `${red || ""}CI is still red, as ${FIXES} now says: fix it.${again}` : "CI on the run's PR is red where the plan says. Fix that, and nothing else.";
   const session = last ? last.session : crypto.randomUUID(), log = path.join(ctx.runDir, "logs", `${cmd}.${tries.length + 1}.jsonl`);
   fs.mkdirSync(path.dirname(log), { recursive: true });
@@ -318,10 +331,21 @@ if (["review-fix", "ci-fix"].includes(cmd)) {
   if (status) told(runState("done", cmd));
   const sha = git(ctx.worktree, "rev-parse", "HEAD"), made = Number(git(ctx.worktree, "rev-list", "--count", `${from}..HEAD`)), ev = readJson(RUN_EV);
   if (["BLOCKED", "NEEDS_CONTEXT"].includes(status)) end("ATTENTION", `${status}, see ${REPORT}`);
-  if (!made) end("ATTENTION", `the fix round made no commits, so ${review ? "its findings stand" : "CI stays red"}`);
+  if (resolve) {
+    let still = null; try { still = git(ctx.worktree, "rev-parse", "-q", "--verify", "MERGE_HEAD"); } catch {}
+    const marked = unmerged.filter((f) => /^(<{7}|>{7}) /m.test(fs.existsSync(path.join(ctx.worktree, f)) ? fs.readFileSync(path.join(ctx.worktree, f), "utf8") : ""));
+    if (still) end("ATTENTION", `the child didn't conclude the merge of ${s.base_branch}, which is still in progress in the run worktree`);
+    if (marked.length) end("ATTENTION", `conflict markers are left in ${marked.join(", ")}`);
+  }
+  if (!made) end("ATTENTION", `the fix round made no commits, so ${review ? "its findings stand" : resolve ? "the merge stands unresolved" : "CI stays red"}`);
   if (!ev || ev.sha !== sha) end("ATTENTION", `verify --full left no evidence at the run head ${sha.slice(0, 7)}`);
-  if (!ev.green) end(["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --full is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`);
-  if (!status) end("ROUND", `${REPORT} has no status line, so the round is INCOMPLETE`);
+  if (!ev.green) end(resolve || ["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --full is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`);
+  if (!status) end(resolve ? "ATTENTION" : "ROUND", `${REPORT} has no status line, so the ${resolve ? "resolution" : "round"} is INCOMPLETE`);
+  if (resolve) {
+    const r = runState("set", "base_sha", JSON.stringify(theirs));
+    if (r.status) end("ATTENTION", `run-state set base_sha failed: ${r.stderr.trim()}`);
+    end("RESOLVED", `the merge of ${s.base_branch} at ${theirs.slice(0, 7)} is resolved and green at ${sha.slice(0, 7)}`);
+  }
   if (!review) end("PUSH", `the fix round is green at ${sha.slice(0, 7)}, so pr-open.mjs pushes it and CI is read again`);
   const diff = node("review-package.mjs", ["--since", from, "--run", ctx.id], { cwd: ctx.MAIN });
   if (diff.status) end("ATTENTION", `the fix diff couldn't be written: ${diff.stderr.trim()}`);

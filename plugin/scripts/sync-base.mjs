@@ -6,10 +6,11 @@
 //   before-merge   once evidence is pinned, never a rebase: with pr.json (the only sign of an open PR, never `gh pr view`),
 //                  PUT /pulls/{n}/update-branch merges the base in on GitHub and the branch fast-forwards to that merge;
 //                  without it, a local merge.
-// base_sha then becomes the base's tip, through run-state. Prints `rebased …`, `merged …` or `up-to-date …`. A conflict,
-// GitHub's refusal or a merge that never arrives leaves the branch as it was: the rebase or merge is aborted,
-// attention-sync.md says why, the run ends needs-human, and it prints `needs-human: <attention item>` and exits 1 (design
-// fix 22).
+// base_sha then becomes the base's tip, through run-state. Prints `rebased …`, `merged …` or `up-to-date …`. A conflict
+// outside lockfiles in a rebase or a local merge is the factory's to resolve (#81): the base is merged into the run
+// branch and left mid-merge at its conflicts, and it prints `CONFLICT <files>: run-stage.mjs resolve` and exits 3.
+// GitHub's refusal or a merge that never arrives leaves the branch as it was: attention-sync.md says why, the run ends
+// needs-human, and it prints `needs-human: <attention item>` and exits 1 (design fix 22).
 import fs from "node:fs";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -75,12 +76,19 @@ function throughLockfiles(cmd) {
   }
   return true;
 }
-// After a failed rebase or merge: its conflicted files, once it's aborted. A failure with none isn't a conflict.
-function aborted(cmd, e) {
+// A conflict outside lockfiles, left for run-stage resolve (#81): the base merged into the run branch, mid-merge at its
+// conflicts. A rebase that conflicted is aborted first, and the merge takes its place: one resolution, not one per commit.
+function conflicted(cmd, e) {
   const list = git(wt, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
-  try { git(wt, cmd, "--abort"); } catch {}
   if (!list.length) die(`the ${cmd} failed: ${gitError(e)}`);
-  return list.map((f) => `\`${f}\``).join(", ");
+  if (cmd === "rebase") {
+    try { git(wt, "rebase", "--abort"); } catch {}
+    try { git(wt, "merge", "-q", "--no-edit", "-m", attributed(`Merge branch '${s.base_branch}' into ${s.branch}`, "commit", s), base); }
+    catch (m) { if (throughLockfiles("merge")) return finish(`merged ${base} at ${tip.slice(0, 7)} in place of a rebase that conflicted: run verify --full again`); return conflicted("merge", m); }
+    return finish(`merged ${base} at ${tip.slice(0, 7)} in place of a rebase that conflicted: run verify --full again`);
+  }
+  console.log(`CONFLICT ${list.join(", ")}: merging ${base} at ${tip.slice(0, 7)} stopped there, so run-stage.mjs resolve settles it`);
+  process.exit(3);
 }
 
 if (mode === "before-review" && pr) die(`PR #${pr.number} is open, so its branch is never rebased: sync-base.mjs before-merge`);
@@ -92,8 +100,7 @@ let done = `up-to-date with ${base} at ${tip.slice(0, 7)}`;
 if (mode === "before-review" ? s.base_sha !== tip : !contains(head, tip)) {
   if (mode === "before-review") {
     try { git(wt, "rebase", "-q", "--onto", tip, s.base_sha); } catch (e) {
-      if (!throughLockfiles("rebase")) stop(`Rebasing onto ${s.base_branch} conflicts`, `Rebasing the run's commits onto ${at} conflicts in ${aborted("rebase", e)}, so the rebase was aborted and the branch is as it was.`,
-        [`git -C ${q(wt)} rebase --onto ${tip} ${s.base_sha}`, "replays the run's commits on the base yourself, stopping at each conflict"]);
+      if (!throughLockfiles("rebase")) conflicted("rebase", e);
     }
     done = `rebased onto ${base} at ${tip.slice(0, 7)}: every SHA changed, so run verify --full again`;
   } else if (pr) {
@@ -112,13 +119,17 @@ if (mode === "before-review" ? s.base_sha !== tip : !contains(head, tip)) {
     done = `merged ${base} at ${tip.slice(0, 7)} through update-branch on PR #${pr.number}: run verify --full again`;
   } else {
     try { git(wt, "merge", "-q", "--no-edit", "-m", attributed(`Merge branch '${s.base_branch}' into ${s.branch}`, "commit", s), base); } catch (e) {
-      if (!throughLockfiles("merge")) stop(`Merging ${s.base_branch} in conflicts`, `Merging ${at} into the run branch conflicts in ${aborted("merge", e)}, so the merge was aborted and the branch is as it was.`, mergeYourself);
+      if (!throughLockfiles("merge")) conflicted("merge", e);
     }
     done = `merged ${base} at ${tip.slice(0, 7)}: run verify --full again`;
   }
 }
-if (s.base_sha !== tip) {
-  const r = runState("set", "base_sha", JSON.stringify(tip));
-  if (r.status) die(`run-state set base_sha failed: ${r.stderr}`);
+finish(done);
+function finish(line) {
+  if (s.base_sha !== tip) {
+    const r = runState("set", "base_sha", JSON.stringify(tip));
+    if (r.status) die(`run-state set base_sha failed: ${r.stderr}`);
+  }
+  console.log(line);
+  process.exit(0);
 }
-console.log(done);

@@ -52,25 +52,21 @@ test("before-review replays only the run's commits, never a commit the local bas
   assert.equal(s.git("log", "--format=%s", "origin/main..HEAD"), "Add a");
 });
 
-test("fix 22: a before-review conflict aborts the rebase, leaves the branch as it was, writes attention-sync.md naming the files and ends the run needs-human", () => {
+test("a before-review conflict outside lockfiles is the factory's to resolve (#81): the rebase gives way to a merge of the base, left at its conflicts, and no stop", () => {
   const { s, baseMoves } = onGitHub(), gh = noGh();
   s.commit({ "src/a.js": "export const a = 1;\n", "src/b.js": "export const b = 1;\n" }, "Add a and b");
   const head = s.git("rev-parse", "HEAD"), base = state(s).base_sha;
   baseMoves({ "src/a.js": "export const a = 'theirs';\n", "src/b.js": "export const b = 'theirs';\n" });
   const r = sync(s, "before-review", gh.env);
-  assert.equal(r.status, 1, r.stderr + r.stdout);
-  const item = path.join(s.run_dir, "attention-sync.md");
-  assert.equal(r.stdout.trim().split("\n").at(-1), `needs-human: ${item}`);
-  const text = fs.readFileSync(item, "utf8");
-  assert.match(text, /^# .*conflict/i);
-  assert.match(text, /Run `.+`, stage `sync-base before-review`/);
-  assert.match(text, /`src\/a\.js`.*`src\/b\.js`|src\/a\.js, src\/b\.js/s);
-  assert.match(text, /## Options\n- `/);
-  assert.equal(s.git("rev-parse", "HEAD"), head, "the branch is untouched");
-  assert.equal(s.git("status", "--porcelain"), "", "no rebase is left in progress");
-  assert.equal(fs.existsSync(sh(s.worktree, "git", ["rev-parse", "--git-path", "rebase-merge"])), false);
-  assert.equal(state(s).stage, "needs-human");
-  assert.equal(state(s).base_sha, base, "base_sha stays");
+  assert.equal(r.status, 3, r.stderr + r.stdout);
+  assert.match(r.stdout.trim().split("\n").at(-1), /^CONFLICT src\/a\.js, src\/b\.js: merging .+ at \w{7} stopped there, so run-stage\.mjs resolve settles it$/);
+  assert.equal(s.git("rev-parse", "HEAD"), head, "the run's commits as they were, no rebase");
+  assert.equal(fs.existsSync(sh(s.worktree, "git", ["rev-parse", "--git-path", "rebase-merge"])), false, "the rebase gave way");
+  assert.ok(s.git("rev-parse", "-q", "--verify", "MERGE_HEAD"), "a merge is left in progress");
+  assert.deepEqual(s.git("diff", "--name-only", "--diff-filter=U").split("\n"), ["src/a.js", "src/b.js"]);
+  assert.ok(!fs.existsSync(path.join(s.run_dir, "attention-sync.md")), "no stop");
+  assert.notEqual(state(s).stage, "needs-human");
+  assert.equal(state(s).base_sha, base, "base_sha moves only once it's resolved");
 });
 
 test("a before-review conflict in lockfiles alone goes through: each takes the base's side, then the recipe's setup regenerates it, committed (#81)", () => {
@@ -142,19 +138,17 @@ test("before-merge without pr.json merges the base in locally, keeping the run's
   assert.deepEqual(gh.calls("gh"), []);
 });
 
-test("fix 22: a local before-merge conflict names both files, aborts the merge and ends the run needs-human", () => {
+test("a local before-merge conflict leaves the merge at its conflicts for run-stage resolve (#81), and no stop", () => {
   const { s, baseMoves } = onGitHub(), gh = noGh();
   s.commit({ "src/a.js": "mine\n", "src/b.js": "mine\n" });
   const head = s.git("rev-parse", "HEAD");
   baseMoves({ "src/a.js": "theirs\n", "src/b.js": "theirs\n" });
   const r = sync(s, "before-merge", gh.env);
-  assert.equal(r.status, 1, r.stderr + r.stdout);
-  const text = fs.readFileSync(path.join(s.run_dir, "attention-sync.md"), "utf8");
-  assert.match(text, /stage `sync-base before-merge`/);
-  assert.match(text, /src\/a\.js/); assert.match(text, /src\/b\.js/);
+  assert.equal(r.status, 3, r.stderr + r.stdout);
+  assert.match(r.stdout, /^CONFLICT src\/a\.js, src\/b\.js: /m);
   assert.equal(s.git("rev-parse", "HEAD"), head);
-  assert.equal(s.git("status", "--porcelain"), "");
-  assert.equal(state(s).stage, "needs-human");
+  assert.ok(s.git("rev-parse", "-q", "--verify", "MERGE_HEAD"));
+  assert.ok(!fs.existsSync(path.join(s.run_dir, "attention-sync.md")));
 });
 
 test("fix 22: with pr.json, before-merge asks GitHub to update the branch over REST, never `gh pr view`, then fast-forwards to its merge", () => {

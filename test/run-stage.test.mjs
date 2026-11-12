@@ -531,6 +531,34 @@ test("a concern a round leaves as it was, with no commit, goes to the PR and the
   assert.equal(stuck.stdout.trim(), "ESCALATE implement:01: two attempts in a row made no commits");
 });
 
+test("resolve: a fresh child settles the merge of the base that sync-base left at its conflicts and commits it, verify --full judges the head, and base_sha becomes the base merged (#81); a merge left unconcluded is the human's", (t) => {
+  const conflicted = (r) => {
+    git(r.s.worktree, "add", "-A"); fs.writeFileSync(path.join(r.s.worktree, "index.js"), "'run'\n"); git(r.s.worktree, "commit", "-qam", "the run's side");
+    fs.writeFileSync(path.join(r.p.dir, "index.js"), "'base'\n"); r.p.git("commit", "-qam", "the base's side");
+    assert.equal(spawnSync("git", ["merge", "-q", "--no-edit", "main"], { cwd: r.s.worktree }).status, 1, "a conflict");
+    return r.p.git("rev-parse", "main");
+  };
+  const r = ticketReady(t), tip = conflicted(r);
+  r.play([{ files: { "index.js": "'run and base'\n", "csv.js": "export const csv = 1;\n" }, commit: "Merge main, keeping both sides", write: { [path.join(r.s.run_dir, "resolve.md")]: report("DONE") } }]);
+  const out = r.stage("resolve");
+  assert.match(lastLine(out), new RegExp(`^RESOLVED: the merge of main at ${tip.slice(0, 7)} is resolved and green at \\w{7}$`), out.stdout + out.stderr);
+  const [call] = r.calls();
+  assert.equal(call.cwd, r.s.worktree, "in the run worktree");
+  assert.ok(!call.argv.includes("--resume"), "a fresh child");
+  const plan = fs.readFileSync(path.join(r.s.run_dir, "resolve-plan.md"), "utf8");
+  assert.match(plan, /^# Resolve the merge of main$/m);
+  assert.match(plan, /stopped at conflicts in `index\.js`/);
+  assert.equal(r.state().base_sha, tip);
+  assert.equal(git(r.s.worktree, "rev-parse", "HEAD^2"), tip, "the merge is committed");
+
+  const idle = ticketReady(t);
+  conflicted(idle);
+  idle.play([{ write: { [path.join(idle.s.run_dir, "resolve.md")]: report("DONE") } }]);
+  assert.equal(lastLine(idle.stage("resolve")), "ATTENTION: the child didn't conclude the merge of main, which is still in progress in the run worktree");
+  assert.equal(idle.stage("resolve").status, 0, "a merge still in progress can be tried again");
+  assert.match(r.stage("resolve").stderr, /no merge is in progress in the run worktree/);
+});
+
 test("NEEDS_CONTEXT gets one researcher dispatch, whose answer the resumed child is pointed at; a second NEEDS_CONTEXT is the human's", (t) => {
   const r = ticketReady(t);
   const ask = (q) => ({ write: { [r.impl]: report("NEEDS_CONTEXT", { more: `question: ${q}\n` }) } });

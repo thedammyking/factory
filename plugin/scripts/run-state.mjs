@@ -188,6 +188,7 @@ const OUTPUT = {  // the file each stage writes in the run dir
   tickets: "tickets",  // a folder
   "review-fix": "review-fix.md",  // the implementer's report on a review fix round
   "ci-fix": "ci-fix.md",  // and on a CI fix round
+  resolve: "resolve.md",  // and on resolving a merge of the base (#81)
 };
 // the file a stage of one ticket, <stage>:<NN>, writes in tickets/<NN>/: the planner's plan, the implementer's report,
 // the researcher's answer to the implementer and qa's walk
