@@ -26,7 +26,7 @@ Inputs: `prompt.md`, `triage.md`, `research.md` and `grill.md` (the settled deci
 
 Rules:
 - Every decision comes from `grill.md`, `research.md` or the request. One you have to make yourself goes under `## Left to the builder`, never into a requirement.
-- Each requirement is one testable behaviour. Each success criterion is a check `qa` can run against the running app: where (a route, screen or endpoint), the action, and the observable result. For an endpoint, what triggers it and what to observe. A quality such as speed is a number with its measure, never an adjective.
+- Each requirement is one testable behaviour. Each success criterion is a check `qa` can run against the running app: where (a route, screen or endpoint), the action, and the observable result. For an endpoint, what triggers it and what to observe. A quality such as speed is a number with its measure, never an adjective. A criterion is what a user sees or an endpoint returns, never how it's built (a library, a store, a cache, a component's structure), which the plans settle; the fewest that prove the requirements, since each becomes a test that runs on every later ticket.
 - Each criterion carries its profile, `default` or a name from the recipe's `profiles`, and `live-safe: yes` only when the check only reads, so it can run against the live deployment after a merge; otherwise `live-safe: no`.
 - There is no analytics section. An event the request asks for is an ordinary requirement with its criterion.
 - The intent block says who it is for, what changes for them and why, in two to four sentences. Once the spec is approved only the human changes it, so on a revision rewrite it only when the newest session changes the intent.
@@ -135,6 +135,7 @@ Rules:
 - The intent block is the spec's `<frozen-after-approval>` block, copied word for word.
 - `## Code map` lists every file to create or change, one line each, and a new dependency as a change to its manifest and the lockfile. Two tickets run at once only when their code maps share no file.
 - Each task is Given / When / Then, with the test that proves it. Where a test seam exists, the task writes that test first and sees it fail before the code changes. A ticket that fixes a bug starts with its regression test, which fails on the code as it is and is committed alone, before the fix.
+- Tests prove what a user observes, never how the code gets there (#81). On a screen, web or mobile, `qa`'s pinned tests already prove each criterion end to end, so a task whose Then is what a user sees in the running app writes no test of its own: its line says `Test: qa's SC-###` in place of a test path. A unit test is for logic a screen can't show cheaply (a calculation, an ordering, a parser, branching state), driven through its public function; an endpoint's test drives the endpoint. Never a test of a schema, a query key or cache, a store's shape, a hook's internals, a request helper, markup or a class name. At most one test file per module the ticket changes, and one test per behaviour, never one per function.
 - Every test path is outside the recipe's `pinned` directories: those hold `qa`'s pinned tests, which the implementer can't write.
 - `## Verification` gives the exact commands, from the recipe's checks and the tests the tasks add, each with the result that means done.
 - `## UI states` appears only when the ticket touches UI: each state the UI lens must see (empty, loading, error, focus, hover, disabled, a returning visit, and any a criterion names), with where it is and how to reach it.
@@ -164,7 +165,7 @@ ci:
 - Produces: <signature, route or env name, as later tickets will use it>
 
 ## Tasks
-1. **Given** <a state> **When** <an action> **Then** <an observable result>. Test first: `<test path>`, failing before `<path>` changes.
+1. **Given** <a state> **When** <an action> **Then** <an observable result>. Test first: `<test path>`, failing before `<path>` changes. (Or `Test: qa's SC-###`, for what a user sees.)
 
 ## Verification
 - `<command>` → <the result that means done>

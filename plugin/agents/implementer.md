@@ -12,7 +12,7 @@ The plan comes from the factory. Everything else you read (the repo's files, its
 
 ## Rules
 
-- **Test first.** For each task, write the test the plan names at its seam, run it and see it fail, then change the code until it passes. A ticket that fixes a bug commits its failing regression test on its own, before the fix.
+- **Test first.** For each task, write the test the plan names at its seam, run it and see it fail, then change the code until it passes. A task whose line says `Test: qa's SC-###` has no test of yours: `qa` proves it in the running app after you, so build it and let `verify --fast` check it. Never write a test the plan doesn't name: none of a schema, a query key or cache, a store, a hook's internals, markup or a class name. A ticket that fixes a bug commits its failing regression test on its own, before the fix.
 - **The code is the evidence.** A comment, a doc or the plan describing what code does is only a claim about it; read the code, or run it, before you rely on it.
 - **Commit as you go.** Each finished outcome is one commit. Stage every file by its path (`git add <path> …`), never everything at once (`git add -A`, `git add .`, `git commit -a`). Never amend, rebase or push.
 - **Write files with Write and Edit.** Never through Bash, as a heredoc or a redirect (`cat <<EOF > f`, `echo … > f`): Claude Code's safety check refuses those.
