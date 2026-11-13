@@ -14,6 +14,10 @@
 //   - On a persuade or operate surface (spec.md's frontmatter; a oneshot's is operate), a UI lens whose latest
 //     disposition isn't ship is an open P1 fix, ui-disposition, which only a later UI round saying ship resolves (design
 //     fix 6).
+//   - The run's own checks and walk are findings too, fixed in the same round as the lenses' (#81): each check
+//     verify --full found red at the run's doing (red_cause introduced) is an open P1 fix of the verify lens, and each
+//     criterion qa walked to a fail with no pinned test of its own (a pinned one is its test's red) one of the qa lens.
+//     Read as they stand, so the round's green verify, or qa walking the criterion again, settles them.
 //   - A group is resolved when every member is; otherwise it's open as a P0, a P1 or a human's ask, pr as a P2 and
 //     deferred as a P3. A lens's ask is a judgment call, the fix round's to make like any fix (#81): only a person's
 //     question on the PR (the human lens) waits for them. The disposition is ask with an open human ask, fix with an open
@@ -92,6 +96,19 @@ if (["persuade", "operate"].includes(surface) && uiRounds.some((d) => d !== "shi
   location: "captures/", claim: `The UI lens's disposition is ${ui} on a ${surface} surface`, evidence: "review-ui.md",
   fix: "Fix what review-ui.md finds, until a UI re-review says ship.", cwe: "", rules: ["ui not ship on persuade or operate => open P1 fix"],
 });
+
+const own = (id, lens, location, claim, evidence, fix) => findings.push({ id, members: [id], lens: [lens], severity: "P1", action: "fix", status: "open",
+  location, claim, evidence, fix, cwe: "", rules: [`${lens} => open P1 fix`] });
+const ev = readJson(path.join(dir, "evidence.json"));
+if (ev && !ev.green && ev.red_cause === "introduced") for (const c of ev.checks.filter((c) => c.status === "fail")) {
+  own(`verify-${c.app}-${c.check}`.replace(/[^\w.-]+/g, "-"), "verify", c.pinned ? c.check : c.log || `${c.app}/${c.check}`,
+    `${c.app}/${c.check} fails at ${ev.sha.slice(0, 7)}: ${String(c.digest ?? "").split("\n").find((l) => l.trim()) ?? "see its log"}`, "evidence.json",
+    "Make it pass by changing the product code: evidence.json has its digest and log. Never change a pinned test's expected value.");
+}
+for (const c of (readJson(path.join(dir, "qa.json"))?.criteria || []).filter((c) => c.status === "fail" && !c.test)) {
+  own(`qa-${c.id}`, "qa", (c.captures || [])[0] || "qa.json", `${c.id} fails in qa's walk: expected ${c.expected}, observed ${c.observed}`, (c.captures || []).join(", ") || "qa.json",
+    `Make the app do what ${c.id} says in spec.md; qa walks it again after the round.`);
+}
 
 const open = findings.filter((f) => f.status === "open");
 const asks = open.filter((f) => f.action === "ask" && f.lens.includes("human"));

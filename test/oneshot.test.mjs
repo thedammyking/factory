@@ -112,7 +112,7 @@ fs.writeFileSync(input.match(/^implementation: (.+)$/m)[1], "status: DONE\\nconc
 console.log(JSON.stringify({ type: "result", session_id: "s", modelUsage: {} }));
 `;
 
-test("a docs, refactor or maintenance oneshot has no qa walk and merges as the run's one ticket on green checks; any other type is walked", () => {
+test("a oneshot of any type merges as the run's one ticket on its fast checks: the walk, for the types that have one, comes with the review (#81)", () => {
   const bin = tmp("factory-bin-");
   fs.writeFileSync(path.join(bin, "claude"), FAKE, { mode: 0o755 });
   const env = { ...ENV, PATH: bin + path.delimiter + process.env.PATH };
@@ -123,8 +123,7 @@ test("a docs, refactor or maintenance oneshot has no qa walk and merges as the r
     planned(r, "ready");
     const stage = (...args) => { const x = r.node("run-stage.mjs", [...args, "--run", r.s.id]); assert.equal(x.status, 0, x.stderr + x.stdout); return x.stdout.trim().split("\n").at(-1); };
     const verdict = stage("implement", "01");
-    if (type === "bug") { assert.match(verdict, /^QA 01: DONE, and verify --full is green/, type); continue; }
-    assert.match(verdict, /^MERGE 01: DONE, and verify --full is green/, type);
+    assert.match(verdict, /^MERGE 01: DONE, and verify --fast is green/, type);
     assert.match(stage("merge", "01"), /^MERGED 01:/, type);
     assert.equal(r.ok("next-ticket"), "DONE", `${type}: on to the review`);
   }

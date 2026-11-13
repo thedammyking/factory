@@ -13,7 +13,7 @@
 // merged; or only `CATCH-UP …`, writing no decision, when it asks for the catch-up.
 import fs from "node:fs";
 import path from "node:path";
-import { readJson, git, gitError, runContext, mainRoot, liveBase, ghApi, PRODUCT, LOCKED, PLATFORM_NAMES, unverifiedNative } from "./lib.mjs";
+import { readJson, git, gitError, runContext, mainRoot, liveBase, ghApi, PRODUCT, LOCKED, PLATFORM_NAMES, unverifiedNative, qaWalks, walkResults } from "./lib.mjs";
 
 const short = (sha) => String(sha ?? "none").slice(0, 7);
 
@@ -101,11 +101,12 @@ fact("evidence_green_at_head", ev?.sha === head && ev.green === true, ev
 const ci = json("ci.json");
 fact("ci_green_at_head", ci?.sha === head && ["green", "flake"].includes(ci.cause), ci ? `CI ${ci.cause} at ${short(ci.sha)} (HEAD ${short(head)})` : "no ci.json: CI wasn't read", [at("ci.json")]);
 
-// Every criterion of the spec passes in each ticket's qa walk that names it. A oneshot has no spec: its one criterion is
-// triage's acceptance check, which qa walks as `acceptance` (#24).
+// Every criterion of the spec passes in each qa walk that names it: the run's (lib's qaWalks), a fail its pinned test
+// passes since counted a pass. A oneshot has no spec: its one criterion is triage's acceptance check, which qa walks as
+// `acceptance` (#24).
 const oneshot = s.route === "oneshot";
 const criteria = oneshot ? ["acceptance"] : [...read("spec.md").matchAll(/^- \*\*(SC-\d{3})\*\*/gm)].map((m) => m[1]);
-const walks = tickets.map((n) => `tickets/${n}/qa.json`), results = walks.flatMap((f) => json(f)?.criteria || []);
+const walked = qaWalks(dir), walks = walked.map(([f]) => f), results = walkResults(walked, ev, head);
 const unproven = criteria.map((id) => [id, results.filter((c) => c.id === id).map((c) => c.status)])
   .filter(([, st]) => !st.length || st.some((x) => x !== "pass")).map(([id, st]) => `${id}=${st.join("/") || "not walked"}`);
 fact("criteria_pass", criteria.length && !unproven.length, criteria.length ? unproven.join(", ") || `${criteria.length} criteria pass` : "spec.md has no SC-### criterion",

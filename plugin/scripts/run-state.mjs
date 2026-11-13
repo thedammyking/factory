@@ -602,7 +602,7 @@ const ghClose = (ctx, key, reason) => ghWrite("-X", "PATCH", `repos/${githubRepo
 // A tracker write's outcome, once recorded in s: saved, logged and printed.
 const report = (ctx, s, line) => { save(ctx.state, s); log(ctx.runDir, `run: ${ctx.id} ${line}`); console.log(line); };
 // The run's phase as its request issue shows it (#81), in the order a run goes: queued (a run-list entry filed before
-// its run starts), planning (triage to the cut), building (its tickets), reviewing (the review and its fixes), in-pr (its
+// its run starts), planning (triage to the cut), building (its tickets), reviewing (qa's walk, the review and its fixes), in-pr (its
 // PR open for the human's review), and needs-you or failed when it stops. done takes the label off: the issue closes when
 // its PR merges ("Closes …"). A run that stopped with a ready PR is in-pr. A ticket's sub-issue is planning, then building
 // once implemented, then done when it merges.
@@ -615,7 +615,7 @@ function phaseOf(ctx, s) {
   if (s.stage === "delivered" || (pr && !pr.draft)) return "in-pr";
   if (["needs-human", "suspended"].includes(s.stage)) return "needs-you";
   const last = s.dispatches.at(-1)?.stage || "";
-  return /^(review-|ci-fix)/.test(last) ? "reviewing" : /^(plan|implement|qa|context):/.test(last) ? "building" : "planning";
+  return /^(review-|ci-fix|qa$)/.test(last) ? "reviewing" : /^(plan|implement|qa|context):/.test(last) ? "building" : "planning";
 }
 // Moves the request issue (or, with `ticket`, that ticket's sub-issue) to `phase` when it isn't there yet: on github a
 // `factory:<phase>` label in place of the last one, made when the repo lacks it; elsewhere a `TRACK <key> <phase>` line,
@@ -1139,7 +1139,7 @@ switch (cmd) {
     // count. The same one twice in a row means the round changed nothing.
     // ponytail: two reds that differ only in a number (a count, an actual value) read as the same and escalate early;
     // mask only timings and ports if that ever ends a round that was making progress.
-    const ev = readJson(path.join(ctx.runDir, "tickets", n, "evidence.json"));
+    const ev = readJson(path.join(ctx.runDir, "tickets", n, "evidence-fast.json"));  // a ticket is judged on its fast checks (#81)
     let head = null; try { head = git(ctx.MAIN, "rev-parse", `refs/heads/${ticketBranch(ctx.id, n)}`); } catch {}
     const signature = ev && !ev.green && ev.sha === head ? crypto.createHash("sha256").update(JSON.stringify(ev.checks.filter((c) => c.status !== "pass")
       .map((c) => [c.app, c.check, c.status, String(c.digest).replace(/^full output: .*$/m, "").replace(/\d+/g, "#")]))).digest("hex") : null;

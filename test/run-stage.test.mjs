@@ -144,19 +144,19 @@ test("a crossed cap passes run-state's BUDGET refusal through before any worktre
   assert.deepEqual([fs.existsSync(failing.wt), branches(failing), failing.calls()], [false, "", []], "the next attempt cuts it again");
 });
 
-test("verify --full judges the ticket's own worktree and keeps its evidence beside the plan, and a DONE report with green evidence there is MERGE", (t) => {
-  const recipe = { ...RECIPE, apps: [{ ...RECIPE.apps[0], checks: { ...RECIPE.apps[0].checks, where: "pwd" } }] };
+test("verify --fast judges the ticket's own worktree and keeps its evidence beside the plan, and a DONE report with green evidence there is MERGE", (t) => {
+  const recipe = { ...RECIPE, apps: [{ ...RECIPE.apps[0], checks: { ...RECIPE.apps[0].checks, test: "pwd && npm test" } }] };
   const r = ticketReady(t, { recipe });
   r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }]);
   const out = r.stage("implement", "01");
   const sha = git(r.wt, "rev-parse", "HEAD");
-  assert.equal(lastLine(out), `MERGE 01: DONE, and verify --full is green at ${sha.slice(0, 7)}`);
-  const e = JSON.parse(fs.readFileSync(path.join(r.tickets, "evidence.json"), "utf8"));
-  assert.deepEqual([e.mode, e.sha, e.green], ["full", sha, true]);
-  const where = e.checks.find((c) => c.check === "where");
-  assert.equal(where.log, path.join(r.tickets, "logs", "app-where.log"));
-  assert.equal(fs.readFileSync(where.log, "utf8"), r.wt + "\n", "the checks ran in the ticket's worktree");
-  assert.ok(!fs.existsSync(path.join(r.s.run_dir, "evidence.json")), "the run head's evidence is the merge's");
+  assert.equal(lastLine(out), `MERGE 01: DONE, and verify --fast is green at ${sha.slice(0, 7)}`);
+  const e = JSON.parse(fs.readFileSync(path.join(r.tickets, "evidence-fast.json"), "utf8"));
+  assert.deepEqual([e.mode, e.sha, e.green], ["fast", sha, true]);
+  const test = e.checks.find((c) => c.check === "test");
+  assert.equal(test.log, path.join(r.tickets, "logs", "app-test.fast.log"));
+  assert.equal(fs.readFileSync(test.log, "utf8").split("\n")[0], r.wt, "the checks ran in the ticket's worktree");
+  assert.ok(!fs.existsSync(path.join(r.s.run_dir, "evidence-fast.json")), "the run head's evidence is the merge's");
   assert.ok(r.state().stages_done.includes("implement:01"), "a report with a status line is a done stage");
 });
 
@@ -189,8 +189,8 @@ test("a report with no status line, a named concern and a red the ticket introdu
   for (const [why, step, verdict] of [
     ["no status line", (r) => ({ ...CSV, write: { [r.impl]: "# Implementation 01\n\n- abc1234 Add the CSV export: half of it\n" } }), /^ROUND 01: implementation\.md has no status line, so the attempt is INCOMPLETE$/],
     ["a concern", (r) => ({ ...CSV, write: { [r.impl]: report("DONE", { concerns: "- an account name holding a comma breaks the row" }) } }), /^ROUND 01: the implementer named a concern/],
-    ["introduced", (r) => ({ files: { "csv.js": "1\n", "index.js": "syntax error (\n" }, commit: "Break the index", write: { [r.impl]: report("DONE") } }), /^ROUND 01: verify --full is red at \w{7}, red_cause introduced$/],
-    ["inherited", (r) => ({ files: { "notes.txt": "1\n" }, commit: "No export yet", write: { [r.impl]: report("DONE") } }), /^ATTENTION 01: verify --full is red at \w{7}, red_cause inherited$/],
+    ["introduced", (r) => ({ files: { "csv.js": "1\n", "index.js": "syntax error (\n" }, commit: "Break the index", write: { [r.impl]: report("DONE") } }), /^ROUND 01: verify --fast is red at \w{7}, red_cause introduced$/],
+    ["inherited", (r) => ({ files: { "notes.txt": "1\n" }, commit: "No export yet", write: { [r.impl]: report("DONE") } }), /^ATTENTION 01: verify --fast is red at \w{7}, red_cause inherited$/],
   ]) {
     const r = ticketReady(t);
     r.play([step(r)]);
@@ -240,7 +240,7 @@ test("a ticket that changes CI opens no ticket PR and pushes nothing: a workflow
   assert.equal(sh(remote, "git", ["for-each-ref", "refs/heads/feature/csv-export", `refs/heads/${r.branch}`]), "", "neither branch went to origin");
 });
 
-test("merge takes only a MERGE ticket into the run branch, runs verify --full at the new head, removes the ticket's worktree and branch, and marks it done", (t) => {
+test("merge takes only a MERGE ticket into the run branch, runs verify --fast at the new head, removes the ticket's worktree and branch, and marks it done", (t) => {
   const early = ticketReady(t);
   const refused = early.stage("merge", "01");
   assert.equal(refused.status, 2);
@@ -250,10 +250,11 @@ test("merge takes only a MERGE ticket into the run branch, runs verify --full at
   const ticketHead = git(r.wt, "rev-parse", "HEAD");
   const out = r.stage("merge", "01");
   const head = git(r.s.worktree, "rev-parse", "HEAD");
-  assert.equal(lastLine(out), `MERGED 01: at ${head.slice(0, 7)} on feature/csv-export, where verify --full is green`);
+  assert.equal(lastLine(out), `MERGED 01: at ${head.slice(0, 7)} on feature/csv-export, where verify --fast is green`);
   assert.equal(head, ticketHead, "the ticket's commits are on the run branch");
-  const e = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence.json"), "utf8"));
+  const e = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence-fast.json"), "utf8"));
   assert.deepEqual([e.sha, e.green], [head, true], "the run head's own evidence");
+  assert.ok(!fs.existsSync(path.join(r.s.run_dir, "evidence.json")), "the run's full verify comes once every ticket is merged (#81)");
   assert.ok(!fs.existsSync(r.wt), "the ticket's worktree is gone");
   assert.equal(branches(r), "", "and so is its branch");
   assert.match(fs.readFileSync(path.join(r.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: done$/m);
@@ -272,7 +273,7 @@ test("a merge that conflicts is aborted and left as it was, and a run head that 
   const red = green(t);  // the run branch's own change is green without csv.js, the ticket's with it
   fs.writeFileSync(path.join(red.s.worktree, "package.json"), JSON.stringify({ name: "reports", scripts: { test: "test ! -f csv.js" } }));
   git(red.s.worktree, "commit", "-qam", "No csv.js wanted");
-  assert.match(lastLine(red.stage("merge", "01")), /^ATTENTION 01: verify --full is red at the run head \w{7} after merging two green sides, red_cause \w+$/);
+  assert.match(lastLine(red.stage("merge", "01")), /^ATTENTION 01: verify --fast is red at the run head \w{7} after merging two green sides, red_cause \w+$/);
   assert.match(fs.readFileSync(path.join(red.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: in-progress$/m, "the ticket isn't done");
 });
 
@@ -290,12 +291,12 @@ test("a ticket that adds an app re-detects the recipe in its own worktree before
   const ticketHead = git(r.wt, "rev-parse", "HEAD");
   const out = r.stage("merge", "01");
   const head = git(r.s.worktree, "rev-parse", "HEAD");
-  assert.equal(lastLine(out), `MERGED 01: at ${head.slice(0, 7)} on feature/csv-export, where verify --full is green`);
+  assert.equal(lastLine(out), `MERGED 01: at ${head.slice(0, 7)} on feature/csv-export, where verify --fast is green`);
   assert.equal(head, ticketHead, "the merge's own re-detect finds the recipe as the ticket left it");
   const recipe = JSON.parse(git(r.s.worktree, "show", "HEAD:.factory/setup.json"));
   assert.deepEqual(recipe.apps, [RECIPE.apps[0], { name: "api", type: "backend", path: "apps/api", checks: { test: "npm run test" } }]);
   assert.deepEqual([recipe.setup, recipe.pinned], [RECIPE.setup, ["apps/api/e2e"]]);
-  const e = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence.json"), "utf8"));
+  const e = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence-fast.json"), "utf8"));
   assert.deepEqual([e.sha, e.green, e.checks.map((c) => `${c.app}/${c.check}`)], [head, true, ["app/test", "app/typecheck", "api/test"]], "verify judged the new recipe");
   const pr = r.node("pr-render.mjs", ["--run", r.s.id]);
   assert.equal(pr.status, 0, pr.stderr);
@@ -351,8 +352,8 @@ const round = (r) => r.node("run-state.mjs", ["round", "implement:01", "--run", 
 test("fix rounds 1 and 2 resume the child's session with the evidence's path, round 3 is a fresh child on opus told a prior implementer tried twice, and round implement refuses a fourth with ESCALATE", (t) => {
   const r = ticketReady(t);
   r.play(["alpha", "beta", "gamma", "delta"].map((w) => broken(r, w)));
-  const evidence = path.join(r.tickets, "evidence.json");
-  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01: verify --full is red at \w{7}, red_cause introduced$/);
+  const evidence = path.join(r.tickets, "evidence-fast.json");
+  assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01: verify --fast is red at \w{7}, red_cause introduced$/);
   for (const n of [1, 2, 3]) {
     assert.equal(lastLine(round(r)), `OK implement:01 round ${n}/3`);
     assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
@@ -361,7 +362,7 @@ test("fix rounds 1 and 2 resume the child's session with the evidence's path, ro
   assert.equal(flag(first.argv, "--model"), "sonnet");
   for (const [i, call] of rest.slice(0, 2).entries()) {
     assert.deepEqual([flag(call.argv, "--resume"), flag(call.argv, "--model"), call.argv.includes("--session-id")], [session, "sonnet", false], `round ${i + 1} resumes`);
-    assert.match(call.stdin, new RegExp(`^verify --full is red at \\w{7}, red_cause introduced: ${evidence} has each failing check's digest and log\\. Fix what it shows\\.`));
+    assert.match(call.stdin, new RegExp(`^verify --fast is red at \\w{7}, red_cause introduced: ${evidence} has each failing check's digest and log\\. Fix what it shows\\.`));
     assert.ok(call.stdin.includes(`the last one is now ${path.join(r.tickets, `implementation.round${i + 1}.md`)}`), "its last report was moved aside");
     assert.ok(!call.stdin.includes("run_dir:"), "and nothing else");
   }
@@ -423,7 +424,7 @@ test("BLOCKED: bad_plan resets the ticket's commits for the planner's one amendm
   assert.equal(lastLine(r.stage("implement", "01")), "AMEND 01: BLOCKED: bad_plan, so the ticket's commits are reset and the planner amends the plan");
   assert.equal(git(r.wt, "rev-parse", "HEAD"), cut, "the ticket's commits are gone");
   assert.ok(!fs.existsSync(path.join(r.wt, "csv.js")));
-  assert.ok(!fs.existsSync(path.join(r.tickets, "evidence.json")), "a blocked child isn't verified");
+  assert.ok(!fs.existsSync(path.join(r.tickets, "evidence-fast.json")), "a blocked child isn't verified");
   r.run("dispatch", "plan:01");
   fs.writeFileSync(path.join(r.tickets, "plan.md"), "---\nstatus: ready\nticket: 01-csv-export\n---\n\n# Plan 01: CSV export, amended\n");
   r.run("done", "plan:01");
@@ -518,7 +519,7 @@ test("a concern a round leaves as it was, with no commit, goes to the PR and the
   r.play([{ ...CSV, ...concerned }, concerned]);
   assert.match(lastLine(r.stage("implement", "01")), /^ROUND 01:/);
   assert.equal(lastLine(round(r)), "OK implement:01 round 1/3");
-  assert.equal(lastLine(r.stage("implement", "01")), `MERGE 01: its concern, which a round left as it was, goes to the PR, and verify --full is green at ${git(r.wt, "rev-parse", "HEAD").slice(0, 7)}`);
+  assert.equal(lastLine(r.stage("implement", "01")), `MERGE 01: its concern, which a round left as it was, goes to the PR, and verify --fast is green at ${git(r.wt, "rev-parse", "HEAD").slice(0, 7)}`);
 
   const idle = ticketReady(t, { recipe: { ...RECIPE, apps: [{ ...RECIPE.apps[0], checks: { ...RECIPE.apps[0].checks, test: "true" } }] } });  // green with nothing built
   const nothing = { write: { [idle.impl]: report("DONE_WITH_CONCERNS", { concerns: "- `.factory/setup.json` is locked" }) } };
@@ -574,66 +575,31 @@ test("NEEDS_CONTEXT gets one researcher dispatch, whose answer the resumed child
   assert.ok(second.stdin.startsWith(`The answer to your question is in ${context}. Carry on with the plan.`));
 });
 
-// qa's stage on ticket 01 as the orchestrator records it: dispatched, the test files it changed (null deletes one)
-// committed on the ticket's branch by name, its qa.json written, then done.
-function qaWalks(r, files = {}) {
-  r.run("dispatch", "qa:01");
-  write(r.wt, files);
-  if (Object.keys(files).length) { git(r.wt, "add", "--", ...Object.keys(files)); git(r.wt, "commit", "-qm", "Pin SC-001"); }
-  fs.writeFileSync(path.join(r.tickets, "qa.json"), JSON.stringify({ ticket: "01-csv-export", status: "done", criteria: [] }));
-  r.run("done", "qa:01");
-}
-const PINNED_PASS = 'import { test } from "node:test";\nimport assert from "node:assert/strict";\n'
-  + 'test("[r] SC-001: the app answers", async () => assert.equal((await fetch(`${process.env.BASE_URL}/`)).status, 200));\n';
 const NO_CSV = 'import { test } from "node:test";\nimport assert from "node:assert/strict";\nimport fs from "node:fs";\n'
   + 'test("[old] SC-004: the reports offer no CSV", () => assert.ok(!fs.existsSync("csv.js")));\n';
 
-test("with an app to walk, a green DONE ticket goes to qa before it merges, verify then judges the ticket's head again with qa's pinned tests, and the merge takes the ticket's apps down and its database with its worktree", (t) => {
-  const recipe = { ...RECIPE, apps: [{ ...RECIPE.apps[0], dev: "PORT={port:app} node server.mjs", health: "http://localhost:{port:app}/" }], pinned: ["e2e"],
-    db: { create: 'mkdir "$DBS/{name}"', drop: 'rmdir "$DBS/{name}"' } };
-  const r = ticketReady(t, { recipe, files: { "server.mjs": STUB_SERVER } });
+test("a ticket is built on its fast checks alone (#81): with an app to walk, a pinned test it breaks and an e2e suite, a green DONE ticket merges with none of them run, and the merge takes the ticket's apps down and its database with its worktree", (t) => {
+  const old = "e2e/old-01-no-csv.test.mjs";
+  const recipe = { ...RECIPE, apps: [{ ...RECIPE.apps[0], dev: "PORT={port:app} node server.mjs", health: "http://localhost:{port:app}/", checks: { ...RECIPE.apps[0].checks, e2e: "exit 1" } }],
+    pinned: ["e2e"], db: { create: 'mkdir "$DBS/{name}"', drop: 'rmdir "$DBS/{name}"' } };
+  const r = ticketReady(t, { recipe, files: { "server.mjs": STUB_SERVER, [old]: NO_CSV } });
   const alive = path.join(r.p.dir, ".alive"), dbs = path.join(r.p.dir, ".dbs");  // the stub app lives by alive
   fs.writeFileSync(alive, ""); fs.mkdirSync(dbs); fs.writeFileSync(path.join(r.p.dir, ".factory/env.local"), `ALIVE=${alive}\nDBS=${dbs}\n`);
   t.after(() => fs.rmSync(alive, { force: true }));
   r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }]);
-  assert.match(lastLine(r.stage("implement", "01")), /^QA 01: DONE, and verify --full is green at \w{7}, so qa walks ticket 01's criteria$/);
-  assert.equal(r.stage("merge", "01").status, 2, "nothing merges before qa walks it");
-  const pinned = `e2e/${r.s.id}-01-csv-export.test.mjs`;
-  qaWalks(r, { [pinned]: PINNED_PASS });
-  assert.equal(lastLine(r.stage("verify", "01")), `MERGE 01: DONE, and verify --full is green at ${git(r.wt, "rev-parse", "HEAD").slice(0, 7)}`);
-  const pins = (file) => JSON.parse(fs.readFileSync(file, "utf8")).checks.filter((c) => c.pinned).map((c) => [c.check, c.status]);
-  assert.deepEqual(pins(path.join(r.tickets, "evidence.json")), [[pinned, "pass"]], "qa's committed test is a pinned check");
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01: DONE, and verify --fast is green at \w{7}$/, "no qa walk, and no ruling on the pinned test it breaks");
+  const checks = (f) => JSON.parse(fs.readFileSync(f, "utf8")).checks.map((c) => c.check).sort();
+  assert.deepEqual(checks(path.join(r.tickets, "evidence-fast.json")), ["test", "typecheck"], "the pinned test and the e2e suite wait for the run's full verify");
+  const up = r.node("run-apps.mjs", ["up", "--run", r.s.id], "", { cwd: r.wt });  // apps a check left up, say
+  assert.equal(up.status, 0, up.stdout + up.stderr);
   const db = (name) => `factory_${name.replaceAll("-", "_")}`;
   assert.deepEqual(fs.readdirSync(dbs), [db(`${r.s.id}-01`)], "the ticket's worktree has a database of its own");
-  const up = r.node("run-apps.mjs", ["up", "--run", r.s.id], "", { cwd: r.wt });  // a walk cut off with the apps up, say
-  assert.equal(up.status, 0, up.stdout + up.stderr);
   const { pid } = JSON.parse(fs.readFileSync(path.join(r.tickets, "apps.json"), "utf8")).apps.app;
-  assert.match(lastLine(r.stage("merge", "01")), /^MERGED 01:/);
-  const head = JSON.parse(fs.readFileSync(path.join(r.s.run_dir, "evidence.json"), "utf8")).checks.find((c) => c.pinned);
-  assert.deepEqual([head.check, head.status, head.reused_from], [pinned, "pass", JSON.parse(fs.readFileSync(path.join(r.tickets, "evidence.json"), "utf8")).sha],
-    "at the run head, the ticket's pass, the merge having changed nothing it tested (#81)");
+  assert.match(lastLine(r.stage("merge", "01")), /^MERGED 01: .* where verify --fast is green$/);
+  assert.deepEqual(checks(path.join(r.s.run_dir, "evidence-fast.json")), ["test", "typecheck"]);
+  assert.ok(!fs.existsSync(path.join(r.s.run_dir, "evidence.json")), "the run's full verify comes once every ticket is merged");
   assert.throws(() => process.kill(-pid, 0), { code: "ESRCH" }, "the ticket's apps went down with its worktree");
-  assert.deepEqual(fs.readdirSync(dbs), [], "and its database; the run worktree's apps never came up, with no pinned test to run");
-});
-
-test("a red only in pinned tests goes to qa at no round's cost: a test qa rules fail is named in the fix round with verify --pinned, and one it supersedes lets the ticket merge", (t) => {
-  const old = "e2e/old-01-no-csv.test.mjs";
-  for (const ruling of ["fail", "superseded"]) {
-    const r = ticketReady(t, { recipe: { ...RECIPE, pinned: ["e2e"] }, files: { [old]: NO_CSV } });
-    r.play([{ ...CSV, write: { [r.impl]: report("DONE") } }, {}]);
-    assert.equal(lastLine(r.stage("implement", "01")), `QA 01: verify --full is red only in pinned tests at ${git(r.wt, "rev-parse", "HEAD").slice(0, 7)}: ${old}, so qa rules on them`);
-    assert.equal(r.state().rounds, undefined);
-    qaWalks(r, ruling === "superseded" ? { [old]: null } : {});
-    if (ruling === "superseded") { assert.match(lastLine(r.stage("verify", "01")), /^MERGE 01:/, ruling); continue; }
-    assert.match(lastLine(r.stage("verify", "01")), /^ROUND 01: verify --full is red at \w{7}, red_cause introduced$/);
-    assert.equal(lastLine(r.node("run-state.mjs", ["round", "implement:01", "--run", r.s.id])), "OK implement:01 round 1/3", "the ruling cost none");
-    r.stage("implement", "01");
-    const { stdin } = r.calls().at(-1);
-    assert.ok(stdin.includes(` Failing pinned tests: ${old}. Make each pass by changing the product code; one the spec contradicts goes under `
-      + `concerns:, untouched, for qa to rule on. \`node ${path.join(SCRIPTS, "verify.mjs")} --pinned <path>\` runs one with the apps up.`), stdin);
-    r.run("dispatch", "qa:01");
-    assert.deepEqual(["qa.json", "qa.round1.json"].map((f) => fs.existsSync(path.join(r.tickets, f))), [false, true], "qa's next dispatch moves its last qa.json aside");
-  }
+  assert.deepEqual(fs.readdirSync(dbs), [], "and its database");
 });
 
 // run-stage implement started in the background as the orchestrator starts it; resolves once the fake child has played
@@ -730,7 +696,7 @@ test("a child that stops at the usage limit is SUSPENDED, never a round: nothing
   r.play([{ ...CSV, print: [SPOKE, LIMIT] }, { write: { [r.impl]: report("DONE") } }]);
   const suspended = "SUSPENDED 01: the child stopped at the usage limit, which costs no round";
   assert.equal(lastLine(r.stage("implement", "01")), suspended);
-  assert.ok(!fs.existsSync(path.join(r.tickets, "evidence.json")), "nothing was verified");
+  assert.ok(!fs.existsSync(path.join(r.tickets, "evidence-fast.json")), "nothing was verified");
   assert.ok(!r.state().stages_done.includes("implement:01"));
   r.run("set", "stage", "suspended");
   assert.match(r.run("status").stdout, new RegExp(`^\\| ${r.s.id} \\| Add a CSV export \\| paused at the usage limit \\| 0/1 tickets done, at implement:01 \\|`, "m"));
@@ -752,6 +718,6 @@ test("a resume that finds a ticket's implement stage done continues nothing, and
   assert.equal(fast.sha, git(r.s.worktree, "rev-parse", "HEAD"), "with nothing cut off, the run branch's fast checks");
   assert.match(out, /^verify fast: green=false .* app\/test=fail/m, "where the ticket isn't merged yet");
   assert.match(out, /^STARTED 01-csv-export$/m);
-  assert.match(lastLine(r.stage("verify", "01")), /^MERGE 01: DONE, and verify --full is green at \w{7}$/);
+  assert.match(lastLine(r.stage("verify", "01")), /^MERGE 01: DONE, and verify --fast is green at \w{7}$/);
   assert.deepEqual([r.calls().length, r.state().dispatches.length], [1, before]);
 });

@@ -349,6 +349,18 @@ export function githubRepo(cwd) {
 // What installs a worktree's dependencies: the recipe's setup, else its package manager's install, else null. A fresh
 // worktree has none of its own, and the main checkout's, found by walking up, lack whatever the run added.
 export const installOf = (recipe) => recipe?.setup || (recipe?.package_manager && `${recipe.package_manager} install`) || null;
+// qa's walks of a run as [file, walk] (#81): the run's own qa.json, once qa has walked the run whole, else each ticket's
+// from a run that walked ticket by ticket.
+export function qaWalks(runDir) {
+  const at = (f) => path.join(runDir, f), tickets = at("tickets");
+  const files = fs.existsSync(at("qa.json")) ? ["qa.json"]
+    : (fs.existsSync(tickets) ? fs.readdirSync(tickets).filter((d) => /^\d{2}$/.test(d)).sort() : []).map((n) => `tickets/${n}/qa.json`);
+  return files.map((f) => [f, readJson(at(f))]).filter(([, w]) => w);
+}
+// Every criterion the walks give, a fail whose pinned test passes in verify's green evidence at the head counted a pass,
+// `fixed`: the review's fix round made it pass after the walk.
+export const walkResults = (walks, ev, head) => walks.flatMap(([, w]) => w.criteria || [])
+  .map((c) => c.status === "fail" && c.test && ev?.green && ev.sha === head ? { ...c, status: "pass", fixed: true } : c);
 export function ghApi(...args) {
   const r = spawnSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
   let json = null; try { json = JSON.parse(r.stdout); } catch {}

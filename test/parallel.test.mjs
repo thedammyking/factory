@@ -154,7 +154,7 @@ test("two runs make their worktrees, their lanes, and their tickets' worktrees a
 
   const merged = await Promise.all(runs.map(([r, n]) => r.stage("merge", n)));
   for (const [i, [r, n]] of runs.entries()) {
-    assert.match(last(merged[i]), new RegExp(`^MERGED ${n}: at \\w{7} on ${r.state().branch}, where verify --full is green$`));
+    assert.match(last(merged[i]), new RegExp(`^MERGED ${n}: at \\w{7} on ${r.state().branch}, where verify --fast is green$`));
     assert.ok(!fs.existsSync(r.wt(n)), "the ticket's worktree is gone");
   }
   assert.equal(x.p.git("branch", "--list", "factory/*"), "", "and every ticket branch");
@@ -176,7 +176,7 @@ test("a ticket whose worktree can't be made leaves no branch behind, so its next
   assert.match(last(await r.stage("implement", "01")), /^MERGE 01:/);
 });
 
-test("two ticket branches that finish together merge into the run branch one at a time, verify --full running after each", async (t) => {
+test("two ticket branches that finish together merge into the run branch one at a time, verify --fast running after each", async (t) => {
   const out = path.join(tmp("factory-checks-"), "checks.log");
   const x = setup(t, `echo "start $PWD" >> ${out} && sleep 0.4 && echo "end $PWD" >> ${out}`);
   const r = planned(x, init(x, "Add a CSV export"), { "01": { "csv.js": "1\n" }, "02": { "pdf.js": "2\n" } });
@@ -185,7 +185,7 @@ test("two ticket branches that finish together merge into the run branch one at 
   assert.deepEqual(merged.map((m) => last(m).split(":")[0]), ["MERGED 01", "MERGED 02"]);
   assert.deepEqual(lines(out).filter((l) => l.endsWith(` ${r.worktree}`)).map((l) => l.split(" ")[0]), ["start", "end", "start", "end"],
     "the second merge's verify starts after the first's ends");
-  const head = git(r.worktree, "rev-parse", "HEAD"), e = JSON.parse(fs.readFileSync(path.join(r.run_dir, "evidence.json"), "utf8"));
+  const head = git(r.worktree, "rev-parse", "HEAD"), e = JSON.parse(fs.readFileSync(path.join(r.run_dir, "evidence-fast.json"), "utf8"));
   assert.deepEqual([e.sha, e.green, git(r.worktree, "ls-files", "*.js")], [head, true, "csv.js\npdf.js"]);
 });
 
@@ -205,7 +205,7 @@ test("a ticket whose branch conflicts with one merged before it is aborted for t
   const r = planned(y, init(y, "Add a CSV export"), { "01": { "a.js": "1\n" }, "02": { "b.js": "2\n" }, "03": { "c.js": "3\n" } });
   for (const v of await Promise.all(["01", "02", "03"].map((n) => r.stage("implement", n)))) assert.match(last(v), /^MERGE \d{2}:/);
   assert.match(last(await r.stage("merge", "01")), /^MERGED 01:/);
-  assert.match(last(await r.stage("merge", "02")), /^ATTENTION 02: verify --full is red at the run head \w{7} after merging two green sides, red_cause introduced$/);
+  assert.match(last(await r.stage("merge", "02")), /^ATTENTION 02: verify --fast is red at the run head \w{7} after merging two green sides, red_cause introduced$/);
   const red = git(r.worktree, "rev-parse", "HEAD");
   assert.equal(last(await r.stage("merge", "03")), `ATTENTION 03: the run head is red at ${red.slice(0, 7)}, so ${r.branch("03")} isn't merged into it`);
   assert.equal(git(r.worktree, "rev-parse", "HEAD"), red);

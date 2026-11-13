@@ -24,7 +24,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { readJson, arg, git, runContext, runDiff, shellQuote as q, attentionItem, PLATFORM_NAMES, unverifiedNative } from "./lib.mjs";
+import { readJson, arg, git, runContext, runDiff, shellQuote as q, attentionItem, PLATFORM_NAMES, unverifiedNative, qaWalks, walkResults } from "./lib.mjs";
 
 const merged = arg("--merged");
 if (merged !== null && !/^[0-9a-f]{7,40}$/.test(merged)) { console.error("pr-render: --merged takes the merge's SHA"); process.exit(2); }
@@ -49,8 +49,10 @@ const named = (oneshot ? criteria[0].text : body.match(/^# (.+)$/m)?.[1].trim())
 const title = key && !named.includes(key) ? `${key}: ${named}` : named;  // a key the spec already wrote isn't added twice
 const goal = oneshot ? read("triage.md").split(/^```json/m)[0].trim() : section("Goal");
 const tickets = fs.existsSync(path.join(dir, "tickets")) ? fs.readdirSync(path.join(dir, "tickets")).filter((f) => /^\d{2}-.+\.md$/.test(f)).sort().map((f) => f.slice(0, -3)) : [];
-const walks = tickets.map((t) => json(`tickets/${t.slice(0, 2)}/qa.json`)).filter(Boolean);
-const result = (id) => [...new Set(walks.flatMap((w) => w.criteria || []).filter((c) => c.id === id).map((c) => c.reason ? `${c.status} (${c.reason})` : c.status))].join(" / ") || "not walked";
+const walked = qaWalks(dir), walks = walked.map(([, w]) => w);
+// ev and head are set below, before the table calls this
+const result = (id) => [...new Set(walkResults(walked, ev, head).filter((c) => c.id === id)
+  .map((c) => c.fixed ? "pass (fixed after the walk)" : c.reason ? `${c.status} (${c.reason})` : c.status))].join(" / ") || "not walked";
 const ev = json("evidence.json") || {}, findings = json("findings.json")?.findings || [], security = json("security.json"), pr = json("pr.json");
 const decision = json("decision.json"), failed = decision?.facts.filter((f) => !f.ok) ?? [];
 const finding = (f) => `- ${f.id} (${f.severity} ${f.action}) \`${f.location}\`: ${f.claim}`;

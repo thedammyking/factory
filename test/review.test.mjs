@@ -159,6 +159,23 @@ test("a review fix round gives the implementer only the open P0 and P1 fixes, re
   assert.equal(r.run("round", "review").stdout.trim(), "OK review round 3/2 (lifted)");
 });
 
+test("a run head verify --full found red goes to the first fix round with the lenses' findings, its failing check one of them, and the child is told of the red (#81)", (t) => {
+  const r = reviewReady(t);
+  write(r.s.worktree, { "broken.js": "1\n" }); git(r.s.worktree, "add", "broken.js"); git(r.s.worktree, "commit", "-qm", "Break the check");
+  const v = r.node("verify.mjs", ["--full", "--run", r.s.id]);
+  assert.equal(v.status, 1, v.stdout);
+  r.files({ "review-code.md": lens("Code review", [{ id: "code-01", severity: "P1", action: "fix", location: "src/a.js:1", claim: "The total ignores the quantity" }]) });
+  const out = r.synth();
+  assert.deepEqual([out.disposition, out.findings.map((f) => f.id)], ["fix", ["code-01", "verify-app-test"]]);
+  r.run("round", "review");
+  r.play([{ files: { "src/a.js": "export const a = 2;\n" }, commit: "Fix the total", write: { [path.join(r.s.run_dir, "review-fix.md")]: report("DONE") } }]);
+  assert.match(lastLine(r.fix()), /^ROUND: verify --full is red at \w{7}, red_cause introduced$/, "its red outlived the round");
+  const fixes = r.read("fixes.md");
+  assert.match(fixes, /\*\*code-01\*\* \(P1, code\)/);
+  assert.match(fixes, /\*\*verify-app-test\*\* \(P1, verify\) `[^`]+app-test\.log`: app\/test fails at \w{7}: /);
+  assert.match(r.calls()[0].stdin, /verify --full is red at \w{7}, red_cause introduced: \S+evidence\.json has each failing check's digest and log\. Fix what it shows first\. The run's review found what the plan lists\./);
+});
+
 test("a fix round that turns verify red goes round again, and one that makes no commits stops for the human", (t) => {
   const r = reviewReady(t);
   r.files({ "review-code.md": lens("Code review", [{ id: "code-01", severity: "P1", action: "fix", location: "src/a.js:1", claim: "The total ignores the quantity" }]) });

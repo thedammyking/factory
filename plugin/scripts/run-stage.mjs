@@ -11,13 +11,12 @@
 //      child session with what its last attempt left to fix; at the last round (caps.implement_rounds, 3) it starts a
 //      fresh child on models.implement_escalated, told that a prior implementer tried twice. A session whose child was
 //      cut off before it printed a message or a result can't be resumed, so a fresh child is pointed at the git log
-//      since that attempt's dispatch and at its report. When the child exits, verify --full judges the ticket's
-//      worktree (unless the child stopped BLOCKED or NEEDS_CONTEXT, or at the usage limit), and:
+//      since that attempt's dispatch and at its report. When the child exits, verify --fast judges the ticket's
+//      worktree (unless the child stopped BLOCKED or NEEDS_CONTEXT, or at the usage limit): a ticket is built on its
+//      typecheck, lint and unit tests alone, and the run's e2e suites, qa's walk and the review judge every ticket
+//      together once they're all merged (#81). Then:
 //        SUSPENDED  the child stopped at the usage limit, which costs no round: nothing is judged until it carries on
-//        MERGE      DONE with no concern, and the evidence green at the ticket's HEAD, after qa's walk
-//        QA         for qa:NN, which costs no round: DONE and green, but qa hasn't walked the ticket since this attempt
-//                   (when the recipe has an app with a dev command), or a red only in pinned tests it hasn't ruled on;
-//                   never on a docs, refactor or maintenance oneshot
+//        MERGE      DONE with no concern, and the fast evidence green at the ticket's HEAD
 //        ROUND      a red introduced or incomplete, a report with no status line (INCOMPLETE), or a concern to fix
 //        AMEND      BLOCKED: bad_plan: the ticket's commits are reset away, and the planner amends the plan, once
 //        RESEARCH   NEEDS_CONTEXT: one researcher dispatch answers its question in tickets/NN/context.md
@@ -28,19 +27,21 @@
 //      that fails is printed and the merge goes on. It merges factory/<run>/NN into the run branch. When the merge added or changed
 //      an app manifest (lib's MANIFEST) or a lockfile, it runs the recipe's setup in the run worktree, else the package
 //      manager's install (logs/install-NN.log); for a manifest, `setup-factory.mjs redetect` then re-detects and commits
-//      the recipe there. It runs verify --full at the new head, then takes the ticket's apps and database down (run-apps
+//      the recipe there. It runs verify --fast at the new head, then takes the ticket's apps and database down (run-apps
 //      down --drop there) and removes its worktree and branch. MERGED (the ticket marked done) when the run head is
 //      green, once the run branch is pushed, which GitHub reads as the ticket PR's merge; ATTENTION when it's red, when the install or re-detecting fails, or on a conflict, which is aborted and
 //      leaves everything as it was. Merges of one run wait on each other, and none goes into a run head whose evidence
 //      is red.
-//   run-stage.mjs verify <NN> -> after qa:NN is done: verify --full judges the ticket's worktree again, qa's pinned tests
-//      included, and the verdict is as implement's. A resume that finds implement:NN done runs it too.
+//   run-stage.mjs verify <NN> -> verify --fast judges the ticket's worktree again, and the verdict is as implement's: what
+//      a resume that finds implement:NN done runs.
 //   run-stage.mjs review-fix -> one review fix round, once `run-state round review` has counted it and findings.json's
-//      disposition is fix. Only its open P0 and P1 fixes go to fixes.md, the round's plan, and an implementer child
+//      disposition is fix. Only its open P0 and P1 fixes go to fixes.md, the round's plan, the run's red checks and qa's
+//      failed criteria among them (synthesize's verify and qa findings, #81), and an implementer child
 //      fixes them on the run branch in the run worktree, with the same flags as a ticket's child: fresh in the first
 //      round, resuming that child's session after it. verify --full then judges the run head, and:
 //        REVIEW <lens,…>  commits made and the evidence green: review-package --since writes review-fix.diff from the
-//                         head the round started at, for the lenses named, those that had the round's findings
+//                         head the round started at, for the lenses named, those that had the round's findings (verify's
+//                         are settled by the round's own verify, and qa's by walking those criteria again)
 //        ROUND            a red introduced or incomplete, or a report with no status line, for another round
 //        SUSPENDED        the child stopped at the usage limit: nothing is judged, and it costs no round
 //        ATTENTION        for the human: no commits, BLOCKED or NEEDS_CONTEXT, a red inherited or environment, no evidence
@@ -64,7 +65,7 @@ const [cmd, n] = process.argv.slice(2);
 if (!["review-fix", "ci-fix", "resolve"].includes(cmd) && (!["implement", "merge", "verify"].includes(cmd) || !/^\d{2}$/.test(n || ""))) { console.error("run-stage: usage: run-stage.mjs implement | merge | verify <NN> | review-fix | ci-fix | resolve --run <id>"); process.exit(2); }
 const ctx = runContext(), stage = `implement:${n}`;
 const wt = ticketWorktree(ctx.MAIN, ctx.id, n), branch = ticketBranch(ctx.id, n), dir = path.join(ctx.runDir, "tickets", n);
-const IMPL = path.join(dir, "implementation.md"), EVIDENCE = path.join(dir, "evidence.json");
+const IMPL = path.join(dir, "implementation.md"), EVIDENCE = path.join(dir, "evidence-fast.json");
 // the child's --max-turns: the implementer's own maxTurns
 const MAX_TURNS = fs.readFileSync(path.join(PLUGIN, "agents", "implementer.md"), "utf8").match(/^maxTurns:[ \t]*(\d+)/m)[1];
 // What the implementer child may run: the factory's rules for the run worktree's recipe (lib's factoryRules), verify, and
@@ -127,12 +128,6 @@ function runSetup(cwd, command, log) {
   if (r.status !== 0) console.log(digest(fs.readFileSync(log, "utf8"), log));
   return r.status === 0;
 }
-// A docs, refactor or maintenance oneshot has no qa: the recipe's checks are its only proof, and the merge decision
-// needs-human (#24).
-// ponytail: merge-decision's triage.md parse, copied; share it from lib once the parallel edits have landed.
-const triage = (() => { try { return JSON.parse([...fs.readFileSync(path.join(ctx.runDir, "triage.md"), "utf8").matchAll(/```json\s*\n([\s\S]*?)\n```/g)].at(-1)[1]); } catch { return {}; } })();
-const noQa = (s) => s.route === "oneshot" && ["docs", "refactor", "maintenance"].includes(triage.type);
-
 // The implementer's report: its last status line (null when it has none, an INCOMPLETE attempt), cause and concerns, and
 // each command denied it, from its own denied: list and the one copied from its result.
 function report() {
@@ -154,23 +149,15 @@ function verdict(s) {
   if (status === "NEEDS_CONTEXT") return asked > -1 && asked < s.dispatches.findLastIndex((d) => d.stage === stage)
     ? ["ATTENTION", "NEEDS_CONTEXT again, after its one researcher dispatch"] : ["RESEARCH", `NEEDS_CONTEXT, so one researcher dispatch answers its question in ${path.join(dir, "context.md")}`];
   const ev = readJson(EVIDENCE), sha = head();
-  if (!ev || ev.sha !== sha) return ["ATTENTION", `verify --full left no evidence at the ticket's HEAD ${sha?.slice(0, 7)}`];
-  // qa:NN finished since the latest attempt: it walked the ticket and ruled on the pinned tests that attempt left red.
-  // Without qa, a red pinned test is a fix round's.
-  const walked = noQa(s) || s.dispatches.findLastIndex((d) => d.stage === `qa:${n}`) > s.dispatches.findLastIndex((d) => d.stage === stage) && s.stages_done.includes(`qa:${n}`);
-  if (!ev.green && ev.pinned_only && ev.red_cause === "introduced" && !walked) return ["QA", `verify --full is red only in pinned tests at ${sha.slice(0, 7)}: `
-    + `${ev.checks.filter((c) => c.status !== "pass").map((c) => c.check).join(", ")}, so qa rules on them`];
-  if (!ev.green) return [["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --full is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`];
+  if (!ev || ev.sha !== sha) return ["ATTENTION", `verify --fast left no evidence at the ticket's HEAD ${sha?.slice(0, 7)}`];
+  if (!ev.green) return [["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --fast is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`];
   if (!status) return ["ROUND", "implementation.md has no status line, so the attempt is INCOMPLETE"];
   // A concern a round left as it was, with no commit, isn't one code fixes (a check the child may not run, say): it goes
   // to the PR in implementation.md, and the ticket goes on, its own evidence green (#81).
   const tries = s.dispatches.filter((d) => d.stage === stage), built = tries.length && git(wt, "rev-list", "--count", `${tries[0].sha}..HEAD`) !== "0";
   const again = tries.length > 1 && tries.at(-1).sha === sha && built;
   if ((status === "DONE_WITH_CONCERNS" || concerns.length) && !again) return ["ROUND", "the implementer named a concern, which is fixed before the next ticket"];
-  if (!walked && (readJson(path.join(wt, ".factory", "setup.json"), {}).apps || []).some((a) => a.dev)) {
-    return ["QA", `DONE, and verify --full is green at ${sha.slice(0, 7)}, so qa walks ticket ${n}'s criteria`];
-  }
-  return ["MERGE", again ? `its concern, which a round left as it was, goes to the PR, and verify --full is green at ${sha.slice(0, 7)}` : `DONE, and verify --full is green at ${sha.slice(0, 7)}`];
+  return ["MERGE", again ? `its concern, which a round left as it was, goes to the PR, and verify --fast is green at ${sha.slice(0, 7)}` : `DONE, and verify --fast is green at ${sha.slice(0, 7)}`];
 }
 
 // The ticket's PR into the run branch (#81): the run branch and the ticket's pushed, then the PR opened, or found when
@@ -188,7 +175,7 @@ function ticketPr(s) {
   const title = fs.readFileSync(path.join(ctx.runDir, "tickets", name), "utf8").match(/^# (.+)$/m)?.[1].trim() || name.slice(0, -3);
   const commits = (fs.existsSync(IMPL) ? fs.readFileSync(IMPL, "utf8") : "").split("\n").filter((l) => /^- [0-9a-f]{7,} /.test(l));
   const body = `Ticket ${n} of run \`${ctx.id}\`, stacked on \`${s.branch}\`, whose own PR goes to \`${s.target_branch || s.base_branch}\`. `
-    + "The factory merges it once verify is green at the merged head; review the run's PR.\n\n"
+    + "The factory merges it once its fast checks are green at the merged head; review the run's PR.\n\n"
     + (commits.length ? `## Commits\n${commits.join("\n")}\n` : "") + (s.ticket_issues?.[n]?.key ? `\nTicket: ${s.ticket_issues[n].key}\n` : "");
   let r = ghApi("-X", "POST", `repos/${repo}/pulls`, "-f", `title=${title}`, "-f", `head=${branch}`, "-f", `base=${s.branch}`, "-f", `body=${attributed(body, "pr", s)}`);
   if (!r.ok) {
@@ -203,12 +190,12 @@ function ticketPr(s) {
 }
 
 if (cmd === "merge") {
-  lock(`${ctx.runDir}.merge.lock`);  // one ticket branch at a time, its verify --full included
+  lock(`${ctx.runDir}.merge.lock`);  // one ticket branch at a time, its verify --fast included
   const s = state(), [word, why] = verdict(s);
   if (word !== "MERGE") die(`ticket ${n} isn't ready to merge: ${why}`);
   const pr = ticketPr(s);
   // Nothing merges into a red run head, so a red after a merge is always one between two green sides.
-  const runEv = readJson(path.join(ctx.runDir, "evidence.json")), tip = git(ctx.worktree, "rev-parse", "HEAD");
+  const RUN_FAST = path.join(ctx.runDir, "evidence-fast.json"), runEv = readJson(RUN_FAST), tip = git(ctx.worktree, "rev-parse", "HEAD");
   if (runEv?.sha === tip && !runEv.green) say("ATTENTION", `the run head is red at ${tip.slice(0, 7)}, so ${branch} isn't merged into it`);
   try { git(ctx.worktree, "merge", "-q", "--no-edit", "-m", attributed(`Merge branch '${branch}' into ${s.branch}`, "commit", s), branch); } catch (e) {
     const files = git(ctx.worktree, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
@@ -229,8 +216,7 @@ if (cmd === "merge") {
   if (redetected) console.log(`${redetected.stdout}${redetected.status ? redetected.stderr : ""}`.trim());
   if (redetected?.status) say("ATTENTION", `merged ${branch}, but re-detecting the recipe failed, as printed above: `
     + `run ${path.join(HERE, "setup-factory.mjs")} redetect --worktree ${ctx.worktree} once it's fixed`);
-  // The ticket's green evidence: a merge that left its tree as it was runs none of its pinned tests again (#81).
-  const v = node("verify.mjs", ["--full", "--reuse", path.join(dir, "evidence.json"), "--run", ctx.id], { cwd: ctx.MAIN }), sha = git(ctx.worktree, "rev-parse", "HEAD");
+  const v = node("verify.mjs", ["--fast", "--run", ctx.id], { cwd: ctx.MAIN }), sha = git(ctx.worktree, "rev-parse", "HEAD");
   console.log(v.stdout.split("\n")[0]);
   // The ticket's apps go down first, and its database with its worktree; a drop that fails keeps the worktree to retry
   // from. The branch is in the run branch now, which -d can't see from the main checkout. --force: the worktree's
@@ -238,8 +224,8 @@ if (cmd === "merge") {
   const apps = node("run-apps.mjs", ["down", "--drop", "--run", ctx.id], { cwd: wt });
   if (apps.status) console.log(`ticket worktree kept: run-apps down failed\n${apps.stdout}${apps.stderr}`.trim());
   else try { git(ctx.MAIN, "worktree", "remove", "--force", wt); git(ctx.MAIN, "branch", "-q", "-D", branch); } catch (e) { console.log(`ticket worktree kept: ${gitError(e)}`); }
-  const ev = readJson(path.join(ctx.runDir, "evidence.json"));
-  if (!ev?.green || ev.sha !== sha) say("ATTENTION", `verify --full is red at the run head ${sha.slice(0, 7)} after merging two green sides${redetected ? " and re-detecting the recipe" : ""}, red_cause ${ev?.red_cause}`);
+  const ev = readJson(RUN_FAST);
+  if (!ev?.green || ev.sha !== sha) say("ATTENTION", `verify --fast is red at the run head ${sha.slice(0, 7)} after merging two green sides${redetected ? " and re-detecting the recipe" : ""}, red_cause ${ev?.red_cause}`);
   if (told(runState("ticket", n, "done")).status) say("ATTENTION", `merged at ${sha.slice(0, 7)} and green, but ticket ${n} couldn't be marked done`);
   // The push GitHub reads as the ticket PR's merge, since its head is now in the run branch; its branch then goes.
   if (pr) {
@@ -247,12 +233,12 @@ if (cmd === "merge") {
     if (why) console.log(`ticket PR #${pr.number} left open: ${s.branch} couldn't be pushed: ${why}`);
     else { spawnSync("git", ["push", "-q", "origin", "--delete", branch], { cwd: ctx.MAIN, timeout: 60_000, env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } }); console.log(`ticket PR #${pr.number} merged by the push of ${s.branch}`); }
   }
-  say("MERGED", `at ${sha.slice(0, 7)} on ${s.branch}, where verify --full is green`);
+  say("MERGED", `at ${sha.slice(0, 7)} on ${s.branch}, where verify --fast is green`);
 }
 
 if (cmd === "verify") {
   if (!fs.existsSync(wt)) die(`ticket ${n} has no worktree to verify`);
-  console.log(node("verify.mjs", ["--full", "--run", ctx.id], { cwd: wt }).stdout.split("\n")[0]);
+  console.log(node("verify.mjs", ["--fast", "--run", ctx.id], { cwd: wt }).stdout.split("\n")[0]);
   say(...verdict(state()));
 }
 
@@ -276,7 +262,7 @@ if (["review-fix", "ci-fix", "resolve"].includes(cmd)) {
   const s = state(), tries = s.dispatches.filter((d) => d.stage === cmd), last = !resolve && tries.findLast((d) => d.session && events(d.log).some((e) => ["assistant", "result"].includes(e.type)));
   const statusOf = (file) => [...(fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "").matchAll(/^status:[ \t]*(DONE_WITH_CONCERNS|DONE|BLOCKED|NEEDS_CONTEXT)[ \t]*$/gm)].at(-1)?.[1] || null;
   const was = readJson(RUN_EV), moved = fs.existsSync(REPORT) && path.join(ctx.runDir, `${cmd}.round${tries.length}.md`);
-  const red = last && was && !was.green && was.sha === git(ctx.worktree, "rev-parse", "HEAD")
+  const red = !resolve && was && !was.green && was.sha === git(ctx.worktree, "rev-parse", "HEAD")
     && `verify --full is red at ${was.sha.slice(0, 7)}, red_cause ${was.red_cause}: ${RUN_EV} has each failing check's digest and log. Fix what it shows first. `;
   // fixes.md is the round's plan, with the files its findings sit in as its context (at most 8, as a plan's). It carries
   // each lens's claim and fix, never its evidence: a quote from the diff, which the implementer would take as the plan's.
@@ -305,7 +291,7 @@ if (["review-fix", "ci-fix", "resolve"].includes(cmd)) {
   // The same flags as a ticket's child (below).
   // ponytail: the spawn and the denials copy the implement path's; share them once run-stage's parallel edits have landed.
   const again = moved ? ` Then write ${REPORT} again from the top: the last one is now ${moved}.` : "";
-  const message = resolve ? "A merge of the base stopped at conflicts, as the plan says. Resolve them, and nothing else." : review ? (last ? `${red || ""}The review left open what ${FIXES} now lists: fix each finding there.${again}` : "The run's review found what the plan lists. Fix each finding, and nothing else.")
+  const message = resolve ? "A merge of the base stopped at conflicts, as the plan says. Resolve them, and nothing else." : review ? (last ? `${red || ""}The review left open what ${FIXES} now lists: fix each finding there.${again}` : `${red || ""}The run's review found what the plan lists. Fix each finding, and nothing else.`)
     : last ? `${red || ""}CI is still red, as ${FIXES} now says: fix it.${again}` : "CI on the run's PR is red where the plan says. Fix that, and nothing else.";
   const session = last ? last.session : crypto.randomUUID(), log = path.join(ctx.runDir, "logs", `${cmd}.${tries.length + 1}.jsonl`);
   fs.mkdirSync(path.dirname(log), { recursive: true });
@@ -400,15 +386,13 @@ if (!fs.existsSync(wt)) {
 function message() {
   const again = moved ? ` Then write ${IMPL} again from the top: the last one is now ${moved}.` : "";
   const tries = round - 1 === 2 ? "twice" : `${round - 1} times`;
-  const red = ev && !ev.green && ev.sha === head(), failingPins = red ? ev.checks.filter((c) => c.pinned && c.status === "fail").map((c) => c.check) : [];
-  const pinNote = failingPins.length ? ` Failing pinned tests: ${failingPins.join(", ")}. Make each pass by changing the product code; one the spec `
-    + `contradicts goes under concerns:, untouched, for qa to rule on. \`node ${path.join(HERE, "verify.mjs")} --pinned <path>\` runs one with the apps up.` : "";
+  const red = ev && !ev.green && ev.sha === head();
   if (escalated) return `A prior implementer has worked on this ticket and tried ${tries} to fix it; you own it now. Its commits stay on this branch. `
-    + `Read the plan, then its last report${moved ? ` (${moved})` : ""} and the last evidence (${EVIDENCE}), and carry on from the code as it is.${pinNote}`;
+    + `Read the plan, then its last report${moved ? ` (${moved})` : ""} and the last evidence (${EVIDENCE}), and carry on from the code as it is.`;
   if (fresh && lastTry) return `A previous attempt at this ticket was cut off before it left a session to resume. \`git log --oneline ${lastTry.sha}..HEAD\` lists what it committed`
     + `${moved ? `, and ${moved} what it reported` : ""}. Read the plan, then carry on from the code as it is.`;
   if (fresh) return "Implement the plan.";
-  if (was === "ROUND" && red) return `verify --full is red at ${ev.sha.slice(0, 7)}, red_cause ${ev.red_cause}: ${EVIDENCE} has each failing check's digest and log. Fix what it shows.${pinNote}${again}`;
+  if (was === "ROUND" && red) return `verify --fast is red at ${ev.sha.slice(0, 7)}, red_cause ${ev.red_cause}: ${EVIDENCE} has each failing check's digest and log. Fix what it shows.${again}`;
   if (was === "ROUND" && !wasStatus) return `Your last turn ended before implementation.md had its status line. Carry on with the plan.${again}`;
   if (was === "ROUND") return `Fix each concern under concerns: in ${moved || IMPL}, or say there why it needs no fix.${again}`;
   if (was === "RESEARCH") return `The answer to your question is in ${path.join(dir, "context.md")}. Carry on with the plan.${again}`;
@@ -447,7 +431,7 @@ if (!["BLOCKED", "NEEDS_CONTEXT"].includes(status) && git(wt, "diff", "--name-on
   const r = node("setup-factory.mjs", ["redetect", "--worktree", wt, "--run-dir", ctx.runDir]);
   console.log(`${r.stdout}${r.status ? r.stderr : ""}`.trim());
 }
-if (!["BLOCKED", "NEEDS_CONTEXT"].includes(status)) console.log(node("verify.mjs", ["--full", "--run", ctx.id], { cwd: wt }).stdout.split("\n")[0]);
+if (!["BLOCKED", "NEEDS_CONTEXT"].includes(status)) console.log(node("verify.mjs", ["--fast", "--run", ctx.id], { cwd: wt }).stdout.split("\n")[0]);
 if (status) told(runState("done", stage));
 const [word, why] = verdict(state());
 if (word === "AMEND") { git(wt, "reset", "-q", "--hard", cut); git(wt, "clean", "-qfd"); }

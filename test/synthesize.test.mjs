@@ -149,3 +149,32 @@ test("a finding that breaks an anti-goal is at least P1, an open P0 goes to a fi
   ({ out } = r.synth());
   assert.deepEqual([rows(out), out.disposition], [[["security-01", "P2", "note", "pr"]], "ship"]);
 });
+
+test("the run's red checks and qa's failed criteria are open P1 fixes beside the lenses', for one fix round, and settle once verify and the walk again pass them (#81)", () => {
+  const r = run({
+    "review-code.md": lensFile("Code review", [], { verdict: "ship" }),
+    "evidence.json": JSON.stringify({ sha: "abcdef0123", green: false, red_cause: "introduced", checks: [
+      { app: "web", check: "test", status: "pass" },
+      { app: "web", check: "e2e/r-01-cart.spec.ts", status: "fail", pinned: true, digest: "\nExpected: Total: $42.50\nReceived: Total: $0" },
+      { app: "web", check: "e2e", status: "fail", log: "/x/logs/web-e2e.log", digest: "1 failed" }] }),
+    "qa.json": JSON.stringify({ status: "done", criteria: [
+      { id: "SC-001", status: "fail", test: "e2e/r-01-cart.spec.ts", expected: "Total: $42.50", observed: "Total: $0" },
+      { id: "SC-002", status: "fail", test: null, expected: "the chart is green", observed: "it is red", captures: ["captures/SC-002-1.png"] },
+      { id: "SC-003", status: "blocked", reason: "environment" }] }),
+  });
+  const { out } = r.synth();
+  assert.deepEqual(out.findings.map((f) => [f.id, f.lens.join(), f.severity, f.action, f.status, f.location]), [
+    ["verify-web-e2e-r-01-cart.spec.ts", "verify", "P1", "fix", "open", "e2e/r-01-cart.spec.ts"],
+    ["verify-web-e2e", "verify", "P1", "fix", "open", "/x/logs/web-e2e.log"],
+    ["qa-SC-002", "qa", "P1", "fix", "open", "captures/SC-002-1.png"],
+  ], "a criterion with a pinned test is its test's red, and a blocked one is no finding");
+  assert.equal(out.findings[0].claim, "web/e2e/r-01-cart.spec.ts fails at abcdef0: Expected: Total: $42.50");
+  assert.equal(out.findings[2].claim, "SC-002 fails in qa's walk: expected the chart is green, observed it is red");
+  assert.equal(out.disposition, "fix", "with no lens finding at all");
+  r.write({ "evidence.json": JSON.stringify({ sha: "b", green: true, checks: [] }), "qa.json": JSON.stringify({ status: "done", criteria: [{ id: "SC-002", status: "pass" }] }) });
+  let again = r.synth().out;
+  assert.deepEqual([again.findings, again.disposition], [[], "ship"]);
+  r.write({ "evidence.json": JSON.stringify({ sha: "c", green: false, red_cause: "inherited", checks: [{ app: "web", check: "lint", status: "fail" }] }) });
+  again = r.synth().out;
+  assert.deepEqual(again.findings, [], "a red the base has too isn't the run's to fix");
+});

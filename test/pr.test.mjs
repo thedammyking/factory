@@ -196,6 +196,20 @@ test("each base fact failing alone makes the decision needs-human and is listed 
   }
 });
 
+test("the run's own qa.json, walked once every ticket is built, stands in for the tickets' walks, and a criterion whose pinned test failed in it passes once verify is green at HEAD with that test (#81)", () => {
+  const r = ready(), test = "e2e/r-01-signup.spec.ts";
+  r.json("tickets/01/qa.json", { criteria: [{ id: "SC-001", status: "fail" }] });  // a ticket's walk from before the run walked whole
+  r.json("qa.json", { status: "done", criteria: [{ id: "SC-001", status: "pass" }, { id: "SC-002", status: "fail", test, expected: "Welcome", observed: "nothing" }] });
+  assert.deepEqual(failing(r.decide()), [], "the fix round made SC-002's test pass, as the green evidence at HEAD shows");
+  const pr = script("pr-render.mjs", r.p.dir, ["--run", r.s.id], { env: r.gh.env });
+  assert.equal(pr.status, 0, pr.stderr);
+  assert.match(fs.readFileSync(path.join(r.s.run_dir, "pr.md"), "utf8"), /^\| SC-002 \| .* \| pass \(fixed after the walk\) \|$/m);
+  r.put("evidence.json", { green: false, red_cause: "introduced", checks: [{ app: "app", check: test, status: "fail", pinned: true }] });
+  assert.deepEqual(failing(r.decide()), ["evidence_green_at_head", "criteria_pass"]);
+  r.pin(); r.json("qa.json", { status: "done", criteria: [{ id: "SC-001", status: "pass" }, { id: "SC-002", status: "fail", test: null }] });
+  assert.deepEqual(failing(r.decide()), ["criteria_pass"], "a fail with no pinned test of its own stands until qa walks it again");
+});
+
 test("a touched app's github-deployment preview must reach success at HEAD, as preview.mjs reads it, for a merge; an untouched app's needn't", () => {
   const preview = { app: { mode: "github-deployment", environment: "Preview" }, docs: { mode: "github-deployment", environment: "Docs" } };
   const r = ready({ recipe: { ...RECIPE, apps: [...RECIPE.apps, { name: "docs", type: "web", path: "docs" }], preview } });
