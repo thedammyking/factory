@@ -488,6 +488,28 @@ test("a mobile build is kept and installed again by every worktree while nothing
   assert.match((await ups("Change the app")).log, /^compiled\n/, "a change to the app builds it again");
 });
 
+test("a mobile build that bakes in the API's port is kept from one up to the next of a worktree, which keeps its ports, and made again once the port moves", async (t) => {
+  const p = mobile(t, "ios", { apps: [WEB_API.apps[1], MOBILE()], profiles: { default: { mobile: { EXPO_PUBLIC_API_URL: "http://localhost:{port:api}" } } } });
+  const s = p.start("Show the cart total");
+  const up = async () => {
+    const r = await p.apps(s, "up");
+    assert.equal(r.status, 0, r.stdout + r.stderr);
+    const port = p.recorded(s).apps.api.port, log = fs.readFileSync(path.join(s.run_dir, "logs/mobile.build.log"), "utf8");
+    assert.equal((await p.apps(s, "down")).status, 0);
+    return { port, log };
+  };
+  const first = await up();
+  assert.match(first.log, /^compiled\n/);
+  const second = await up();
+  assert.equal(second.port, first.port, "the worktree's next up takes the same port");
+  assert.match(second.log, /^reused /, "so the build that baked it in is installed again");
+  const taken = await new Promise((resolve) => { const srv = net.createServer().listen(first.port, () => resolve(srv)); });
+  t.after(() => taken.close());
+  const third = await up();
+  assert.notEqual(third.port, first.port, "a port something else holds is given up");
+  assert.match(third.log, /^compiled\n/, "and a build for the new one made");
+});
+
 test("a mobile build runs under the device lock, and one that fails fails up with its digest before the device is touched", async (t) => {
   const p = mobile(t, "ios", { apps: [MOBILE({ build: "echo 'error: no such module ExpoModulesCore'; exit 65" })] });
   const s = p.start("Show the cart total"), log = path.join(s.run_dir, "logs/mobile.build.log");

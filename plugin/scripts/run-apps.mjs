@@ -7,7 +7,8 @@
 //   - up starts each app in .factory/setup.json that has a `dev` command, under bash in its path, in a process group of
 //     its own. Its env is lib's runEnv, then the `default` profile's env for it, then the named profile's; a profile
 //     that sets the app to null leaves it stopped, as does --skip naming it (verify's, for a mobile app no pinned test
-//     of its needs, which then never builds or takes the device). Each app gets a port the OS picks, and {port:<app>}
+//     of its needs, which then never builds or takes the device). Each app gets the port it had at this worktree's last up
+//     while nothing listens there (apps.json's ports), else one the OS picks, and {port:<app>}
 //     in a dev command, a health URL or an env value is that port; {db} is the worktree's database. An app is healthy
 //     once its health URL answers, within 2 minutes; one without a health URL fails. Its output is saved to
 //     logs/<app>.up.log, and a failing one prints lib's digest of it.
@@ -40,8 +41,8 @@
 //     the point width on iOS, screencap's as it comes at density 160 on Android.
 //   - look <scheme> <text> sets the device up holds to light or dark and to the default or the largest text size, for
 //     capture-states; down puts back what up recorded.
-//   - apps.json in out holds the profile, the database, each app's port, url, pid and ok (true, false or "skip"), and
-//     the device's id and settings, never another env value: it's snapshotted into the repo. status prints each app in
+//   - apps.json in out holds the profile, the database, each app's port, url, pid and ok (true, false or "skip"), the
+//     ports of the last up, which down keeps, and the device's id and settings, never another env value: it's snapshotted into the repo. status prints each app in
 //     it as up, down or skip. Each worktree reads and writes only its own, so down stops only what its up started.
 // up exits 0 when every app it started is healthy, 1 when one isn't or the database or a lock failed it; down exits 1
 // when the drop failed or the device isn't restored; shot and look exit 1 without a device up; all exit 2 on bad usage.
@@ -73,13 +74,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
 const answers = (url) => fetch(url, { signal: AbortSignal.timeout(2000) }).then((r) => { r.body?.cancel(); return true; }, () => false);
 const logOf = (a, kind) => path.join(logs, `${a.name.replace(/[^\w.-]/g, "_")}.${kind}.log`);  // logs/<app>.<kind>.log
-// n ports the OS picks, each held until the last is picked, so no two are the same.
+// A port for each of `wanted`: that port while nothing listens on it, else one the OS picks, each held until the last
+// is picked, so no two are the same.
 // ponytail: a port is free when picked, not reserved; another bind can take it before the app does. Hand the app a
 // listening socket if that ever bites.
-async function freePorts(n) {
-  const servers = await Promise.all(Array.from({ length: n }, () => new Promise((resolve, reject) => {
-    const s = net.createServer().on("error", reject).listen(0, () => resolve(s));
-  })));
+async function freePorts(wanted) {
+  const bind = (port) => new Promise((resolve, reject) => { const s = net.createServer().once("error", reject).listen(port, () => resolve(s)); });
+  const servers = [];
+  for (const port of wanted) servers.push(await (port && !await inUse(port) ? bind(port).catch(() => bind(0)) : bind(0)));
   const ports = servers.map((s) => s.address().port);
   await Promise.all(servers.map((s) => new Promise((r) => s.close(r))));
   return ports;
@@ -279,19 +281,21 @@ async function down() {
 }
 
 // What a mobile build is made from (#81), as a key, or null when it can't be told: every file of HEAD but the other
-// apps', the pinned tests' and .factory/'s, with the platform, the build command, the app's profile env and env.local.
-// A worktree with uncommitted changes, or a build or env that takes a port or the database, always builds.
+// apps', the pinned tests' and .factory/'s, with the platform, the build command, the app's profile env and env.local,
+// each port and the database filled in, since a build can bake them in. up keeps a worktree's ports from one up to
+// the next, so the key holds across a run's verifies. A worktree with uncommitted changes to what the key reads always
+// builds.
 function buildKey(a, platform) {
   const prof = recipe.profiles || {}, env = { ...(record.profile !== "default" && prof.default?.[a.name]), ...prof[record.profile]?.[a.name] };
-  if (/\{(port:[^}]+|db)\}/.test(JSON.stringify([a.build, env]))) return null;
   try {
-    if (git(ctx.tree, "status", "--porcelain", "--untracked-files=no")) return null;
     const dir = (p) => `${p.replace(/\/+$/, "")}/`, own = dir(a.path || ".");
     const skip = [...(recipe.apps || []).filter((x) => x !== a && x.path && x.path !== "." && !own.startsWith(dir(x.path))).map((x) => dir(x.path)),
       ...(recipe.pinned || []).map(dir), ".factory/"];
-    const files = git(ctx.tree, "ls-tree", "-r", "HEAD").split("\n").filter((l) => !skip.some((s) => (l.split("\t")[1] ?? "").startsWith(s)));
+    const read = (f) => !skip.some((s) => f.startsWith(s));
+    if (git(ctx.tree, "diff", "--name-only", "HEAD").split("\n").some((f) => f && read(f))) return null;
+    const files = git(ctx.tree, "ls-tree", "-r", "HEAD").split("\n").filter((l) => read(l.split("\t")[1] ?? ""));
     let local = ""; try { local = fs.readFileSync(path.join(ctx.MAIN, ".factory", "env.local"), "utf8"); } catch {}
-    return crypto.createHash("sha256").update([platform, a.build, JSON.stringify(env), local, ...files].join("\n")).digest("hex").slice(0, 16);
+    return crypto.createHash("sha256").update([platform, fill(a.build, record), fill(JSON.stringify(env), record), fill(local, record), ...files].join("\n")).digest("hex").slice(0, 16);
   } catch { return null; }
 }
 // The mobile branch, after the other apps are up, all under the device lock: each mobile app built, then the device
@@ -373,8 +377,10 @@ async function up(profile, skip) {
   const mobile = (a) => a.type === "mobile";
   const all = (recipe.apps || []).filter((a) => a.dev || mobile(a));
   const fixed = all.filter((a) => a.dev && !JSON.stringify([a.dev, envOf(a)]).includes(`{port:${a.name}}`));
-  const ports = await freePorts(all.filter((a) => a.dev).length - fixed.length);
-  for (const a of all) record.apps[a.name] = { port: !a.dev ? null : fixed.includes(a) ? portOf(a.health) : ports.pop() };
+  // each app takes the port it had at this worktree's last up while it's free, so a mobile build that holds one is kept
+  const moving = all.filter((a) => a.dev && !fixed.includes(a)), ports = await freePorts(moving.map((a) => record.ports?.[a.name]));
+  record.ports = Object.fromEntries(moving.map((a, i) => [a.name, ports[i]]));
+  for (const a of all) record.apps[a.name] = { port: !a.dev ? null : fixed.includes(a) ? portOf(a.health) : record.ports[a.name] };
   const wanted = all.filter((a) => profiles[profile]?.[a.name] !== null && !skip.includes(a.name));
   const target = wanted.some(mobile) ? device(runEnv(ctx.MAIN)) : null;
   for (const a of wanted.filter(mobile)) if (!target) console.log(`run-apps: ${a.name} skipped: ${NO_DEVICE}`);
