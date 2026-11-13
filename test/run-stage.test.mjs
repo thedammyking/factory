@@ -261,20 +261,15 @@ test("merge takes only a MERGE ticket into the run branch, runs verify --fast at
   assert.equal(r.run("next-ticket").stdout.trim(), "DONE");
 });
 
-test("a merge that conflicts is aborted and left as it was, and a run head that goes red after merging two green sides is the human's", (t) => {
+test("a merge brings the run branch into the ticket first (#81): a conflict waits in the ticket's worktree for its next round, the run head untouched", (t) => {
   const conflict = green(t);
   fs.writeFileSync(path.join(conflict.s.worktree, "csv.js"), "export const csv = 2;\n");
   git(conflict.s.worktree, "add", "csv.js"); git(conflict.s.worktree, "commit", "-qm", "Another csv.js");
   const before = git(conflict.s.worktree, "rev-parse", "HEAD");
-  assert.equal(lastLine(conflict.stage("merge", "01")), `ATTENTION 01: merging ${conflict.branch} into feature/csv-export conflicts in csv.js, so the merge was aborted`);
+  assert.equal(lastLine(conflict.stage("merge", "01")), "ROUND 01: merging feature/csv-export, the tickets merged before it, into the ticket stopped at conflicts in csv.js, which the implementer resolves");
   assert.deepEqual([git(conflict.s.worktree, "rev-parse", "HEAD"), git(conflict.s.worktree, "status", "--porcelain")], [before, ""]);
-  assert.ok(fs.existsSync(conflict.wt) && branches(conflict), "the ticket's worktree and branch are kept");
-
-  const red = green(t);  // the run branch's own change is green without csv.js, the ticket's with it
-  fs.writeFileSync(path.join(red.s.worktree, "package.json"), JSON.stringify({ name: "reports", scripts: { test: "test ! -f csv.js" } }));
-  git(red.s.worktree, "commit", "-qam", "No csv.js wanted");
-  assert.match(lastLine(red.stage("merge", "01")), /^ATTENTION 01: verify --fast is red at the run head \w{7} after merging two green sides, red_cause \w+$/);
-  assert.match(fs.readFileSync(path.join(red.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: in-progress$/m, "the ticket isn't done");
+  assert.match(git(conflict.wt, "status", "--porcelain"), /^AA csv\.js$/m, "the merge stays in progress in the ticket's worktree");
+  assert.match(fs.readFileSync(path.join(conflict.s.run_dir, "tickets", "01-csv-export.md"), "utf8"), /^Status: in-progress$/m, "the ticket isn't done");
 });
 
 test("a ticket that adds an app re-detects the recipe in its own worktree before its verify (#81), leaving out a script that fails its proof, which the PR lists, and its merge runs the recipe's setup in the run worktree; one that changes no manifest commits nothing, though its merge installs too", (t) => {

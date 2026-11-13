@@ -22,7 +22,11 @@
 //        RESEARCH   NEEDS_CONTEXT: one researcher dispatch answers its question in tickets/NN/context.md
 //        ATTENTION  for the human: a red inherited or environment, BLOCKED: intent_gap or environment, a bad plan after
 //                   the amendment, NEEDS_CONTEXT after the researcher's answer, no evidence, or a setup that failed
-//   run-stage.mjs merge <NN> -> after MERGE: on a GitHub origin, pushes the run branch and factory/<run>/NN and opens the
+//   run-stage.mjs merge <NN> -> after MERGE: tickets go side by side whatever files they share (#81), so when the run
+//      branch has moved since the ticket was cut, it's merged into the ticket first, in the ticket's worktree, which
+//      installs and runs verify --fast there. A conflict, left in progress for the implementer to resolve, or a red the
+//      two sides make together is ROUND, the ticket's next round; a red inherited or environment is ATTENTION. Then, on
+//      a GitHub origin, it pushes the run branch and factory/<run>/NN and opens the
 //      ticket's PR into the run branch, stacked on the run's own PR (#81), recorded in tickets/NN/pr.json; a push or call
 //      that fails is printed and the merge goes on. It merges factory/<run>/NN into the run branch. When the merge added or changed
 //      an app manifest (lib's MANIFEST) or a lockfile, it runs the recipe's setup in the run worktree, else the package
@@ -30,8 +34,8 @@
 //      the recipe there. It runs verify --fast at the new head, then takes the ticket's apps and database down (run-apps
 //      down --drop there) and removes its worktree and branch. MERGED (the ticket marked done) when the run head is
 //      green, once the run branch is pushed, which GitHub reads as the ticket PR's merge; ATTENTION when it's red, when the install or re-detecting fails, or on a conflict, which is aborted and
-//      leaves everything as it was. Merges of one run wait on each other, and none goes into a run head whose evidence
-//      is red.
+//      leaves everything as it was (the ticket holding the run branch, neither should happen). Merges of one run wait
+//      on each other, and none goes into a run head whose evidence is red.
 //   run-stage.mjs verify <NN> -> verify --fast judges the ticket's worktree again, and the verdict is as implement's: what
 //      a resume that finds implement:NN done runs.
 //   run-stage.mjs review-fix -> one review fix round, once `run-state round review` has counted it and findings.json's
@@ -193,6 +197,25 @@ if (cmd === "merge") {
   lock(`${ctx.runDir}.merge.lock`);  // one ticket branch at a time, its verify --fast included
   const s = state(), [word, why] = verdict(s);
   if (word !== "MERGE") die(`ticket ${n} isn't ready to merge: ${why}`);
+  // The run branch into the ticket first (#81), when it moved since the ticket was cut: the ticket then merges into the
+  // run branch with nothing left to conflict, and its fast checks have judged both sides together.
+  const runTip = git(ctx.worktree, "rev-parse", "HEAD");
+  if (spawnSync("git", ["merge-base", "--is-ancestor", runTip, "HEAD"], { cwd: wt }).status !== 0) {
+    const was = head();
+    try { git(wt, "merge", "-q", "--no-edit", "-m", attributed(`Merge branch '${s.branch}' into ${branch}`, "commit", s), s.branch); } catch (e) {
+      const files = git(wt, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean);
+      if (!files.length) { try { git(wt, "merge", "--abort"); } catch {} say("ATTENTION", `merging ${s.branch} into ${branch} failed: ${gitError(e)}`); }
+      say("ROUND", `merging ${s.branch}, the tickets merged before it, into the ticket stopped at conflicts in ${files.join(", ")}, which the implementer resolves`);
+    }
+    const install = installOf(readJson(path.join(wt, ".factory", "setup.json"), {}));
+    const changed = git(wt, "diff", "--name-only", was, "HEAD").split("\n").some((f) => MANIFEST.test(f) || LOCKFILE.test(f));
+    if (install && changed && !runSetup(wt, install, path.join(ctx.runDir, "logs", `install-${n}.log`))) say("ATTENTION", `merged ${s.branch} into the ticket, but \`${install}\` failed in its worktree, as printed above`);
+    console.log(node("verify.mjs", ["--fast", "--run", ctx.id], { cwd: wt }).stdout.split("\n")[0]);
+    const ev = readJson(EVIDENCE), at = head();
+    if (!ev || ev.sha !== at) say("ATTENTION", `verify --fast left no evidence at the ticket's HEAD ${at.slice(0, 7)}, ${s.branch} merged into it`);
+    if (!ev.green) say(["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND",
+      `verify --fast is red at ${at.slice(0, 7)} with ${s.branch} merged into the ticket, red_cause ${ev.red_cause}`);
+  }
   const pr = ticketPr(s);
   // Nothing merges into a red run head, so a red after a merge is always one between two green sides.
   const RUN_FAST = path.join(ctx.runDir, "evidence-fast.json"), runEv = readJson(RUN_FAST), tip = git(ctx.worktree, "rev-parse", "HEAD");
@@ -382,8 +405,14 @@ if (!fs.existsSync(wt)) {
   }
 }
 
-// What the child is told: the plan for a fresh child, else what its last attempt left to do.
+// What the child is told: the plan for a fresh child, else what its last attempt left to do. A merge of the run branch
+// left at its conflicts (#81) comes first, whichever child takes it.
 function message() {
+  let merging = null; try { merging = git(wt, "rev-parse", "-q", "--verify", "MERGE_HEAD"); } catch {}
+  if (merging) return `Merging the run branch, which holds the tickets merged before this one, into this ticket stopped at conflicts in `
+    + `${git(wt, "diff", "--name-only", "--diff-filter=U").split("\n").filter(Boolean).map((f) => `\`${f}\``).join(", ")}. Resolve each so both sides hold: `
+    + "theirs is other tickets' work, already merged, and yours this ticket's plan. A lockfile takes either side, then the package manager's install. "
+    + "`git add` each file you resolved and `git commit --no-edit`, which concludes the merge (never abort it), then make `verify --fast` pass.";
   const again = moved ? ` Then write ${IMPL} again from the top: the last one is now ${moved}.` : "";
   const tries = round - 1 === 2 ? "twice" : `${round - 1} times`;
   const red = ev && !ev.green && ev.sha === head();

@@ -19,7 +19,7 @@ const lines = (file) => fs.existsSync(file) ? fs.readFileSync(file, "utf8").trim
 const FAKE = `#!${process.execPath}
 const fs = require("node:fs"), path = require("node:path"), { execFileSync } = require("node:child_process");
 const dir = process.env.FAKE_CLAUDE, stdin = fs.readFileSync(0, "utf8");
-fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ argv: process.argv.slice(2), pid: process.pid }) + "\\n");
+fs.appendFileSync(path.join(dir, "calls.jsonl"), JSON.stringify({ argv: process.argv.slice(2), pid: process.pid, stdin }) + "\\n");
 const files = JSON.parse(fs.readFileSync(path.join(dir, "files.json"), "utf8"))[path.basename(process.cwd())];
 for (const [f, text] of Object.entries(files)) fs.writeFileSync(f, text);
 execFileSync("git", ["add", "--", ...Object.keys(files)]);
@@ -189,24 +189,28 @@ test("two ticket branches that finish together merge into the run branch one at 
   assert.deepEqual([e.sha, e.green, git(r.worktree, "ls-files", "*.js")], [head, true, "csv.js\npdf.js"]);
 });
 
-test("a ticket whose branch conflicts with one merged before it is aborted for the human, two green tickets red together are the human's, and nothing merges into that red head", async (t) => {
-  // The planner missed that both write shared.js, so their code maps let them run at once.
+test("a ticket that conflicts with one merged before it gets the run branch merged in, left at its conflicts for its next round to resolve, then merges; two tickets red together are the second's round, and the run head takes neither (#81)", async (t) => {
   const x = setup(t);
-  const c = planned(x, init(x, "Add a CSV export"), { "01": { "shared.js": "1\n" }, "02": { "shared.js": "2\n" } }, { "01": ["csv.js"], "02": ["pdf.js"] });
+  const c = planned(x, init(x, "Add a CSV export"), { "01": { "shared.js": "1\n" }, "02": { "shared.js": "2\n" } });
   for (const v of await Promise.all(["01", "02"].map((n) => c.stage("implement", n)))) assert.match(last(v), /^MERGE \d{2}:/);
   assert.match(last(await c.stage("merge", "01")), /^MERGED 01:/);
   const head = git(c.worktree, "rev-parse", "HEAD");
-  assert.equal(last(await c.stage("merge", "02")), `ATTENTION 02: merging ${c.branch("02")} into feature/export conflicts in shared.js, so the merge was aborted`);
+  assert.equal(last(await c.stage("merge", "02")), "ROUND 02: merging feature/export, the tickets merged before it, into the ticket stopped at conflicts in shared.js, which the implementer resolves");
   assert.deepEqual([git(c.worktree, "rev-parse", "HEAD"), git(c.worktree, "status", "--porcelain")], [head, ""], "the run head as the first merge left it");
-  assert.ok(fs.existsSync(c.wt("02")) && x.p.git("branch", "--list", c.branch("02")), "the ticket's worktree and branch are kept");
-  assert.equal(c.run("next-ticket").stdout.trim(), "STARTED 02-part", "and it isn't done");
+  assert.match(git(c.wt("02"), "status", "--porcelain"), /^AA shared\.js$/m, "the conflict waits in the ticket's worktree");
+  c.run("round", "implement:02");
+  x.commits(c.wt("02"), { "shared.js": "1\n2\n" });  // the implementer resolves it, and its commit concludes the merge
+  assert.match(last(await c.stage("implement", "02")), /^MERGE 02:/);
+  assert.match(x.calls().at(-1).stdin, /^Merging the run branch, which holds the tickets merged before this one, into this ticket stopped at conflicts in `shared\.js`\./m);
+  assert.match(last(await c.stage("merge", "02")), /^MERGED 02:/);
+  assert.equal(fs.readFileSync(path.join(c.worktree, "shared.js"), "utf8"), "1\n2\n", "both tickets' work on the run branch");
 
   const y = setup(t, "test ! -f a.js || test ! -f b.js");  // each ticket green on its own, the two together red
   const r = planned(y, init(y, "Add a CSV export"), { "01": { "a.js": "1\n" }, "02": { "b.js": "2\n" }, "03": { "c.js": "3\n" } });
   for (const v of await Promise.all(["01", "02", "03"].map((n) => r.stage("implement", n)))) assert.match(last(v), /^MERGE \d{2}:/);
   assert.match(last(await r.stage("merge", "01")), /^MERGED 01:/);
-  assert.match(last(await r.stage("merge", "02")), /^ATTENTION 02: verify --fast is red at the run head \w{7} after merging two green sides, red_cause introduced$/);
-  const red = git(r.worktree, "rev-parse", "HEAD");
-  assert.equal(last(await r.stage("merge", "03")), `ATTENTION 03: the run head is red at ${red.slice(0, 7)}, so ${r.branch("03")} isn't merged into it`);
-  assert.equal(git(r.worktree, "rev-parse", "HEAD"), red);
+  const one = git(r.worktree, "rev-parse", "HEAD");
+  assert.match(last(await r.stage("merge", "02")), /^ROUND 02: verify --fast is red at \w{7} with feature\/export merged into the ticket, red_cause introduced$/);
+  assert.equal(git(r.worktree, "rev-parse", "HEAD"), one, "the run head never takes the red");
+  assert.match(last(await r.stage("merge", "03")), /^MERGED 03:/, "and the next ticket isn't held behind it");
 });

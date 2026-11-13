@@ -95,11 +95,10 @@
 //                                                anything but one Bash rule naming its program, and a program that runs
 //                                                any command
 //   run-state.mjs next-ticket                 -> after `done tickets`, a line per takeable ticket of lib's frontier,
-//                                                in-progress first: `STARTED <NN-slug>` for one that goes on, `NEXT
-//                                                <NN-slug>` (start it) while fewer than config's parallel_tickets (2) are
-//                                                started, else `WAIT <NN-slug>: <why>`, which a ticket also gets while its
-//                                                plans' code map shares a file with a started one's; else `DONE`,
-//                                                else `BLOCKED <NN-slug>: <why>` per open ticket
+//                                                in-progress first: `STARTED <NN-slug>` for one that goes on, then
+//                                                blockers first, `NEXT <NN-slug>` (start it) while fewer than config's
+//                                                parallel_tickets (4) are started, else `WAIT <NN-slug>: <why>`; else
+//                                                `DONE`, else `BLOCKED <NN-slug>: <why>` per open ticket
 //   run-state.mjs get                         -> prints state.json
 //   run-state.mjs set <key> <value>           -> sets a top-level key (JSON when it parses); `route` must be a route,
 //                                                `stage` an outcome (dispatch sets the working stages, abandon its own)
@@ -235,43 +234,21 @@ const readTickets = (ctx) => frontier(path.join(ctx.runDir, "tickets"));
 const ticketsHash = (ctx) => crypto.createHash("sha256").update(JSON.stringify(readTickets(ctx).items.map((t) => [t.id, t.text]))).digest("hex");
 const ticketsChecked = (ctx, s) => s.tickets_sha256 === ticketsHash(ctx);
 const whyUnchecked = (ctx) => `the tickets of ${ctx.id} haven't passed \`done tickets\`, or changed after it`;
-// The files a ticket's plans change, [] before it has one: each path the `## Code map` of tickets/<NN>/plan.md lists,
-// and of each plan set aside beside it (so a plan being written again still counts), any manifest or lockfile counted as
-// one file, since a new dependency touches the manifest and the lockfile.
-// ponytail: so two tickets touching dependencies never pair, even in apps with lockfiles of their own; key it by
-// lockfile if that costs parallelism.
-const DEPENDENCIES = /(^|\/)(package\.json|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb?)$/;
-const codeMap = (dir) => (fs.existsSync(dir) ? fs.readdirSync(dir) : []).filter((f) => /^plan(\.round\d+)?\.md$/.test(f))
-  .flatMap((f) => [...(readText(path.join(dir, f)).match(/^## Code map\n([\s\S]*?)(?=^## |(?![\s\S]))/m)?.[1] ?? "").matchAll(/^\s*- `([^`]+)`/gm)])
-  .map(([, f]) => f.replace(/^\.\//, "")).map((f) => DEPENDENCIES.test(f) ? "package.json and the lockfile" : f);
-// next-ticket's lines, which reconcile prints too.
+// next-ticket's lines, which reconcile prints too. Every ticket whose blockers are done goes at once, up to
+// parallel_tickets, whatever files it shares with another: its merge brings the run branch into it first, where a
+// conflict is its own next round's (#81). Blockers first: a ticket other open tickets wait on, however far down, takes a
+// slot before one nobody waits on, the most waited on first, then in number order, so what unblocks the most is built
+// first and the tickets behind it then go side by side.
 function frontierLines(ctx, s) {
   const { open, next, done } = readTickets(ctx);
   if (!open.length) return ["DONE"];
   if (!next.length) return open.map((t) => `BLOCKED ${t.id}: ${t.status === "ready-for-agent" ? `waits on ${(t.blockedBy || []).filter((b) => !done.has(b)).join(", ")}` : t.status}`);
-  // A started ticket holds one of parallel_tickets until it's done. One not yet implemented waits while its code map
-  // shares a file with a started one that goes on: implementing, or else planned first, the order the orchestrator
-  // checks and starts them in. One not started waits while its plans' does with any started or starting.
-  // ponytail: two implementing tickets both go on when an amended plan adds a file the other has; the merge's conflict
-  // check catches what that lets through.
-  const slots = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {}).parallel_tickets ?? 2;
-  const maps = new Map(next.map((t) => [t, codeMap(path.join(ctx.runDir, "tickets", t.n))]));
-  const shares = (t, others) => others.map((u) => [maps.get(t).find((f) => maps.get(u).includes(f)), u]).find(([f]) => f);
-  const waits = (t, [file, u]) => `WAIT ${t.id}: its code map shares ${file} with ${u.id}`;
-  const implementing = (t) => s.dispatches.some((d) => d.stage === `implement:${t.n}`);
-  const planned = (t) => { const i = s.stages_done.indexOf(`plan:${t.n}`); return i < 0 ? Infinity : i; };
-  const started = next.filter((t) => t.status === "in-progress"), goingOn = [], holders = [...started], lines = new Map();
-  for (const t of [...started.filter(implementing), ...started.filter((t) => !implementing(t)).sort((a, b) => planned(a) - planned(b))]) {
-    const clash = !implementing(t) && shares(t, goingOn);
-    if (clash) lines.set(t, waits(t, clash)); else goingOn.push(t);
-  }
-  for (const t of next.filter((t) => t.status !== "in-progress")) {
-    const clash = shares(t, holders);
-    if (clash) lines.set(t, waits(t, clash));
-    else if (holders.length < slots) { holders.push(t); lines.set(t, `NEXT ${t.id}`); }
-    else lines.set(t, `WAIT ${t.id}: parallel_tickets is ${slots}`);
-  }
-  return next.map((t) => lines.get(t) ?? `STARTED ${t.id}`);
+  const slots = readJson(path.join(ctx.MAIN, ".factory", "config.json"), {}).parallel_tickets ?? 4;
+  const waitedOn = (t, seen = new Set()) => { for (const u of open) if (!seen.has(u.n) && (u.blockedBy || []).includes(t.n)) { seen.add(u.n); waitedOn(u, seen); } return seen; };
+  const started = next.filter((t) => t.status === "in-progress"), ready = next.filter((t) => t.status !== "in-progress")
+    .map((t) => [t, waitedOn(t).size]).sort(([a, x], [b, y]) => y - x || a.n.localeCompare(b.n));
+  let free = slots - started.length;
+  return [...started.map((t) => `STARTED ${t.id}`), ...ready.map(([t]) => free-- > 0 ? `NEXT ${t.id}` : `WAIT ${t.id}: parallel_tickets is ${slots}`)];
 }
 // Why `done tickets` refuses a cut: the frontier orders tickets by their Status and Blocked by lines, and a ticket waits
 // only on one numbered before it.

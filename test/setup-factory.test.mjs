@@ -373,7 +373,7 @@ test("apply writes .factory/, the gitignore entries, the CLAUDE.md block and the
   setUp(p, f);
   const out = apply(p, f);
   const config = JSON.parse(read(p, ".factory/config.json"));
-  assert.deepEqual([config.tracker, config.merge, config.merge_limits, config.parallel_tickets, config.notify], ["github", "trial", { max_files: 40 }, 2, {}]);
+  assert.deepEqual([config.tracker, config.merge, config.merge_limits, config.parallel_tickets, config.notify], ["github", "trial", { max_files: 40 }, 4, {}]);
   assert.deepEqual([config.models.builder_check, config.models.qa, config.models.retro, config.models.pr], ["sonnet", "sonnet", "sonnet", undefined]);
   assert.deepEqual([config.caps.dispatches_per_run, config.caps.tokens_post_pr, config.qa.drivers], [30, 400000, { web: "playwright-lib", mobile: "maestro" }]);
   assert.deepEqual([config.security, config.branching.model, config.merge_method], [["gitleaks", "audit"], "trunk", "squash"]);
