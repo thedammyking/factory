@@ -476,6 +476,7 @@ test("on github, the request issue moves through its phases as factory:<phase> l
   ok(t, s, ["dispatch", "plan:01"]);
   ok(t, s, ["dispatch", "implement:01"]);
   ok(t, s, ["close-ticket", "01"]);
+  ok(t, s, ["dispatch", "resolve"]);  // the base's conflicts, settled before the review: reviewing already, never back to planning
   ok(t, s, ["dispatch", "review-code"]);
   write(s.run_dir, { "pr.json": JSON.stringify({ repo: "o/r", number: 7, draft: false }) });
   assert.equal(ok(t, s, ["track"]), "phase in-pr");

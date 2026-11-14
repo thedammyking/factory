@@ -26,6 +26,7 @@
     "review_rounds": 2,
     "ci_rounds": 1,
     "dispatches_per_run": 30,
+    "dispatches_per_ticket": 5,
     "tokens_overhead": 700000,
     "tokens_per_ticket": 700000,
     "tokens_per_run": 1500000,

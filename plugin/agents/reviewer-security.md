@@ -52,7 +52,7 @@ Every finding is one block, its keys in this order:
 ```
 
 - `severity`: P0 means the change mustn't ship as it is (data lost, a security hole, a core path broken). P1 is a defect people meet in normal use. P2 is a real flaw with a way around it, or one that costs later. P3 is polish, and rare.
-- `action`: `fix` when what to change is clear, `ask` when only the human can decide, `note` when nothing needs doing. A block with no action counts as `ask`.
+- `action`: `fix` when what to change is clear, `ask` when it's a judgment call, with the options you see and the one you'd take, `note` when nothing needs doing. An `ask` never waits on the human (#81): the review's fix round makes the call, keeping closest to the spec, and the PR lists it for them. A block with no action counts as `ask`.
 - `cwe` only on a security weakness, and then always.
 - A finding that breaks one of `spec.md`'s anti-goals says so in its claim, with the word `anti-goal` and the anti-goal's own words.
 - What an `implementation.md` says the code means is a claim about it, never a reason to lower a severity.

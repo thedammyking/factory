@@ -174,6 +174,11 @@ test("cleanup: a run whose PR merged since it stopped is marked pr_done, and its
   const merged = stopped("Add a CSV export", "feature/csv", 7), closed = stopped("Fix the login crash", "bugfix/login", 8), open = stopped("Speed up search", "feature/search", 9);
   const orphan = path.join(p.dir, ".factory/worktrees", "2026-01-01-gone-run-03");
   p.git("worktree", "add", "-q", "-b", "factory/2026-01-01-gone-run/03", orphan);
+  // A run whose id ends in two digits is no ticket's worktree: init's claim of its folder, and the worktree init adds
+  // there before it writes the run's state, are a run starting, and stay.
+  const claimed = path.join(p.dir, ".factory/worktrees", "2026-01-02-upgrade-to-node-22"), starting = path.join(p.dir, ".factory/worktrees", "2026-01-02-support-ios-17");
+  fs.mkdirSync(claimed);
+  p.git("worktree", "add", "-q", "--detach", starting);
   const r = rs(p.dir, ["cleanup"], "", env);
   assert.equal(r.status, 0, r.stderr);
   assert.deepEqual(r.stdout.trim().split("\n"), [`${merged.id}: PR #7 merged, its worktrees removed`, `${closed.id}: PR #8 closed, its worktrees removed`,
@@ -182,13 +187,14 @@ test("cleanup: a run whose PR merged since it stopped is marked pr_done, and its
   const branch = (b) => spawnSync("git", ["rev-parse", "--verify", "-q", b], { cwd: p.dir }).status === 0;
   assert.deepEqual(["feature/csv", "bugfix/login", "feature/search", "factory/2026-01-01-gone-run/03"].map(branch), [false, true, true, false], "a merged PR's branch goes, a closed one's stays");
   assert.ok(!fs.existsSync(orphan));
+  assert.deepEqual([claimed, starting].map((d) => fs.existsSync(d)), [true, true], "a run that is starting keeps its folder, whatever its id ends in");
   assert.deepEqual(JSON.parse(p.git("show", `factory/records:.factory/history/${merged.id}/state.json`)).pr_done.merged, true, "its record says so");
   assert.equal(rs(p.dir, ["cleanup"], "", env).stdout.trim(), "nothing to clean up", "once");
   assert.match(rs(p.dir, ["status"], "", env).stdout, new RegExp(`^\\| ${open.id} \\| Speed up search \\| needs you \\| - \\| #9 open \\|$`, "m"));
   assert.doesNotMatch(rs(p.dir, ["status"], "", env).stdout, new RegExp(merged.id));
 });
 
-test("a new run starts from origin's tip when the local base is behind it, or has parted from it by the factory's own .factory/ commits alone; never past the developer's own (#81)", () => {
+test("a new run starts from origin's tip when the local base is behind it, has parted from it by the factory's own .factory/ commits alone (saying which it leaves behind), or holds nothing origin doesn't after a squash merge; never past the developer's own (#81)", () => {
   const p = project(), remote = bareRemote(p);
   const elsewhere = (files, message) => {  // a commit that reaches origin from another clone, as a merged PR does
     const c = fs.mkdtempSync(path.join(os.tmpdir(), "factory-clone-"));
@@ -205,6 +211,17 @@ test("a new run starts from origin's tip when the local base is behind it, or ha
   assert.equal(init(p, "Second").base_sha, p.git("rev-parse", "origin/main"), "parted by a snapshot alone: origin's");
   commitHere({ "src/mine.js": "3\n" }, "the developer's own");
   assert.equal(init(p, "Third").base_sha, p.git("rev-parse", "main"), "a product commit of the developer's: their main");
+  elsewhere({ "src/mine.js": "3\n", "src/c.js": "4\n" }, "a PR that carried the developer's commit, squash-merged");
+  p.git("fetch", "-q", "origin");
+  const fourth = rs(p.dir, ["init"], "Fourth");
+  assert.equal(JSON.parse(fourth.stdout).base_sha, p.git("rev-parse", "origin/main"), "parted, but origin holds all the local commits do: origin's, so no merge is missed");
+  assert.equal(fourth.stderr, "", "and nothing is left behind to say");
+  commitHere({ ".factory/lessons.md": "- a lesson\n" }, "factory(retro): a lesson");
+  elsewhere({ "src/d.js": "5\n" }, "one more merged PR");
+  p.git("fetch", "-q", "origin");
+  const fifth = rs(p.dir, ["init"], "Fifth");
+  assert.equal(JSON.parse(fifth.stdout).base_sha, p.git("rev-parse", "origin/main"), "parted by a retro's lesson: origin's still");
+  assert.match(fifth.stderr, /^WARN main holds \.factory\/lessons\.md, which origin's doesn't: the run starts from origin's tip without it\. Push main, with origin's merged into it first, so runs see it\.$/m);
 });
 
 test("fix 24: snapshot commits the run dir to .factory/history/<run>/ on factory/records, never the base, and adds only new log lines", () => {

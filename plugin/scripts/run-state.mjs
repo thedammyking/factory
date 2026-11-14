@@ -462,9 +462,9 @@ function githubIssue(main, text, what) {
 }
 // A run started from entry --entry <N> of a map's run list (its `## Run list`, whose entries are `N. <request>` lines), as
 // { map, body, entry }: the map's body, read once, and that entry. The map is --map <ref>: on local its slug, read from
-// .factory/maps/<slug>/map.md at the base tip; on github #40 or the map issue's URL, read through gh api; on linear or
-// other its key (and --url), the orchestrator having read the map, whose body is on stdin. Such a run has no request
-// issue, so it writes nothing to the tracker, and nothing writes to the map but wayfinder.
+// .factory/maps/<slug>/map.md on factory/records (lib's recordsRef); on github #40 or the map issue's URL, read through
+// gh api; on linear or other its key (and --url), the orchestrator having read the map, whose body is on stdin. Its
+// request issue is the entry's own (#81), which init finds, and nothing writes to the map but wayfinder.
 function mapRun(main, tracker, base, sha, stdin) {
   const entry = arg("--entry") ?? "", n = Number(entry);
   if (!/^[1-9]\d*$/.test(entry)) die("--entry is the number of a run-list entry");
@@ -579,7 +579,7 @@ const ghClose = (ctx, key, reason) => ghWrite("-X", "PATCH", `repos/${githubRepo
 // A tracker write's outcome, once recorded in s: saved, logged and printed.
 const report = (ctx, s, line) => { save(ctx.state, s); log(ctx.runDir, `run: ${ctx.id} ${line}`); console.log(line); };
 // The run's phase as its request issue shows it (#81), in the order a run goes: queued (a run-list entry filed before
-// its run starts), planning (triage to the cut), building (its tickets), reviewing (qa's walk, the review and its fixes), in-pr (its
+// its run starts), planning (triage to the cut), building (its tickets), reviewing (resolving the base's conflicts, qa's walk, the review and its fixes), in-pr (its
 // PR open for the human's review), and needs-you or failed when it stops. done takes the label off: the issue closes when
 // its PR merges ("Closes …"). A run that stopped with a ready PR is in-pr. A ticket's sub-issue is planning, then building
 // once implemented, then done when it merges.
@@ -592,7 +592,7 @@ function phaseOf(ctx, s) {
   if (s.stage === "delivered" || (pr && !pr.draft)) return "in-pr";
   if (["needs-human", "suspended"].includes(s.stage)) return "needs-you";
   const last = s.dispatches.at(-1)?.stage || "";
-  return /^(review-|ci-fix|qa$)/.test(last) ? "reviewing" : /^(plan|implement|qa|context):/.test(last) ? "building" : "planning";
+  return /^(review-|ci-fix|resolve$|qa$)/.test(last) ? "reviewing" : /^(plan|implement|qa|context):/.test(last) ? "building" : "planning";
 }
 // Moves the request issue (or, with `ticket`, that ticket's sub-issue) to `phase` when it isn't there yet: on github a
 // `factory:<phase>` label in place of the last one, made when the repo lacks it; elsewhere a `TRACK <key> <phase>` line,
@@ -703,12 +703,14 @@ function cleanup(MAIN) {
     const snap = rs("snapshot", "--run", id), last = snap.stdout.trim().split("\n").at(-1) || snap.stderr.trim();
     said.push(`${id}: ${why}, ${fs.existsSync(p.worktree) ? last : "its worktrees removed"}`);
   }
-  // a ticket's worktree, <run>-NN, whose run is gone; a temp one (.at-base-, .preview-, .scan-…) or a folder init
+  // a ticket's worktree, <run>-NN on its ticket branch, whose run is gone (a run whose own id ends in two digits is on
+  // no ticket branch, so one that is starting stays); a temp one (.at-base-, .preview-, .scan-…) or a folder init
   // claimed and never made a worktree of, an hour on
   for (const name of entries) {
     const at = path.join(dir, name), ticket = name.match(/^(.+)-(\d{2})$/);
     if (runs.has(name) || name === ".builds" || !fs.statSync(at, { throwIfNoEntry: false })?.isDirectory()) continue;
-    const orphan = !!ticket && !runs.has(ticket[1]), temp = name.startsWith("."), unmade = !fs.existsSync(path.join(at, ".git"));
+    const ticketsOwn = () => { try { return git(at, "symbolic-ref", "-q", "HEAD") === `refs/heads/${ticketBranch(ticket[1], ticket[2])}`; } catch { return false; } };
+    const orphan = !!ticket && !runs.has(ticket[1]) && ticketsOwn(), temp = name.startsWith("."), unmade = !fs.existsSync(path.join(at, ".git"));
     if (!orphan && !((temp || unmade) && old(at))) continue;
     try { git(MAIN, "worktree", "remove", "--force", at); } catch { fs.rmSync(at, { recursive: true, force: true }); }
     if (orphan) try { git(MAIN, "branch", "-q", "-D", ticketBranch(ticket[1], ticket[2])); } catch {}
@@ -831,7 +833,7 @@ switch (cmd) {
     const base = branching.model === "git-flow" ? branching.develop || "develop" : branching.main || "main";
     // --on <run>: an entry stacked on an earlier entry's run (#81), branched from its branch while its PR is open.
     const on = arg("--on") && stackOn(MAIN, base, arg("--on"));
-    let sha; try { sha = freshTip(MAIN, on?.branch ?? base); } catch { die(`base branch '${on?.branch ?? base}' doesn't exist`); }
+    let sha; try { sha = freshTip(MAIN, on?.branch ?? base, (left) => console.error(`WARN ${left}`)); } catch { die(`base branch '${on?.branch ?? base}' doesn't exist`); }
     const run = mapped && mapRun(MAIN, config.tracker, base, sha, stdin);
     // One run per entry, however many sessions work the map (#81): a run of it not abandoned, live or ended, is the
     // entry's. Two sessions starting it at once both make theirs, and the later one, by created_at then id, backs off.
@@ -1710,5 +1712,5 @@ switch (cmd) {
     for (const line of breakdown(s.spend)) console.log(line);
     break;
   }
-  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | file-issue | spec-comment | file-tickets | close-ticket | approve | notion | ticket | allow | next-ticket | get | set | track | stack | chain | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
+  default: die("usage: run-state.mjs init | lane | reroute | claim | unclaim | comment | file-issue | spec-comment | file-tickets | close-ticket | approve | notion | ticket | allow | next-ticket | get | set | track | stack | chain | cleanup | dispatch | round | archive-review | done | spend | override | snapshot | reconcile | abandon | status");
 }

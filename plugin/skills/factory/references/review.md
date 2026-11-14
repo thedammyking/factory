@@ -22,7 +22,7 @@ First, once per review and never on a re-review, run `sync-base.mjs before-revie
 
    Say `Reviewing <id>.` and end your turn. Each completion notification wakes you: ignore its text, and once every lens dispatched has finished, read their files.
    - A `review-<lens>.md` that's missing or has no `verdict:` line, or a `review-ui.md` whose first line isn't `disposition: …`, was cut off: dispatch that lens once more, fresh, as above (synthesis never counts a round with no verdict). Cut off twice is a factory error: stop.
-   - A `review-ui.md` whose first line is `disposition: recapture` judged pictures that missed their states: run step 2 again and dispatch the UI lens once more. A second `recapture` goes on to synthesis, where its findings are the human's.
+   - A `review-ui.md` whose first line is `disposition: recapture` judged pictures that missed their states: run step 2 again and dispatch the UI lens once more. A second `recapture` goes on to synthesis, where its findings are the fix round's like any lens's ask (#81): a picture that shows something other than its state is the app's to fix, or the round's to say why it can't be.
 
    Then run `run-state done review-<lens>` for each.
 4. **Synthesis.** `synthesize.mjs`, then by the `disposition` on its first line:

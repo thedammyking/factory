@@ -686,6 +686,16 @@ test("a child cut off before it left a session to resume is started afresh, poin
 const LIMIT = { type: "assistant", parent_tool_use_id: null, error: "rate_limit", is_api_error_message: true, api_error_status: 429,
   message: { id: "msg-2", model: "<synthetic>", role: "assistant", content: [{ type: "text", text: "API Error: Request rejected (429) · This request would exceed your account's rate limit. Please try again later." }] } };
 
+test("a concern first named by an attempt that made no commit still gets its round: only one an earlier report named, and a round left, goes to the PR", (t) => {
+  const r = ticketReady(t);
+  const concerned = { write: { [r.impl]: report("DONE_WITH_CONCERNS", { concerns: "- its Playwright run was denied" }) } };
+  r.play([{ ...CSV, print: [SPOKE, LIMIT] }, concerned, concerned]);  // the work committed, then the usage limit; resumed, the report alone
+  assert.match(lastLine(r.stage("implement", "01")), /^SUSPENDED 01:/);
+  assert.equal(lastLine(r.stage("implement", "01")), "ROUND 01: the implementer named a concern, which is fixed before the next ticket", "an earlier attempt isn't a round the concern was given");
+  assert.match(lastLine(round(r)), /^OK implement:01 round /);
+  assert.match(lastLine(r.stage("implement", "01")), /^MERGE 01: its concern, which a round left as it was, goes to the PR/);
+});
+
 test("a child that stops at the usage limit is SUSPENDED, never a round: nothing is judged, the run waits suspended, and resumed it carries on in its session", (t) => {
   const r = ticketReady(t);
   r.play([{ ...CSV, print: [SPOKE, LIMIT] }, { write: { [r.impl]: report("DONE") } }]);

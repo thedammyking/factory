@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// verify.mjs --fast | --full [--reuse <evidence.json>] | --pinned <path> — runs every check in the run worktree's recipe (.factory/setup.json) for
+// verify.mjs --fast | --full | --pinned <path> — runs every check in the run worktree's recipe (.factory/setup.json) for
 // every app, never stopping at the first failure, and writes the evidence to the run dir: evidence.json for --full,
 // evidence-fast.json for --fast (typecheck, lint and test only), so a fast pass never stands in for a full one. Takes
 // --run <id>, or derives the run from the run worktree it runs in. Run in a ticket's worktree, it checks that worktree
@@ -10,7 +10,7 @@
 //     of a profile's tests and down before the next profile's, a mobile app only when one of them is its own, so an
 //     API test never builds it or takes the device. A test named
 //     <run>-<NN>-<slug>.<profile>.<ext> runs with the apps up in that profile, FACTORY_PROFILE in its env (design fix 4);
-//     a pinned test that passed in the last green --full here (or --reuse's), on a commit that differs from HEAD only in
+//     a pinned test that passed in the last green --full here, on a commit that differs from HEAD only in
 //     other pinned tests, keeps that pass with reused_from and doesn't run again (#81);
 //     a profile the recipe lacks skips it with up's reason. --pinned <path> runs only that test, in the worktree holding
 //     it, wherever it's called from, into evidence-pinned.json.
@@ -21,16 +21,15 @@
 //     With no device in .factory/env.local, or no maestro, it's skipped, never run. maestro_version is in the evidence,
 //     and so is platform, ios or android (lib's device: one platform per run), or null when no check of a mobile app
 //     ran on a device.
-//   - pinned_only marks a red where something failed and every check that didn't pass is pinned, on a clean and
-//     trusted tree: qa rules on it.
 //   - A check is "<command>" or { cmd, env: [names it needs] }. It runs under bash in its app's path with lib's runEnv,
 //     its full output saved to logs/<app>-<check>.log in the run dir (.fast.log or .pinned.log); a failing one carries
 //     lib's digest of that output.
 //   - A check needing a name .factory/env.local doesn't hold is skipped, never run. An app without a test check fails it.
 //   - A check its app lists in needs_apps runs between run-apps up and down in the worktree it checks, with {port:<app>}
-//     and {db} filled in its command and env from that worktree's apps.json. When up fails the check is skipped with
-//     up's output, since apps that won't come up are the environment's. --full runs run-apps down first, so a stack left
-//     up never holds a port an e2e suite's own servers need (design fix 15).
+//     and {db} filled in its command and env from that worktree's apps.json. Every such check runs in one up, after the
+//     checks that need none, and the default profile's pinned tests in that up too when they need the same mobile apps.
+//     When up fails the check is skipped with up's output, since apps that won't come up are the environment's. --full
+//     runs run-apps down first, so a stack left up never holds a port an e2e suite's own servers need (design fix 15).
 //   - The evidence is pinned to HEAD. It's dirty when the tree is unclean outside .factory/ (the recipe included) or HEAD
 //     moved, trusted when the recipe equals HEAD's, and green when every check passed and it's clean and trusted.
 //   - red_cause says why it isn't green: inherited when every failing check fails at the base commit too (rerun there in
@@ -78,12 +77,13 @@ function execute(cwd, cmd, name, cmdEnv = env) {
     digest: status === "fail" ? digest(fs.readFileSync(log, "utf8"), log) : null };
 }
 
-// Each failing check's result at the commit the run branched from, the base's merge-base with HEAD, as c.at_base.
+// Each failing check's result at the commit the run branched from, the merge-base of HEAD and the base_sha the run
+// recorded (never the local base branch, which origin may be ahead of: lib's freshTip), as c.at_base.
 // Nothing is recorded when there's no merge-base, its worktree can't be made, or its install fails there: a check that
 // can't run at the base proves nothing about it.
 // ponytail: reruns the failing checks at the base on every red, --fast too; cache by base commit if it shows in the minutes.
 function atBase(failing) {
-  let sha; try { sha = git(tree, "merge-base", "HEAD", `refs/heads/${s.base_branch}`); } catch { return; }
+  let sha; try { sha = git(tree, "merge-base", "HEAD", s.base_sha); } catch { return; }
   const wt = fs.mkdtempSync(path.join(worktreesDir(ctx.MAIN), ".at-base-"));
   try { git(ctx.MAIN, "worktree", "add", "-q", "--detach", wt, sha); } catch { fs.rmSync(wt, { recursive: true, force: true }); return; }
   try {
@@ -171,21 +171,17 @@ if (onlyTest && !(pinnedDirs.some((d) => pinnedTests[0].startsWith(d + path.sep)
   console.error(`verify: ${pinnedTests[0]} isn't a ${Object.keys(RUNNERS).join(" or ")} in an app's pinned directory (${pinnedDirs.join(", ") || "the recipe has none"}), nor a <run>-<NN>-<slug>-SC-###.yaml flow in a mobile app's`); process.exit(2);
 }
 pinnedTests.push(...flowDirs);
-// A pinned test that passed on this product keeps its pass (#81): when the last green full verify here, or the one
-// --reuse names (the ticket's, on its merge), is of a commit that differs from HEAD only in pinned tests, each pinned
-// test none of those changes touched is taken from it, with reused_from, and only the rest run. Every other check runs.
+// A pinned test that passed on this product keeps its pass (#81): when the last green full verify here is of a commit
+// that differs from HEAD only in pinned tests, each pinned test none of those changes touched is taken from it, with
+// reused_from, and only the rest run. Every other check runs.
 const reused = (() => {
-  if (mode !== "full" || onlyTest) return {};
-  for (const f of [arg("--reuse"), path.join(out, "evidence.json")].filter(Boolean)) {
-    const e = readJson(f);
-    if (e?.mode !== "full" || !e.green) continue;
-    let changed; try { changed = execFileSync("git", ["diff", "--name-only", e.sha, "HEAD"], { cwd: tree, encoding: "utf8" }).split("\n").filter(Boolean); } catch { continue; }
-    if (!changed.every((c) => pinnedDirs.some((d) => c.startsWith(d + "/")))) continue;
-    const touched = (rel) => changed.some((c) => c === rel || c.startsWith(rel + "/"));
-    return Object.fromEntries(e.checks.filter((c) => c.pinned && c.status === "pass" && pinnedTests.includes(c.check) && !touched(c.check))
-      .map((c) => [c.check, { ...c, reused_from: c.reused_from ?? e.sha }]));
-  }
-  return {};
+  const e = mode === "full" && !onlyTest && readJson(path.join(out, "evidence.json"));
+  if (e?.mode !== "full" || !e.green) return {};
+  let changed; try { changed = execFileSync("git", ["diff", "--name-only", e.sha, "HEAD"], { cwd: tree, encoding: "utf8" }).split("\n").filter(Boolean); } catch { return {}; }
+  if (!changed.every((c) => pinnedDirs.some((d) => c.startsWith(d + "/")))) return {};
+  const touched = (rel) => changed.some((c) => c === rel || c.startsWith(rel + "/"));
+  return Object.fromEntries(e.checks.filter((c) => c.pinned && c.status === "pass" && pinnedTests.includes(c.check) && !touched(c.check))
+    .map((c) => [c.check, { ...c, reused_from: c.reused_from ?? e.sha }]));
 })();
 
 // undefined without a Maestro check, null when maestro --version fails
@@ -195,7 +191,7 @@ const maestroVersion = !pinnedTests.some(isMaestro) ? undefined : (() => {
 })();
 if (mode === "full") apps("down");
 const before = git(tree, "rev-parse", "HEAD");
-const checks = [];
+const checks = [], waiting = [];  // waiting: the checks that need apps, run below with them up once
 for (const app of onlyTest ? [] : recipe.apps || []) {
   const defs = app.checks || {};
   for (const [check, def] of Object.entries(defs)) {
@@ -203,26 +199,34 @@ for (const app of onlyTest ? [] : recipe.apps || []) {
     const { cmd, env: needs = [] } = typeof def === "string" ? { cmd: def } : def;
     const unavailable = needs.filter((name) => !Object.hasOwn(env, name));
     const needsApps = !!app.needs_apps?.includes(check);
-    checks.push({ app: app.name, check, cmd, ...(needsApps && { needs_apps: true }), ...(unavailable.length
-      ? { status: "skipped", ...NOT_RUN, digest: `${unavailable.join(", ")} not available in .factory/env.local` }
-      : needsApps ? upFor("default", [app.name], (up) => withApps(up, app.name, check, cmd)) : execute(appDir(tree, app.name), cmd, `${app.name}-${check}`)) });
+    const c = { app: app.name, check, cmd, ...(needsApps && { needs_apps: true }) };
+    if (unavailable.length) Object.assign(c, { status: "skipped", ...NOT_RUN, digest: `${unavailable.join(", ")} not available in .factory/env.local` });
+    else if (needsApps) waiting.push(c);
+    else Object.assign(c, execute(appDir(tree, app.name), cmd, `${app.name}-${check}`));
+    checks.push(c);
   }
   if (!defs.test) checks.push({ app: app.name, check: "test", cmd: null, status: "fail", ...NOT_RUN,
     digest: "required check not in recipe: give the app a test script in its manifest (package.json's scripts.test, say), which the recipe's re-detect picks up" });
 }
 // A profile's pinned tests run with the apps up once for all of them, and down before the next profile's; the
-// evidence keeps the tests' own order.
-const ran = { ...reused }, byProfile = {};
+// evidence keeps the tests' own order. The checks that need apps run in the default profile, all in one up, which is
+// the default pinned tests' too when both need the same mobile apps: a device only the tests need never fails a check.
+const ran = { ...reused }, byProfile = waiting.length ? { default: [] } : {};
 for (const rel of pinnedTests.filter((rel) => holder(rel))) (byProfile[profileOf(rel)] ||= []).push(rel);
+const onDevices = (names) => mobiles.filter((m) => names.includes(m)).join();
 for (const [profile, rels] of Object.entries(byProfile)) {
   for (const rel of rels) if (!ran[rel] && maestroSkip(rel)) ran[rel] = { status: "skipped", ...NOT_RUN, digest: maestroSkip(rel) };
-  const live = rels.filter((rel) => !ran[rel]);
-  if (live.length) upFor(profile, live.map((rel) => holder(rel).name), (up) => {
+  const live = rels.filter((rel) => !ran[rel]), tested = live.map((rel) => holder(rel).name);
+  const own = profile === "default" ? waiting : [], checked = own.map((c) => c.app);
+  const runChecks = (up) => { for (const c of own) Object.assign(c, withApps(up, c.app, c.check, c.cmd)); };
+  const runTests = (up) => {
     for (const rel of live) {
       const app = holder(rel), flows = path.relative(path.normalize(app.path || "."), rel);
       ran[rel] = isMaestro(rel) ? maestro(up, app.name, rel, MAESTRO, flows) : withApps(up, app.name, rel, runner(rel), flows);
     }
-  });
+  };
+  if (own.length && live.length && onDevices(checked) === onDevices(tested)) upFor(profile, [...checked, ...tested], (up) => { runChecks(up); runTests(up); });
+  else { if (own.length) upFor(profile, checked, runChecks); if (live.length) upFor(profile, tested, runTests); }
 }
 for (const rel of pinnedTests) {
   const app = holder(rel), check = { check: rel, cmd: isMaestro(rel) ? MAESTRO : runner(rel), needs_apps: true, pinned: true };
@@ -246,11 +250,10 @@ const baseApps = (() => { try { return new Set(JSON.parse(git(tree, "show", `${g
 const red_cause = green ? null
   : failed.length ? (failed.every((c) => (!c.cmd && baseApps.has(c.app)) || c.at_base?.status === "fail") ? "inherited" : "introduced")
   : dirty || !trusted ? "incomplete" : "environment";
-const pinned_only = !green && !dirty && trusted && failed.length > 0 && checks.every((c) => c.status === "pass" || c.pinned);
 // A recipe with a mobile app records the one platform the run verified it on (lib's device): null unless a check of it
 // ran with the apps up there.
 const onDevice = checks.some((c) => mobiles.includes(c.app) && c.needs_apps && c.status !== "skipped");
-const evidence = { mode, sha, green, dirty, trusted, red_cause, pinned_only, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString(),
+const evidence = { mode, sha, green, dirty, trusted, red_cause, checks, dirty_detail: changed.slice(0, 20), generated_at: new Date().toISOString(),
   ...(maestroVersion !== undefined && { maestro_version: maestroVersion }),
   ...(mobiles.length && { platform: onDevice ? device(env)?.platform ?? null : null }) };
 const file = path.join(out, mode === "full" ? "evidence.json" : `evidence-${mode}.json`);

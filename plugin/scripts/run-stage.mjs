@@ -133,9 +133,10 @@ function runSetup(cwd, command, log) {
   return r.status === 0;
 }
 // The implementer's report: its last status line (null when it has none, an INCOMPLETE attempt), cause and concerns, and
-// each command denied it, from its own denied: list and the one copied from its result.
-function report() {
-  const text = fs.existsSync(IMPL) ? fs.readFileSync(IMPL, "utf8") : "", last = (re) => [...text.matchAll(re)].at(-1)?.[1];
+// each command denied it, from its own denied: list and the one copied from its result. `file`: an earlier attempt's,
+// which its successor's dispatch set aside as implementation.round<N>.md.
+function report(file = IMPL) {
+  const text = fs.existsSync(file) ? fs.readFileSync(file, "utf8") : "", last = (re) => [...text.matchAll(re)].at(-1)?.[1];
   const concerns = (last(/^concerns:[ \t]*\n((?:[ \t]*- .*(?:\n|$))*)/gm) || "").split("\n").map((l) => l.trim()).filter((l) => l && l !== "- none");
   const denied = [...text.matchAll(/^(?:denied:|Denied, as the child's result records it:)[ \t]*\n((?:[ \t]*- .*(?:\n|$))*)/gm)]
     .flatMap((m) => [...m[1].matchAll(/^[ \t]*- `(?:Bash: )?([^`]+)`/gm)].map((x) => x[1]));
@@ -157,9 +158,13 @@ function verdict(s) {
   if (!ev.green) return [["inherited", "environment"].includes(ev.red_cause) ? "ATTENTION" : "ROUND", `verify --fast is red at ${sha.slice(0, 7)}, red_cause ${ev.red_cause}`];
   if (!status) return ["ROUND", "implementation.md has no status line, so the attempt is INCOMPLETE"];
   // A concern a round left as it was, with no commit, isn't one code fixes (a check the child may not run, say): it goes
-  // to the PR in implementation.md, and the ticket goes on, its own evidence green (#81).
+  // to the PR in implementation.md, and the ticket goes on, its own evidence green (#81). Only a concern an earlier
+  // attempt's report named has had its round: one first named now, by an attempt resumed after the usage limit or a
+  // researcher's answer, gets it.
   const tries = s.dispatches.filter((d) => d.stage === stage), built = tries.length && git(wt, "rev-list", "--count", `${tries[0].sha}..HEAD`) !== "0";
-  const again = tries.length > 1 && tries.at(-1).sha === sha && built;
+  const named = (r) => r.status === "DONE_WITH_CONCERNS" || r.concerns.length > 0;
+  const before = fs.existsSync(dir) && fs.readdirSync(dir).some((f) => /^implementation\.round\d+\.md$/.test(f) && named(report(path.join(dir, f))));
+  const again = before && tries.at(-1).sha === sha && built;
   if ((status === "DONE_WITH_CONCERNS" || concerns.length) && !again) return ["ROUND", "the implementer named a concern, which is fixed before the next ticket"];
   return ["MERGE", again ? `its concern, which a round left as it was, goes to the PR, and verify --fast is green at ${sha.slice(0, 7)}` : `DONE, and verify --fast is green at ${sha.slice(0, 7)}`];
 }

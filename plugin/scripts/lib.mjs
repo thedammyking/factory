@@ -97,17 +97,29 @@ export function pushBranch(cwd, branch, to = branch) {
   return r.status === 0 ? null : (r.stderr || r.error?.message || "push failed").trim().split("\n").at(-1);
 }
 // The tip a new run starts from: origin's copy of `branch` when the local one is behind it (a PR merged on GitHub since
-// the last pull), or when the two have parted and all the local one holds beyond it is the factory's own bookkeeping
-// under .factory/ (snapshots from before #81), else the local one: a run never misses a merge and never drops a local commit of the developer's.
-export function freshTip(cwd, branch) {
+// the last pull), else the local one, so a run never misses a merge and never drops a local commit of the developer's.
+// When the two have parted, origin's is taken in two cases. Merging the local one into it would change nothing outside
+// the factory's records (PRODUCT): its commits reached origin squashed into a PR's merge, or are snapshots from before
+// #81. Or all it holds beyond origin is under .factory/, the factory's own commits such as a retro's lesson: origin's
+// tip has the merges, and `said` is told which files the run goes without.
+export function freshTip(cwd, branch, said = () => {}) {
   const local = git(cwd, "rev-parse", "--verify", `refs/heads/${branch}^{commit}`);
   let remote; try { remote = git(cwd, "rev-parse", liveBase(cwd, branch)); } catch { return local; }
   if (remote === local) return local;
   const holds = (a, b) => { try { git(cwd, "merge-base", "--is-ancestor", a, b); return true; } catch { return false; } };
   if (holds(local, remote)) return remote;
   if (holds(remote, local)) return local;  // only ahead: the developer's own commits, unpushed
-  const mine = git(cwd, "log", "--format=", "--name-only", `${remote}..${local}`).split("\n").filter(Boolean);
-  return mine.every((f) => f.startsWith(".factory/")) ? remote : local;
+  // What local holds that origin's doesn't, the factory's records aside: what merging it into origin's would change
+  // there, else (at a conflict, or under a git with no merge-tree --write-tree) every file its own commits touch.
+  const recorded = (f) => PRODUCT.slice(1).some((x) => f === x.slice(":(exclude)".length) || f.startsWith(`${x.slice(":(exclude)".length)}/`));
+  let beyond; try { beyond = git(cwd, "diff", "--name-only", remote, git(cwd, "merge-tree", "--write-tree", remote, local).split("\n")[0], "--", ...PRODUCT).split("\n").filter(Boolean); } catch {
+    beyond = [...new Set(git(cwd, "log", "--format=", "--name-only", `${remote}..${local}`).split("\n"))].filter((f) => f && !recorded(f));
+  }
+  if (!beyond.length) return remote;
+  if (!beyond.every((f) => f.startsWith(".factory/"))) return local;
+  const them = beyond.length > 1 ? "them" : "it";
+  said(`${branch} holds ${beyond.join(", ")}, which origin's doesn't: the run starts from origin's tip without ${them}. Push ${branch}, with origin's merged into it first, so runs see ${them}.`);
+  return remote;
 }
 
 // A ticket's worktree, .factory/worktrees/<run>-NN/, on its branch factory/<run>/NN, pushed only for its PR (#81).
@@ -342,10 +354,6 @@ export function liveBase(cwd, branch) {
 export function githubRepo(cwd) {
   try { return git(cwd, "config", "--get", "remote.origin.url").match(/github\.com[:/]([^/\s]+\/[^/\s]+?)(?:\.git)?\/?$/)?.[1] ?? null; } catch { return null; }
 }
-// One `gh api <args>` call, REST but for the review threads' state pr-comments and pr-resolve need, which only GraphQL
-// has (`gh api graphql`, the one exception, docs/adr/0001; where it's refused they fall back to REST, failing closed):
-// { ok, json, text, message }, text being the body as it came (a job's log isn't JSON) and message
-// GitHub's own words on a refusal (its message, then each error's), else gh's, else why gh didn't start.
 // What installs a worktree's dependencies: the recipe's setup, else its package manager's install, else null. A fresh
 // worktree has none of its own, and the main checkout's, found by walking up, lack whatever the run added.
 export const installOf = (recipe) => recipe?.setup || (recipe?.package_manager && `${recipe.package_manager} install`) || null;
@@ -361,6 +369,10 @@ export function qaWalks(runDir) {
 // `fixed`: the review's fix round made it pass after the walk.
 export const walkResults = (walks, ev, head) => walks.flatMap(([, w]) => w.criteria || [])
   .map((c) => c.status === "fail" && c.test && ev?.green && ev.sha === head ? { ...c, status: "pass", fixed: true } : c);
+// One `gh api <args>` call, REST but for the review threads' state pr-comments and pr-resolve need, which only GraphQL
+// has (`gh api graphql`, the one exception, docs/adr/0001; where it's refused they fall back to REST, failing closed):
+// { ok, json, text, message }, text being the body as it came (a job's log isn't JSON) and message
+// GitHub's own words on a refusal (its message, then each error's), else gh's, else why gh didn't start.
 export function ghApi(...args) {
   const r = spawnSync("gh", ["api", ...args], { encoding: "utf8", maxBuffer: 1 << 28 });
   let json = null; try { json = JSON.parse(r.stdout); } catch {}

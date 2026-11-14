@@ -172,6 +172,10 @@ test("a red is inherited when the failing check fails at the base commit too, af
   assert.deepEqual(p.git("worktree", "list", "--porcelain").split("\n").filter((l) => l.startsWith("worktree ")), [`worktree ${p.dir}`, `worktree ${p.wt}`], "the base's worktree is gone");
   const [, inherited] = at(recipe("test -f .deps && test -f missing.txt"));
   assert.deepEqual([inherited.evidence.checks[0].at_base.status, inherited.evidence.red_cause], ["fail", "inherited"]);
+  // A run starts from origin's tip when the local base is behind it (lib's freshTip), so the base is the commit the run
+  // recorded, never the local branch: here that branch still sits a commit back, where the check passes.
+  const [, stale] = at(recipe("test -f .deps && test ! -f ok.txt"), (p) => p.git("update-ref", "refs/heads/main", p.git("rev-parse", "main~1")));
+  assert.deepEqual([stale.evidence.checks[0].at_base.status, stale.evidence.red_cause], ["fail", "inherited"], "rerun at the commit the run started from");
 });
 
 test("fix 1: run state written mid-run leaves the evidence clean and pinned to HEAD, and a snapshot to the base doesn't move it", () => {
@@ -258,6 +262,21 @@ test("a check that needs apps which won't come up is skipped with up's digest, a
   assert.doesNotMatch(fs.readFileSync(c.log, "utf8"), /^ran$/m, "the check never ran");
 });
 
+test("the checks that need apps and the default profile's pinned tests share one stack: the apps come up once for all of them", (t) => {
+  const seen = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "factory-seen-")), "seen");
+  const probe = 'import fs from "node:fs";\nconst { pid } = await (await fetch(process.argv[2])).json();\nfs.appendFileSync(process.env.SEEN, `${process.argv[3]} ${pid}\\n`);\n';
+  const p = withApps(t, { apps: [{ name: "api", path: ".", dev: "PORT={port:api} node server.mjs", health: "http://localhost:{port:api}/health",
+    checks: { e2e: "node probe.mjs http://localhost:{port:api}/ e2e", test: "true", smoke: "node probe.mjs http://localhost:{port:api}/ smoke" }, needs_apps: ["e2e", "smoke"] }], pinned: ["e2e/"] },
+    { "probe.mjs": probe, "e2e/r1-01-a.test.mjs": PINNED_SEEN }, { SEEN: seen });
+  const r = p.verify("--full");
+  assert.equal(r.status, 0, r.stdout);
+  assert.deepEqual(statuses(r.evidence), ["api/e2e=pass", "api/test=pass", "api/smoke=pass", "api/e2e/r1-01-a.test.mjs=pass"], "the evidence keeps the recipe's order");
+  const ran = fs.readFileSync(seen, "utf8").trim().split("\n").map((l) => l.split(" "));
+  assert.deepEqual(ran.map(([who]) => who), ["e2e", "smoke", "default"]);
+  assert.equal(new Set(ran.map(([, pid]) => pid)).size, 1, "one stack served both checks and the pinned test");
+  assert.ok(!alive(Number(ran[0][1])), "and went down after them");
+});
+
 test("fix 15: verify --full brings down a stack left up, so an e2e suite that starts its own server gets its port", async (t) => {
   const port = await freePort();
   const e2e = "const s = (await import('node:http')).createServer((q, res) => res.end('e2e ran')).listen(Number(process.argv[2]));\n"
@@ -282,7 +301,7 @@ const PINNED_OK = 'import { test } from "node:test";\nimport assert from "node:a
 const PINNED_RED = 'import { test } from "node:test";\nimport assert from "node:assert/strict";\ntest("[r1] SC-002: the total is 4250", () => assert.equal(2750, 4250));\n';
 const API = (test = "true") => ({ apps: [{ name: "api", path: ".", dev: "PORT={port:api} node server.mjs", health: "http://localhost:{port:api}/health", checks: { test } }], pinned: ["e2e/"] });
 
-test("verify --full runs each test qa pinned in the recipe's pinned directories as a check of its own, marked pinned, with the apps up and BASE_URL their URL, and a red only there is pinned_only", (t) => {
+test("verify --full runs each test qa pinned in the recipe's pinned directories as a check of its own, marked pinned, with the apps up and BASE_URL their URL", (t) => {
   const p = withApps(t, API(), { "e2e/r1-01-total.test.mjs": PINNED_OK, "e2e/r1-02-red.test.mjs": PINNED_RED,
     "e2e/notes.test.mjs": "process.exit(1);\n", "e2e/r1-01-helper.mjs": "process.exit(1);\n" });
   const r = p.verify("--full");
@@ -292,12 +311,9 @@ test("verify --full runs each test qa pinned in the recipe's pinned directories 
   const [unit, ok, red] = r.evidence.checks;
   assert.deepEqual([unit.pinned, ok.pinned, ok.needs_apps, red.pinned], [undefined, true, true, true]);
   assert.match(red.digest, /Expected values to be strictly equal/);
-  assert.deepEqual([r.evidence.green, r.evidence.red_cause, r.evidence.pinned_only], [false, "introduced", true]);
+  assert.deepEqual([r.evidence.green, r.evidence.red_cause, "pinned_only" in r.evidence], [false, "introduced", false], "a red pinned test is the review's fix round's, like any red (#81)");
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(p.s.run_dir, "apps.json"), "utf8")).apps, {}, "the apps went down after");
   assert.equal(p.verify("--fast").evidence.checks.length, 1, "--fast runs no pinned test");
-
-  const e = withApps(t, API("exit 1"), { "e2e/r1-02-red.test.mjs": PINNED_RED }).verify("--full").evidence;
-  assert.deepEqual([statuses(e), e.pinned_only], [["api/test=fail", "api/e2e/r1-02-red.test.mjs=fail"], false], "red outside the pinned checks too");
 });
 
 test("verify --pinned <path> runs that one pinned test with the apps up, in the worktree holding it wherever it's called from, into evidence-pinned.json", (t) => {
@@ -305,7 +321,7 @@ test("verify --pinned <path> runs that one pinned test with the apps up, in the 
   const red = node("verify.mjs", p.dir, ["--pinned", path.join(p.wt, "e2e/r1-02-red.test.mjs")]);
   assert.equal(red.status, 1, red.stdout + red.stderr);
   const e = JSON.parse(fs.readFileSync(path.join(p.s.run_dir, "evidence-pinned.json"), "utf8"));
-  assert.deepEqual([e.mode, statuses(e), e.pinned_only], ["pinned", ["api/e2e/r1-02-red.test.mjs=fail"], true]);
+  assert.deepEqual([e.mode, statuses(e)], ["pinned", ["api/e2e/r1-02-red.test.mjs=fail"]]);
   assert.equal(e.checks[0].log, path.join(p.s.run_dir, "logs", "api-e2e_r1-02-red.test.mjs.pinned.log"), "a pinned log never overwrites a full one");
   assert.match(red.stdout, /^--- api\/e2e\/r1-02-red\.test\.mjs fail\n[\s\S]*Expected values to be strictly equal/m);
   assert.ok(!fs.existsSync(path.join(p.s.run_dir, "evidence.json")), "the full evidence is untouched");
@@ -451,7 +467,7 @@ test("verify --full runs a mobile app's pinned Maestro flows as one pinned check
   assert.match(fs.readFileSync(c.log, "utf8"), /^MAESTRO_CLI_NO_ANALYTICS=1$/m);
   assert.equal(c.digest, `[r1] SC-002: the total is 42.50 > 0: Assertion is false: "Total 42.50" is visible\nfull output: ${c.log}`);
   assert.equal(r.evidence.maestro_version, "2.12.1");
-  assert.deepEqual([r.evidence.red_cause, r.evidence.pinned_only], ["introduced", true], "a red only in pinned flows is qa's to rule on");
+  assert.equal(r.evidence.red_cause, "introduced");
   const ios = p.d.state().ios;
   assert.deepEqual([ios.booted, ios.appearance], [false, "light"], "down gave the simulator back");
   assert.ok(!fs.existsSync(p.d.lock));
@@ -481,13 +497,13 @@ test("verify --pinned <flow> runs that one Maestro flow with the apps up, into e
   assert.deepEqual(p.d.calls("maestro").at(-1), ["test", "--format", "junit", "--output", path.join(p.s.run_dir, "logs/maestro-mobile.pinned.xml"), ".maestro/r1-01-total-SC-001.yaml"]);
 });
 
-test("with no device in .factory/env.local a Maestro check is skipped, an environment red that never goes to qa, and a project without a mobile app has nothing of Maestro's", (t) => {
+test("with no device in .factory/env.local a Maestro check is skipped, an environment red, and a project without a mobile app has nothing of Maestro's", (t) => {
   const p = onDevice(t, { device: false });
   const r = p.verify("--full", p.d.env);
   assert.equal(r.status, 1, r.stdout);
   const c = r.evidence.checks[1];
   assert.deepEqual([c.check, c.status, c.digest], [".maestro", "skipped", "no device in .factory/env.local (FACTORY_IOS_DEVICE or FACTORY_ANDROID_DEVICE)"]);
-  assert.deepEqual([r.evidence.red_cause, r.evidence.pinned_only], ["environment", false]);
+  assert.equal(r.evidence.red_cause, "environment");
   for (const cli of ["xcrun", "adb", "emulator"]) assert.deepEqual(p.d.calls(cli), [], cli);
   assert.deepEqual(p.d.calls("maestro"), [["--version"]]);
 
