@@ -23,7 +23,7 @@
 //     ran on a device.
 //   - A check is "<command>" or { cmd, env: [names it needs] }. It runs under bash in its app's path with lib's runEnv,
 //     its full output saved to logs/<app>-<check>.log in the run dir (.fast.log or .pinned.log); a failing one carries
-//     lib's digest of that output.
+//     lib's digest of that output. One still running after 30 minutes is stopped, and fails.
 //   - A check needing a name .factory/env.local doesn't hold is skipped, never run. An app without a test check fails it.
 //   - A check its app lists in needs_apps runs between run-apps up and down in the worktree it checks, with {port:<app>}
 //     and {db} filled in its command and env from that worktree's apps.json. Every such check runs in one up, after the
@@ -65,11 +65,12 @@ const logOf = (name) => path.join(logs, `${name.replace(/[^\w.-]/g, "_")}${mode 
 const RUN_APPS = fileURLToPath(new URL("run-apps.mjs", import.meta.url));
 const apps = (...args) => spawnSync(process.execPath, [RUN_APPS, ...args, "--run", ctx.id], { encoding: "utf8" });
 
-// Executes one command, its stdout and stderr interleaved into logs/<name>.log.
+// Executes one command, its stdout and stderr interleaved into logs/<name>.log. It has 30 minutes: a mobile app's
+// flows, or an e2e suite on a slow machine, outlast the 10 a unit suite needs.
 function execute(cwd, cmd, name, cmdEnv = env) {
   const log = logOf(name);
   const fd = fs.openSync(log, "w"), t0 = Date.now();
-  const r = spawnSync("bash", ["-c", cmd.replaceAll("{base}", '"$FACTORY_BASE"')], { cwd, env: cmdEnv, stdio: ["ignore", fd, fd], timeout: 10 * 60_000 });
+  const r = spawnSync("bash", ["-c", cmd.replaceAll("{base}", '"$FACTORY_BASE"')], { cwd, env: cmdEnv, stdio: ["ignore", fd, fd], timeout: 30 * 60_000 });
   if (r.error) fs.writeSync(fd, `\nverify: ${r.error.message}\n`);
   fs.closeSync(fd);
   const status = r.status === 0 ? "pass" : "fail";
