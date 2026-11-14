@@ -136,7 +136,8 @@ test("status lists two runs started at the same moment as a table, a row each, w
   rs(p.dir, ["set", "route", "hold", "--run", ids[1]]);
   const lines = rs(p.dir, ["status"]).stdout.trim().split("\n");
   assert.deepEqual(lines.slice(0, 4), ["**Runs**", "", "| Run | Request | State | Progress | PR |", "| --- | --- | --- | --- | --- |"]);
-  assert.deepEqual(lines.slice(4), ids.map((id) => `| ${id} | Fix the login crash | planning, this session | - | - |`));
+  // status lists the oldest first, and of two runs started at once either may finish starting first
+  assert.deepEqual(lines.slice(4).sort(), ids.map((id) => `| ${id} | Fix the login crash | planning, this session | - | - |`).sort());
 });
 
 test("abandon ends a run abandoned and keeps its branch and worktree; a finished run takes no more dispatches", () => {
