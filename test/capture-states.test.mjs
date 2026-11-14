@@ -270,14 +270,14 @@ function onDevice(t, device = {}) {
   t.after(() => apps("down"));
   const up = apps("up");
   assert.equal(up.status, 0, up.stdout + up.stderr);
-  const capture = (states, extra = {}) => {
+  const capture = (states, extra = {}, args = []) => {
     const file = path.join(run.run_dir, "ui-states.json");
     fs.writeFileSync(file, JSON.stringify({ ...extra, states }));
-    return script("capture-states.mjs", p.dir, [file, "--run", run.id], { env: d.env });
+    return script("capture-states.mjs", p.dir, [file, ...args, "--run", run.id], { env: d.env });
   };
   return { ...run, d, capture, down: () => apps("down"), read: (f) => JSON.parse(fs.readFileSync(path.join(run.run_dir, f), "utf8")) };
 }
-const LOOKS = ["light-default", "light-largest", "dark-default", "dark-largest"];
+const LOOKS = ["light-largest", "dark-largest", "light-default", "dark-default"];  // the largest text first, where a flow breaks most
 const AX5 = "accessibility-extra-extra-extra-large";
 
 test("on the device, mobileSignIn's flow runs once from a fresh launch, and each signedIn state's flow launches the app as it was left (#81)", (t) => {
@@ -291,16 +291,15 @@ test("on the device, mobileSignIn's flow runs once from a fresh launch, and each
   for (const f of flows.slice(1)) assert.match(f, /^- \{"launchApp":\{"clearState":false\}\}\n- \{"tapOn":"Account"\}/m);
 });
 
-test("the mobile branch: each mobile state is captured on the run's device in light and dark at the default and largest text size, each look set through run-apps, each state reached by its flow from a fresh launch, then shot at 1x", (t) => {
+test("the mobile branch: each mobile state is captured on the run's device in light and dark at the default and largest text size, each state through every look before the next, the largest text first, each look set through run-apps, each state reached by its flow from a fresh launch, then shot at 1x", (t) => {
   const run = onDevice(t);
   const states = [{ name: "01-cart", app: "mobile", flow: [{ tapOn: "Cart" }] }, { name: "01-empty-cart", app: "mobile", flow: [{ tapOn: "Cart" }, { tapOn: "Empty the cart" }] }];
   const r = run.capture(states);
   assert.equal(r.status, 0, r.stdout + r.stderr);
-  const flows = run.d.state().flows;
-  assert.deepEqual(flows.map((f) => f.look), ["light/large", "light/large", `light/${AX5}`, `light/${AX5}`, "dark/large", "dark/large", `dark/${AX5}`, `dark/${AX5}`],
-    "each look set once, before its states");
-  assert.equal(flows[1].flow, 'appId: "com.example.shop"\n---\n- {"launchApp":{"clearState":true}}\n- {"tapOn":"Cart"}\n- {"tapOn":"Empty the cart"}\n- {"waitForAnimationToEnd":{"timeout":5000}}\n');
-  const files = LOOKS.flatMap((l) => states.map((s) => `captures/${s.name}-${l}.png`));
+  const flows = run.d.state().flows, looks = [`light/${AX5}`, `dark/${AX5}`, "light/large", "dark/large"];
+  assert.deepEqual(flows.map((f) => f.look), [...looks, ...looks], "a state's looks, the largest text first, then the next state's");
+  assert.equal(flows[4].flow, 'appId: "com.example.shop"\n---\n- {"launchApp":{"clearState":true}}\n- {"tapOn":"Cart"}\n- {"tapOn":"Empty the cart"}\n- {"waitForAnimationToEnd":{"timeout":5000}}\n');
+  const files = states.flatMap((s) => LOOKS.map((l) => `captures/${s.name}-${l}.png`));
   assert.deepEqual(run.read("captures/states.json").captures.map((c) => [c.platform, c.file]), files.map((f) => ["ios", f]));
   for (const f of files) assert.equal(fs.readFileSync(path.join(run.run_dir, f)).readUInt32BE(16), 393, `${f} is 1x`);
   assert.deepEqual(run.read("captures/axe.json"), { axe: "no web state" }, "axe judges web pages only");
@@ -311,16 +310,24 @@ test("the mobile branch: each mobile state is captured on the run's device in li
   assert.deepEqual([ios.appearance, ios.content_size, ios.booted], ["light", "large", false], "down gives the simulator its look back");
 });
 
-test("a mobile state whose flow fails is an error in each look, the rest still captured, and a list with a mobile state needs its app's device up", (t) => {
+test("a mobile state whose flow fails stops the pass there, every look and state after it not reached, and naming the --only that goes on once its flow is fixed; a list with a mobile state needs its app's device up", (t) => {
   const run = onDevice(t, { failing: "Coupon" });
-  const r = run.capture([{ name: "cart", app: "mobile", flow: [{ tapOn: "Cart" }] }, { name: "coupon", app: "mobile", flow: [{ tapOn: "Coupon" }] }]);
+  const states = [{ name: "cart", app: "mobile", flow: [{ tapOn: "Cart" }] }, { name: "coupon", app: "mobile", flow: [{ tapOn: "Coupon" }] }, { name: "wishlist", app: "mobile", flow: [{ tapOn: "Wishlist" }] }];
+  const r = run.capture(states);
   assert.equal(r.status, 1, r.stdout + r.stderr);
+  assert.equal(run.d.state().flows.length, 4 + 1, "cart in its four looks, then coupon's first, and nothing after");
   const { captures } = run.read("captures/states.json");
-  assert.deepEqual(captures.filter((c) => c.file).map((c) => c.state), ["cart", "cart", "cart", "cart"]);
-  assert.deepEqual(captures.filter((c) => c.error).map((c) => `${c.state}-${c.scheme}-${c.text}: ${c.error}`), LOOKS.map((l) => `coupon-${l}: maestro test exited 1`));
+  assert.deepEqual(captures.filter((c) => c.file).map((c) => c.file), LOOKS.map((l) => `captures/cart-${l}.png`));
+  assert.deepEqual(captures.filter((c) => c.error).map((c) => `${c.state}-${c.scheme}-${c.text}: ${c.error}`),
+    ["coupon-light-largest: maestro test exited 1", ...LOOKS.slice(1).map((l) => `coupon-${l}: not reached: the pass stopped at coupon`), ...LOOKS.map((l) => `wishlist-${l}: not reached: the pass stopped at coupon`)]);
+  assert.match(r.stdout, /^capture-states: coupon failed in light, largest text, so the pass stopped there: once its flow is fixed, go on with --only coupon,wishlist$/m);
   assert.match(r.stdout, /Assertion is false: Coupon is visible/, "the digest quotes Maestro");
-  for (const states of [[{ name: "cart", app: "web", flow: [] }], [{ name: "cart", app: "mobile", flow: { tapOn: "Cart" } }]]) {
-    assert.equal(run.capture(states).status, 2, JSON.stringify(states));
+  const fixed = run.capture([states[0], { ...states[1], flow: [{ tapOn: "Promo" }] }, states[2]], {}, ["--only", "coupon,wishlist"]);
+  assert.equal(fixed.status, 0, fixed.stdout + fixed.stderr);
+  assert.deepEqual(run.read("captures/states.json").captures.map((c) => c.file), states.flatMap((s) => LOOKS.map((l) => `captures/${s.name}-${l}.png`)),
+    "cart's pictures kept, the rest taken");
+  for (const bad of [[{ name: "cart", app: "web", flow: [] }], [{ name: "cart", app: "mobile", flow: { tapOn: "Cart" } }]]) {
+    assert.equal(run.capture(bad).status, 2, JSON.stringify(bad));
   }
   assert.equal(run.down().status, 0);
   const down = run.capture([{ name: "cart", app: "mobile", flow: [] }]);

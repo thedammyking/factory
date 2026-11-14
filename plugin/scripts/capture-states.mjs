@@ -19,7 +19,10 @@
 //     and flow the Maestro commands that reach the state, as JSON. In light and dark, at the default and the largest text
 //     size, each set by run-apps look, it's reached by `maestro test` of a flow that launches the app with its state
 //     cleared, runs those commands and waits for animations to end, then pictured at 1x by run-apps shot, as
-//     captures/<state>-<scheme>-<default|largest>.png; states.json has each one's platform.
+//     captures/<state>-<scheme>-<default|largest>.png; states.json has each one's platform. Each state goes through its
+//     looks, the largest text first, where a flow breaks most, before the next state. A capture that fails stops the
+//     pass there, each look and state after it recorded as not reached, and its line names the --only that goes on once
+//     its flow is fixed: a flow costs a minute a look, so a broken one shows before the hour the rest would take.
 //   - Signing in once (#81): `signIn` {url, actions} (web) or `mobileSignIn` {app, flow} (mobile) beside `states` is run
 //     once, before the first state marked `signedIn: true`, and each such state starts from that session: a web one's
 //     context from its storage state, a mobile one's flow launching the app without clearing it. A state that is the
@@ -38,7 +41,7 @@ import { fileURLToPath } from "node:url";
 import { readJson, runContext, runEnv, digest, fill } from "./lib.mjs";
 
 const WIDTHS = { 390: 844, 768: 1024, 1440: 900 }, SCHEMES = ["light", "dark"];  // each width's viewport height
-const TEXT = ["default", "largest"], RUN_APPS = fileURLToPath(new URL("run-apps.mjs", import.meta.url));
+const TEXT = ["largest", "default"], RUN_APPS = fileURLToPath(new URL("run-apps.mjs", import.meta.url));
 // ponytail: a fixed wait for entry transitions and JS-driven animations; wait on document.getAnimations() if a longer
 // one is ever pictured mid-way.
 const SETTLE = 450;
@@ -133,8 +136,8 @@ async function capture(st, width, height, scheme, file, logged) {
   } finally { await context.close(); }
 }
 
-// The mobile branch: in each look, set through run-apps, each mobile state is reached by its flow from a fresh launch
-// (maestro test), then pictured at 1x by run-apps shot.
+// The mobile branch: each mobile state, in each look set through run-apps, is reached by its flow from a fresh launch
+// (maestro test), then pictured at 1x by run-apps shot, until one fails. Returns the line that says where it stopped.
 function onDevice() {
   const said = (r) => `${r.stdout || ""}${r.stderr || ""}`.trim();
   const runApps = (...a) => spawnSync(process.execPath, [RUN_APPS, ...a, "--run", ctx.id], { encoding: "utf8" });
@@ -147,30 +150,32 @@ function onDevice() {
     log(`maestro test ${flow}\n${said(m)}`);
     signedFlow = m.status === 0 ? true : `signing in failed: maestro test ${m.error ? m.error.message : `exited ${m.status}`}`;
   }
-  for (const scheme of SCHEMES) for (const text of TEXT) {
-    const look = runApps("look", scheme, text);
-    for (const st of mobile) {
-      const at = { state: st.name, platform: apps.device.platform, scheme, text }, name = `${st.name}-${scheme}-${text}`;
-      const file = `captures/${name}.png`, flow = path.join(ctx.out, "logs", `capture-${st.name}.yaml`);
-      const steps = [{ launchApp: { clearState: !st.signedIn } }, ...st.flow, { waitForAnimationToEnd: { timeout: 5000 } }];
-      let error = null, detail = null;  // states.json's one line, and the full output for the log and the digest
-      if (look.status) error = detail = `run-apps look ${scheme} ${text}: ${said(look)}`;
-      else if (st.signedIn && signedFlow !== true) error = detail = signedFlow;
-      else {
-        // YAML takes each step as JSON, so a step's text never needs YAML's quoting
-        fs.writeFileSync(flow, `appId: ${JSON.stringify(recipe.apps.find((a) => a.name === st.app).app_id)}\n---\n${steps.map((s) => `- ${JSON.stringify(s)}\n`).join("")}`);
-        const m = spawnSync("maestro", ["test", flow], { env: runEnv(ctx.MAIN, { MAESTRO_CLI_NO_ANALYTICS: "1" }), encoding: "utf8", timeout: 600_000 });
-        log(`maestro test ${flow}\n${said(m)}`);
-        if (m.status !== 0) { error = `maestro test ${m.error ? m.error.message : `exited ${m.status}`}`; detail = `${error}\n${said(m)}`; }
-        else { const shot = runApps("shot", name); if (shot.status) error = detail = said(shot); }
-      }
-      if (!error) { captures.push({ ...at, file }); log(`captured ${file}`); continue; }
-      fs.rmSync(path.join(ctx.out, file), { force: true });  // no older picture stands for this state
-      captures.push({ ...at, error });
-      failures.push(`FAILED ${file}: ${detail}`);
-      log(failures.at(-1));
+  let stop = null, stoppedAt = null;  // the line that says where the pass stopped, and the state it stopped at
+  for (const st of mobile) for (const text of TEXT) for (const scheme of SCHEMES) {
+    const at = { state: st.name, platform: apps.device.platform, scheme, text }, name = `${st.name}-${scheme}-${text}`;
+    if (stoppedAt) { captures.push({ ...at, error: `not reached: the pass stopped at ${stoppedAt}` }); continue; }
+    const look = runApps("look", scheme, text), file = `captures/${name}.png`, flow = path.join(ctx.out, "logs", `capture-${st.name}.yaml`);
+    const steps = [{ launchApp: { clearState: !st.signedIn } }, ...st.flow, { waitForAnimationToEnd: { timeout: 5000 } }];
+    let error = null, detail = null;  // states.json's one line, and the full output for the log and the digest
+    if (look.status) error = detail = `run-apps look ${scheme} ${text}: ${said(look)}`;
+    else if (st.signedIn && signedFlow !== true) error = detail = signedFlow;
+    else {
+      // YAML takes each step as JSON, so a step's text never needs YAML's quoting
+      fs.writeFileSync(flow, `appId: ${JSON.stringify(recipe.apps.find((a) => a.name === st.app).app_id)}\n---\n${steps.map((s) => `- ${JSON.stringify(s)}\n`).join("")}`);
+      const m = spawnSync("maestro", ["test", flow], { env: runEnv(ctx.MAIN, { MAESTRO_CLI_NO_ANALYTICS: "1" }), encoding: "utf8", timeout: 600_000 });
+      log(`maestro test ${flow}\n${said(m)}`);
+      if (m.status !== 0) { error = `maestro test ${m.error ? m.error.message : `exited ${m.status}`}`; detail = `${error}\n${said(m)}`; }
+      else { const shot = runApps("shot", name); if (shot.status) error = detail = said(shot); }
     }
+    if (!error) { captures.push({ ...at, file }); log(`captured ${file}`); continue; }
+    fs.rmSync(path.join(ctx.out, file), { force: true });  // no older picture stands for this state
+    captures.push({ ...at, error });
+    failures.push(`FAILED ${file}: ${detail}`);
+    log(failures.at(-1));
+    stoppedAt = st.name;
+    stop = `capture-states: ${st.name} failed in ${scheme}, ${text} text, so the pass stopped there: once its flow is fixed, go on with --only ${mobile.slice(mobile.indexOf(st)).map((s) => s.name).join(",")}`;
   }
+  return stop;
 }
 
 try {
@@ -190,7 +195,7 @@ try {
   }
 } catch (e) { failures.push(`FAILED to launch Chromium: ${e.stack || e.message}`); log(failures.at(-1)); }
 await browser?.close();
-if (mobile.length) onDevice();
+const stop = mobile.length ? onDevice() : null;
 
 const save = (f, data) => fs.writeFileSync(path.join(out, f), JSON.stringify(data, null, 2) + "\n");
 // --only keeps every other state's entries as the last pass left them.
@@ -202,5 +207,6 @@ save("axe.json", { axe: axed === "ran" ? [...(Array.isArray(axeBefore?.axe) ? ax
 const taken = captures.filter((c) => c.file), overflowing = taken.filter((c) => c.overflow).length;
 console.log(`capture-states: ${taken.length} of ${(web.length * Object.keys(WIDTHS).length + mobile.length * TEXT.length) * SCHEMES.length} captures in ${out}`
   + `${overflowing ? `, ${overflowing} overflowing` : ""}, axe ${axed}`);
+if (stop) console.log(stop);
 if (failures.length) console.log(digest(failures.join("\n"), LOG));
 process.exit(failures.length ? 1 : 0);
