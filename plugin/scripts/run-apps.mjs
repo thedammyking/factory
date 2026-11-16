@@ -22,7 +22,8 @@
 //     whose holder's processes are all gone.
 //   - A mobile app (type mobile) goes on the one device lib's device() picks from .factory/env.local, behind one lock in
 //     the OS's temp dir that every simulator and emulator on the machine shares, held from up to down and waited for up
-//     to 30 minutes, so one worktree at a time has the device; with no device recorded it's "skip". Its optional dev
+//     to 2 hours, since the run ahead may hold it for a whole capture pass or a full verify, so one worktree at a time
+//     has the device; with no device recorded it's "skip". Its optional dev
 //     server starts like any app's. Once the other apps are up, up takes the lock and runs its `build` in its path, with
 //     FACTORY_PLATFORM ios or android (its dev server gets it too): the build's last line is the .app or .apk it made,
 //     its output saved to logs/<app>.build.log. The last build of each app and platform is kept beside the worktrees and
@@ -33,7 +34,9 @@
 //     screencap is 1x, and adb reverse for every recorded port. up installs the app over what's there, streams the
 //     device's log for it to logs/<app>.device.log, and launches it by its launch_url, else its app_id: it's healthy
 //     once in the foreground, within 2 minutes.
-//   - down kills each app's process group, then whatever still listens on a port it recorded (listeners only: a browser
+//   - down first stops an up of the same worktree that's still on its way, as a newer up does, so one started in the
+//     background never brings the apps up, or takes the device, after the down that was to give them back. It then
+//     kills each app's process group, then whatever still listens on a port it recorded (listeners only: a browser
 //     connected to it is never killed), and releases the lock. It puts back every device setting up recorded and
 //     shuts down only a device up booted; a step that fails keeps the record and the device lock for the next down
 //     or the run's reconcile. A device lock whose holder died is taken over only once that holder's device is restored.
@@ -42,8 +45,9 @@
 //   - look <scheme> <text> sets the device up holds to light or dark and to the default or the largest text size, for
 //     capture-states; down puts back what up recorded.
 //   - apps.json in out holds the profile, the database, each app's port, url, pid and ok (true, false or "skip"), the
-//     ports of the last up, which down keeps, and the device's id and settings, never another env value: it's snapshotted into the repo. status prints each app in
-//     it as up, down or skip. Each worktree reads and writes only its own, so down stops only what its up started.
+//     ports of the last up, which down keeps, the pid of an up on its way, and the device's id and settings, never
+//     another env value: it's snapshotted into the repo. status prints each app in it as up, down or skip. Each
+//     worktree reads and writes only its own, so down stops only what its up started.
 // up exits 0 when every app it started is healthy, 1 when one isn't or the database or a lock failed it; down exits 1
 // when the drop failed or the device isn't restored; shot and look exit 1 without a device up; all exit 2 on bad usage.
 import crypto from "node:crypto";
@@ -68,7 +72,7 @@ const FILE = path.join(ctx.out, "apps.json"), logs = path.join(ctx.out, "logs"),
 // put it under the home dir if two such sessions ever share a device.
 const DEVICE_LOCK = path.join(os.tmpdir(), "factory-device.lock");
 const pair = recipe.db?.create && recipe.db?.drop;
-const record = readJson(FILE, { apps: {} });  // apps.json
+let record = readJson(FILE, { apps: {} });  // apps.json
 const save = () => fs.writeFileSync(FILE, JSON.stringify(record, null, 2) + "\n");
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return e.code === "EPERM"; } };
@@ -267,7 +271,15 @@ async function release() {
 // sibling worktree's app.
 // ponytail: a recorded pid reused since (after a reboot) is killed, and a listener that outlived its app's whole group
 // is left running; record start times if either ever bites.
+// An up of this worktree still on its way (apps.json's `up`, its pid) is stopped first, and what it had recorded by
+// then is what goes down: left to finish, it would start the apps and take the device after the down that was to
+// give them back, with no down left to come.
+// ponytail: a build it was running finishes on its own, unkept; give the build a process group if one ever gets in the way.
 async function down() {
+  // by its command line, so a pid the OS handed to something else since a crash is never stopped in its place
+  const onItsWay = record.up && record.up !== process.pid && (spawnSync("ps", ["-o", "command=", "-p", String(record.up)], { encoding: "utf8" }).stdout || "").includes("run-apps.mjs");
+  if (onItsWay) { await stop([record.up]); record = readJson(FILE, record); }
+  delete record.up;
   const started = Object.values(record.apps).filter((a) => a.pid), live = started.filter((a) => a.port && alive(-a.pid));
   const streams = Object.values(record.apps).filter((a) => a.stream).map((a) => -a.stream);  // device logs
   await stop([...started.map((a) => -a.pid), ...streams]);
@@ -304,7 +316,7 @@ function buildKey(a, platform) {
 // build of each app and platform is kept beside the worktrees, shared by every run, and installed again in place of a
 // build while its buildKey holds (#81): a native build is minutes a verify would spend on every ticket.
 async function onDevice(mobiles, target, envFor, failed, exits) {
-  await lock(DEVICE_LOCK, "device", 30);
+  await lock(DEVICE_LOCK, "device", 120);
   const built = {}, served = {};  // the .app or .apk each build made; each dev server's log
   for (const a of mobiles) {
     const app = record.apps[a.name], cwd = path.join(ctx.tree, a.path || ".");
@@ -373,6 +385,8 @@ async function up(profile, skip) {
   if (unknown.length) { console.error(`run-apps: no app ${unknown.join(", ")} in the recipe`); process.exit(2); }
   if (!await down()) process.exit(1);  // a device's settings are never recorded over ones not given back yet
   fs.mkdirSync(logs, { recursive: true });
+  record.up = process.pid; save();  // on its way, until it exits: a down that comes first stops it
+  process.on("exit", () => { delete record.up; try { save(); } catch {} });  // a worktree removed under it has no record to keep
   const envOf = (a) => ({ ...(profile !== "default" && profiles.default?.[a.name]), ...profiles[profile]?.[a.name] });
   const mobile = (a) => a.type === "mobile";
   const all = (recipe.apps || []).filter((a) => a.dev || mobile(a));

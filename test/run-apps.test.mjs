@@ -525,6 +525,47 @@ test("a mobile build runs under the device lock, and one that fails fails up wit
   assert.ok(!fs.existsSync(p.d.lock), "down releases it");
 });
 
+test("down stops an up of its worktree that's still on its way, so that up never takes the device after the down that was to give it back", async (t) => {
+  const p = mobile(t, "ios", { apps: [WEB_API.apps[1], MOBILE()] });
+  const s = p.start("Show the cart total");
+  fs.writeFileSync(p.d.lock, JSON.stringify({ run: "other", apps: "/elsewhere/apps.json", pids: [process.pid] }));  // another run's capture pass
+  const { up } = await waits(p, s, 700);  // started in the background, as a qa that only wants the API does
+  const { api } = p.recorded(s).apps;
+  assert.ok(await answers(api.url), "the API is up while the mobile app waits for the device");
+  let r = await p.apps(s, "down");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.ok(!await answers(api.url), "what the up had started went down");
+  fs.rmSync(p.d.lock);  // the other run gives the device back
+  assert.notEqual((await up).status, 0, "the up on its way was stopped");
+  assert.deepEqual([fs.existsSync(p.d.lock), p.d.calls("xcrun")], [false, []], "so nothing is left to take the device");
+  r = await p.apps(s, "up", "--skip", "mobile");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.equal(p.recorded(s).up, undefined, "an up that's done is no longer on its way");
+  fs.writeFileSync(p.d.lock, JSON.stringify({ run: "other", apps: "/elsewhere/apps.json", pids: [process.pid] }));
+  const { up: older } = await waits(p, s, 700);
+  r = await p.apps(s, "up", "--skip", "mobile");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  fs.rmSync(p.d.lock);
+  assert.notEqual((await older).status, 0, "a newer up takes the older one's place");
+  assert.ok(!fs.existsSync(p.d.lock));
+});
+
+test("a run that stops keeps its worktree and gives back its apps and the device, which a walk cut off between up and down left it holding", async (t) => {
+  const p = mobile(t, "ios", { apps: [WEB_API.apps[1], MOBILE()] });
+  const s = p.start("Show the cart total");
+  let r = await p.apps(s, "up");  // qa's, say, which ran out of turns before its down
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  const { api } = p.recorded(s).apps;
+  assert.ok(fs.existsSync(p.d.lock));
+  const rs = (...args) => spawnSync(process.execPath, [path.join(SCRIPTS, "run-state.mjs"), ...args, "--run", s.id], { cwd: p.dir, encoding: "utf8", env: p.d.env });
+  assert.equal(rs("set", "stage", "needs-human").status, 0);
+  r = rs("snapshot");
+  assert.equal(r.status, 0, r.stdout + r.stderr);
+  assert.match(r.stdout, /^worktree kept \(needs-human\)$/m);
+  assert.ok(fs.existsSync(s.worktree), "the run can still go on");
+  assert.deepEqual([await answers(api.url), fs.existsSync(p.d.lock)], [false, false], "with no app up and the device free for the other runs");
+});
+
 test("up --skip leaves the apps it names stopped, as a profile's null does, so a skipped mobile app is never built and never takes the device", async (t) => {
   const p = mobile(t, "ios", { apps: [WEB_API.apps[1], MOBILE({ dev: DEV_SERVER })] });
   const s = p.start("Show the cart total");

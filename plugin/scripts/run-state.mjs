@@ -164,7 +164,8 @@
 //                                                the base: #81) and its new run.log lines to
 //                                                .factory/log.md, then removes the worktree of a finished run (its
 //                                                apps and any left ticket worktree's brought down, and their databases
-//                                                dropped, first); a stop
+//                                                dropped, first), and brings down the apps of a run that stopped,
+//                                                whose worktree is kept, so it never keeps the device; a stop
 //                                                ends the run needs-human, prints `needs-human: <attention item>`, exits 1.
 //                                                A run with a request issue gets issue-comment.md before the check, and a
 //                                                finished one keeps its worktree until `comment` has tried it
@@ -1599,7 +1600,12 @@ switch (cmd) {
     console.log(sha ? `snapshot ${sha.slice(0, 7)} on ${RECORDS}` : `snapshot unchanged on ${RECORDS}`);
     // A finished run has nothing left to resume, nor one whose PR merged or closed since it stopped (pr_done, #81).
     // Without --force, git refuses a run worktree holding uncommitted work.
-    if (!FINISHED.includes(s.stage) && !s.pr_done) console.log(`worktree kept (${s.stage})`);
+    if (!FINISHED.includes(s.stage) && !s.pr_done) {
+      // A run that stops keeps its worktree, never its apps: a stage cut off between up and down would hold the device
+      // every run on the machine shares until the human came back.
+      const down = appsDown(ctx, ctx.worktree);
+      console.log(`worktree kept (${s.stage})${down.status ? `\nrun-apps down failed\n${down.stdout}${down.stderr}`.trimEnd() : ""}`);
+    }
     else if (issueComment && !s.issue_comment.posted && !s.issue_comment.failed) console.log(`worktree kept until the closing comment: \`${me} comment --run ${ctx.id}\`, then the snapshot again`);
     else removeTrees(ctx, s);
     break;
