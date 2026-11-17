@@ -30,8 +30,9 @@
 //     installed in place of another while nothing it's made from has changed (buildKey), so a verify that brings the
 //     app up for one flow doesn't rebuild it. up then boots the device only if it isn't running (simctl boot;
 //     emulator -no-window), and records its appearance and text size, and on Android its density and size, in apps.json
-//     before it changes anything. Android then gets wm size at the screen's size in dp and wm density 160, so its
-//     screencap is 1x, and adb reverse for every recorded port. up installs the app over what's there, streams the
+//     before it changes anything. It then sets the device to light at the default text size, so a check or a walk
+//     never depends on the look it found. Android also gets wm size at the screen's size in dp and wm density 160, so
+//     its screencap is 1x, and adb reverse for every recorded port. up installs the app over what's there, streams the
 //     device's log for it to logs/<app>.device.log, and launches it by its launch_url, else its app_id: it's healthy
 //     once in the foreground, within 2 minutes.
 //   - down first stops an up of the same worktree that's still on its way, as a newer up does, so one started in the
@@ -311,7 +312,7 @@ function buildKey(a, platform) {
   } catch { return null; }
 }
 // The mobile branch, after the other apps are up, all under the device lock: each mobile app built, then the device
-// booted if it isn't running, its settings recorded, each app installed, the recorded ports reversed, and each app's
+// booted if it isn't running, its settings recorded and its look set to light at the default text size, each app installed, the recorded ports reversed, and each app's
 // log streamed before it's launched, until it's in front. A step that fails fails every mobile app not up yet. The last
 // build of each app and platform is kept beside the worktrees, shared by every run, and installed again in place of a
 // build while its buildKey holds (#81): a native build is minutes a verify would spend on every ticket.
@@ -356,6 +357,7 @@ async function onDevice(mobiles, target, envFor, failed, exits) {
     Object.assign(d, found);
     if (!running) await P.boot(d);
     P.record(d);
+    P.look(d, "light", "default");  // every run starts from one look, never the one the developer or the run before left
     for (const a of ready) P.install(d, built[a.name]);
     P.reverse(d, [...new Set(Object.values(record.apps).map((a) => a.port).filter(Boolean))]);
     for (const a of ready) {

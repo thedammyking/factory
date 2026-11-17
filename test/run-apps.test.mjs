@@ -330,6 +330,7 @@ test("an iOS app: up boots the simulator only when it's down, builds, installs a
   assert.deepEqual(sent, [
     ["simctl", "list", "devices", "-j"], ["simctl", "boot", udid], ["simctl", "bootstatus", udid],
     ["simctl", "ui", udid, "appearance"], ["simctl", "ui", udid, "content_size"],
+    ["simctl", "ui", udid, "appearance", "light"], ["simctl", "ui", udid, "content_size", "large"],
     ["simctl", "install", udid, path.join(s.worktree, "mobile/build/Shop.app")],
     ["simctl", "openurl", udid, launch.replace("{port:mobile}", apps.mobile.port)],
     ["simctl", "spawn", udid, "launchctl", "list"],
@@ -374,6 +375,7 @@ test("an Android app on an emulator already running: up keeps it running, sets i
     ["devices"], [...S, "emu", "avd", "name"],
     [...S, "shell", "wm", "size"], [...S, "shell", "wm", "density"], [...S, "shell", "cmd", "uimode", "night"], [...S, "shell", "settings", "get", "system", "font_scale"],
     [...S, "shell", "wm", "size", "480x1067"], [...S, "shell", "wm", "density", "160"],
+    [...S, "shell", "cmd", "uimode", "night", "no"], [...S, "shell", "settings", "put", "system", "font_scale", "1.0"],
     [...S, "install", "-r", path.join(s.worktree, "mobile/build/shop.apk")],
     [...S, "reverse", `tcp:${apps.api.port}`, `tcp:${apps.api.port}`], [...S, "reverse", `tcp:${apps.mobile.port}`, `tcp:${apps.mobile.port}`],
     [...S, "shell", "cmd", "package", "list", "packages", "-U", "'com.example.shop'"],
@@ -439,6 +441,22 @@ test("look sets the device's scheme and text size for a capture, the largest tex
     assert.equal((await droid.apps(b, "down")).status, 0);
     assert.deepEqual([droid.d.state().android.night, droid.d.state().android.font_scale], ["yes", "1.15"], "the developer's own look is back");
   }
+});
+
+test("up starts the device in light at the default text size, whatever the developer or the run before left it at, and down puts theirs back", async (t) => {
+  const LARGEST = "accessibility-extra-extra-extra-large";
+  const ios = mobile(t, "ios", { apps: [MOBILE()] }, { device: { ios: { booted: true, appearance: "dark", content_size: LARGEST } } }), a = ios.start("Show the cart total");
+  assert.equal((await ios.apps(a, "up")).status, 0);
+  assert.deepEqual([ios.d.state().ios.appearance, ios.d.state().ios.content_size], ["light", "large"], "what every check and walk starts from");
+  assert.deepEqual(ios.recorded(a).device.settings, { appearance: "dark", text_size: LARGEST }, "theirs is what's kept");
+  assert.equal((await ios.apps(a, "down")).status, 0);
+  assert.deepEqual([ios.d.state().ios.appearance, ios.d.state().ios.content_size], ["dark", LARGEST]);
+
+  const droid = mobile(t, "android", { apps: [MOBILE()] }, { device: { android: { booted: true, night: "yes", font_scale: "1.3" } } }), b = droid.start("Show the cart total");
+  assert.equal((await droid.apps(b, "up")).status, 0);
+  assert.deepEqual([droid.d.state().android.night, droid.d.state().android.font_scale], ["no", "1.0"]);
+  assert.equal((await droid.apps(b, "down")).status, 0);
+  assert.deepEqual([droid.d.state().android.night, droid.d.state().android.font_scale], ["yes", "1.3"]);
 });
 
 test("every simulator and emulator is behind one machine-wide lock from up to down, which a holder that died with the device's settings unrestored keeps", async (t) => {
